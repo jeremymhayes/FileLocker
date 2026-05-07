@@ -4,187 +4,95 @@
 
 # FileLocker
 
-FileLocker is a free, local-first Windows desktop security app built with WinUI 3 and the Windows App SDK. It focuses on practical file protection workflows: encrypt files, decrypt FileLocker payloads, generate hashes, manage local history, and run helper security tools without sending files to a cloud service.
+**Current version:** 1.1.0.0
 
-Current app version: **1.0.5.2**
+FileLocker is a local Windows desktop app for protecting files, checking integrity, cleaning metadata, and safely removing sensitive data. It runs on your machine, keeps passwords and file contents local, and uses the Windows desktop app only as the secure host for the FileLocker interface.
 
-## What FileLocker Does
+## What You Can Do
 
-- Encrypt files and folders with the current FileLocker payload format.
-- Decrypt supported FileLocker encrypted outputs, including `.locked` files.
-- Generate and verify file hashes with SHA-256 as the recommended default.
-- Track recent local activity when history is enabled.
-- Show dashboard stats for protected files, last operation, security status, and compression impact.
-- Provide helper pages for Encode Text, Metadata Scrambler, and Secure Delete.
-- Keep core file work local to the device.
+- Encrypt files and folders into FileLocker `.locked` files.
+- Decrypt `.locked` files with the original password.
+- Hash files with SHA-256 or SHA-512 to verify integrity.
+- Encode and decode text using common formats.
+- Review file metadata and remove or scramble supported fields.
+- Securely delete files with overwrite passes before removal.
+- Save file handling, security, and appearance preferences.
+- Review recent activity from the dashboard.
+- Read the built-in security guide before handling sensitive files.
 
-## Current App Pages
+## Security Model
 
-The main app shell currently includes:
+FileLocker keeps encryption, decryption, hashing, file access, secure delete, settings, and validation inside the Windows app. The interface sends structured requests to the app and receives structured results back. Passwords, keys, and file contents are never moved into a browser tab or sent to a remote service.
 
-1. Dashboard
-2. Encrypt Files
-3. Decrypt Files
-4. Hash Files
-5. Encode Text
-6. Metadata Scrambler
-7. Secure Delete
-8. Settings
-9. About
+Encryption uses AES-256-GCM for authenticated encryption. That means encrypted files are protected for confidentiality and checked for tampering during decryption. A wrong password or modified encrypted file will fail safely instead of producing silent bad output.
 
-Dashboard is the default startup page for normal launches. Explorer or context-menu launches can still queue files into the existing workflow.
+## App Sections
 
-## Encryption And Decryption
-
-FileLocker uses **AES-256-GCM** as the default and recommended encryption mode. The app is designed around authenticated encryption and the existing FileLocker payload format. Compatibility options may appear in the UI only as disabled or advanced notes unless the underlying format support is implemented safely.
-
-Encrypted files use the project-specific `.locked` extension for normal FileLocker outputs. Decrypt Files validates selected encrypted files and handles unsupported files as a safe UI state instead of treating every file as decryptable.
-
-Important security behavior:
-
-- Passwords are not stored in settings, history, queues, or recent files.
-- Passwords are not logged.
-- FileLocker cannot recover forgotten or incorrect passwords.
-- Wrong passwords and corrupted payloads fail safely.
-- Source files are not deleted unless the matching delete-after-success option is explicitly enabled and the operation succeeds.
-
-## Compression And Storage Impact
-
-Compression is optional and is measured separately from encryption overhead.
-
-The Dashboard **Storage Impact** card reports compression savings using:
-
-```text
-original input size before compression - compressed payload size before encryption
-```
-
-This avoids the misleading older behavior of comparing the original file size to the final encrypted output. Encrypted output can be larger because encryption adds metadata and authentication overhead, even when compression helped.
-
-The UI now reports:
-
-- saved space when compression reduced the payload,
-- no savings when compression had no benefit,
-- increased size when compression made the payload larger.
-
-## Hash Files
-
-The Hash Files page is for integrity checks and comparison workflows.
-
-- SHA-256 is the recommended/default algorithm.
-- SHA-512 is available for stronger digest length when supported by the app.
-- Hash output is displayed for copying, saving, and verification.
-- Expected hash comparison normalizes common whitespace/case issues before reporting match or mismatch.
-
-Hashing is not encryption. It verifies integrity; it does not hide file contents.
-
-## Settings And Privacy
-
-Settings are grouped around appearance, security, file handling, privacy, updates, and about/support details.
-
-Local-first behavior:
-
-- File operations run on the local machine.
-- Activity history is local and can be disabled or cleared.
-- Update checks contact GitHub Releases, but file contents are not uploaded.
-- Temporary/update files are stored under the user's local app data folder, not beside the installed executable.
-
-## Updates
-
-FileLocker uses GitHub Releases for update checks.
-
-The updater expects:
-
-- a release on `jeremymhayes/FileLocker`,
-- a version tag such as `v1.0.5.2`,
-- an installer asset named like `FileLocker-Setup-1.0.5.2.exe`.
-
-The app is not currently code signed. That means Windows may show SmartScreen or publisher warnings for installers. The updater still supports the unsigned installer flow by validating release/download information and installer digest data where available, instead of requiring an Authenticode signature before a user can update.
-
-Manual update checks are available from the app's help/update controls.
+- **Dashboard** - Drag files or folders to encrypt, open quick actions, and review recent activity.
+- **Encrypt Files** - Choose files or folders, set a password, and create `.locked` files.
+- **Decrypt Files** - Choose `.locked` files, enter the password, and restore the originals.
+- **Hash Files** - Generate SHA-256 or SHA-512 fingerprints.
+- **Encode Text** - Encode or decode text locally.
+- **Metadata Scrambler** - Inspect supported metadata and remove or scramble selected fields.
+- **Secure Delete** - Confirm and overwrite files before deleting them.
+- **Settings** - Configure file handling, security preferences, and appearance.
+- **About** - View app and release details.
+- **Security Guide** - Learn practical guidance for using FileLocker safely.
 
 ## Install
 
-The recommended public install path is the NSIS installer from GitHub Releases:
+1. Open the [FileLocker releases page](https://github.com/jeremymhayes/FileLocker/releases).
+2. Download `FileLocker-Setup-1.1.0.0.exe` from the `v1.1.0.0` release.
+3. Run the installer and follow the prompts.
+4. Launch FileLocker from the Start Menu or desktop shortcut.
+
+FileLocker is distributed as an unpackaged 64-bit Windows desktop app with an NSIS installer. The installer places the app in `Program Files`, creates shortcuts, and registers a normal Windows uninstall entry.
+
+The app works offline after installation. Windows 10 and Windows 11 normally include the Microsoft Edge WebView2 Runtime. If the app opens but the interface does not load, install the current WebView2 Runtime from Microsoft and reopen FileLocker.
+
+## Updates
+
+FileLocker checks GitHub Releases for new versions and expects installer assets named like:
 
 ```text
-FileLocker-Setup-<version>.exe
+FileLocker-Setup-1.1.0.0.exe
 ```
 
-Run the installer normally. On unsigned builds, Windows may ask for extra confirmation.
+Update downloads are validated before install. If a release asset cannot be verified, FileLocker blocks the update instead of running it.
 
 ## Build From Source
 
-### Requirements
+Requirements:
 
 - Windows 10 or Windows 11
-- .NET SDK matching `global.json`
-- Visual Studio 2022 recommended for WinUI development
-- NSIS for installer builds, or `makensis.exe` available on PATH
+- Visual Studio 2022 with Windows App SDK workload support
+- .NET 8 SDK
+- Node.js 20 or newer
+- NSIS, if you want to build the installer
 
-### Build the app
-
-```powershell
-dotnet build .\FileLocker\FileLocker.csproj -c Release
-```
-
-### Run tests
+Build the app:
 
 ```powershell
-dotnet test .\FileLocker.Tests\FileLocker.Tests.csproj
+cd FileLocker\frontend
+npm install
+npm run build
+
+cd ..
+dotnet build .\FileLocker.csproj -c Release
 ```
 
-### Build the NSIS installer
+Build the installer:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Build-Installer.ps1 -Configuration Release
+cd ..
+.\scripts\Build-Installer.ps1 -Configuration Release
 ```
 
-The installer workflow stages a fresh unpackaged WinUI publish output before NSIS packages it.
+The installer script publishes the app into `artifacts\nsis\publish`, verifies required desktop and interface files, and writes `FileLocker-Setup-1.1.0.0.exe` into `artifacts\nsis`.
 
-## Project Layout
+## Important Notes
 
-```text
-FileLocker/
-├── FileLocker.slnx
-├── README.md
-├── global.json
-├── installer/
-├── scripts/
-├── artifacts/
-├── FileLocker/
-└── FileLocker.Tests/
-```
-
-Key files:
-
-- `FileLocker/FileLocker.csproj`
-- `FileLocker/MainWindow.xaml`
-- `FileLocker/MainWindow.Navigation.cs`
-- `FileLocker/MainWindow.EncryptFiles.cs`
-- `FileLocker/MainWindow.DecryptFiles.cs`
-- `FileLocker/MainWindow.HashFiles.cs`
-- `FileLocker/MainWindow.Workflows.cs`
-- `FileLocker/OperationHistoryModels.cs`
-- `FileLocker/UpdateService.cs`
-- `installer/FileLocker.nsi`
-- `scripts/Build-Installer.ps1`
-
-## Current Distribution Model
-
-FileLocker is currently distributed as an **unpackaged WinUI app with an NSIS installer**.
-
-Legacy MSIX/AppInstaller files may still exist in the repo, but the active release path is NSIS plus GitHub Releases. Generated installer binaries should not be committed to source control.
-
-## Security Notes
-
-FileLocker is a local file security tool, not a password recovery product.
-
-- Keep encryption passwords somewhere safe.
-- Test decrypting important files before deleting originals.
-- Keep backups for critical data.
-- Do not assume compression will always reduce file size.
-- Treat Secure Delete and delete-after-success options as destructive.
-
-## License
-
-See the repository license file or the in-app About page for license details.
+- FileLocker cannot recover forgotten passwords. There is no recovery key or backdoor.
+- Test decryption on a copy before deleting important originals.
+- Secure delete is less reliable on SSDs than on traditional hard drives because of wear leveling. Use full-disk encryption such as BitLocker for stronger device-level protection.
+- FileLocker is not a password manager, VPN, or replacement for full-disk encryption.
