@@ -15,17 +15,16 @@
 !endif
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.4.0"
+  !define APP_VERSION "1.1.0.0"
 !endif
 
 !ifndef APP_FILE_VERSION
   !define APP_FILE_VERSION "${APP_VERSION}"
 !endif
 
-; Default publish folder:
-; installer\FileLocker.nsi  ->  ..\publish\win-x64
+; Default publish folder used by scripts\Build-Installer.ps1.
 !ifndef PUBLISH_DIR
-  !define PUBLISH_DIR "..\FileLocker\bin\Release\net8.0-windows10.0.26100.0\win-x64\publish"
+  !define PUBLISH_DIR "..\artifacts\nsis\publish"
 !endif
 
 !ifndef OUTPUT_DIR
@@ -55,6 +54,7 @@
 !insertmacro RequirePublishFile "FileLocker.pri"
 !insertmacro RequirePublishFile "Themes\Styles.xbf"
 !insertmacro RequirePublishFile "Assets\StoreLogo.png"
+!insertmacro RequirePublishFile "wwwroot\index.html"
 
 Name "${APP_NAME}"
 OutFile "${OUTPUT_DIR}\${APP_NAME}-Setup-${APP_VERSION}.exe"
@@ -79,15 +79,16 @@ VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 Jeremy Hayes"
 !define MUI_ABORTWARNING
 
 ; Only set custom icons if the .ico file exists
-!if /FileExists "..\FileLocker\Filelocker2.ico"
-  !define MUI_ICON "..\FileLocker\Filelocker2.ico"
-  !define MUI_UNICON "..\FileLocker\Filelocker2.ico"
+!if /FileExists "..\FileLocker\logo.ico"
+  !define MUI_ICON "..\FileLocker\logo.ico"
+  !define MUI_UNICON "..\FileLocker\logo.ico"
 !endif
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch ${APP_NAME}"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -107,6 +108,10 @@ Section "Install"
   SetShellVarContext all
   SetOutPath "$INSTDIR"
 
+  RMDir /r "$INSTDIR\wwwroot"
+  RMDir /r "$INSTDIR\Assets"
+  RMDir /r "$INSTDIR\Themes"
+
   File /r "${PUBLISH_DIR}\*.*"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -114,14 +119,18 @@ Section "Install"
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
 
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "${APP_PUBLISHER}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE},0"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "URLInfoAbout" "https://github.com/jeremymhayes/FileLocker"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "HelpLink" "https://github.com/jeremymhayes/FileLocker/issues"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Readme" "https://github.com/jeremymhayes/FileLocker#readme"
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
 
@@ -137,6 +146,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk"
   RMDir "$SMPROGRAMS\${APP_NAME}"
+  Delete "$DESKTOP\${APP_NAME}.lnk"
 
   Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR"

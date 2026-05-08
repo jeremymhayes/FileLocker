@@ -1,0 +1,35 @@
+name: Release Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  release-gate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: FileLocker/frontend/package-lock.json
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Run release gate
+        shell: pwsh
+        run: ./scripts/Test-ReleaseGate.ps1 -Configuration Release -RuntimeIdentifier win-x64 -RequireInstallerAssets

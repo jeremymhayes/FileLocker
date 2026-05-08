@@ -1,0 +1,47 @@
+import type { Config } from "tailwindcss"
+
+export default {
+  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  theme: {
+    extend: {
+      colors: {
+        "bg-base": "#0f1623",
+        "bg-sidebar": "#141c2e",
+        "bg-surface": "#1a2440",
+        "bg-surface-hover": "#1e2a4a",
+        "bg-dropzone": "#141e35",
+        "border-default": "#1e2d4a",
+        "layout-separator": "#0b1320",
+        "border-accent": "#2563eb44",
+        "text-primary": "#f1f5f9",
+        "text-secondary": "#94a3b8",
+        "text-muted": "#475569",
+        "accent-blue": "#3b82f6",
+        "accent-blue-hover": "#2563eb",
+        "accent-green": "#22c55e",
+        "accent-teal": "#14b8a6",
+        "accent-purple": "#a855f7",
+        "accent-orange": "#f97316",
+        "accent-red": "#ef4444",
+        "nav-active-bg": "#1e3a5f",
+        "nav-active-border": "#3b82f6",
+        background: "#0f1623",
+        sidebar: "#141c2e",
+        surface: "#1a2440",
+        "surface-elevated": "#1e2a4a",
+        border: "#1e2d4a",
+        primary: "#f1f5f9",
+        secondary: "#94a3b8",
+        muted: "#475569",
+        accent: "#3b82f6",
+        "accent-hover": "#2563eb",
+        destructive: "#ef4444",
+        warning: "#f97316",
+      },
+      fontFamily: {
+        mono: ['"IBM Plex Mono"', "monospace"],
+        display: ["Syne", "sans-serif"],
+      },
+    },
+  },
+} satisfies Config

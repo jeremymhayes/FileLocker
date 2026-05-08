@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "actions": [
+    "app.getInitialState",
+    "files.pickFiles",
+    "files.pickFolder",
+    "files.revealPath",
+    "links.openExternal",
+    "crypto.encryptFiles",
+    "crypto.decryptFiles",
+    "crypto.verifyPayload",
+    "hash.compute",
+    "hash.verify",
+    "hash.manifestCreate",
+    "hash.manifestVerify",
+    "text.convert",
+    "metadata.inspect",
+    "secureDelete.delete",
+    "settings.get",
+    "settings.save",
+    "settings.reset",
+    "shell.setExplorerIntegration",
+    "updates.check",
+    "updates.download",
+    "updates.install",
+    "updates.skip",
+    "updates.clearSkip",
+    "history.clear",
+    "history.export"
+  ]
+}
