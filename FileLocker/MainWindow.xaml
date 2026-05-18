@@ -10,74 +10,27 @@
 
     <Grid Background="#0f1623">
         <Grid.RowDefinitions>
-            <RowDefinition Height="40" />
+            <RowDefinition Height="38" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <Border
             x:Name="NativeTitleBar"
             Grid.Row="0"
-            Padding="12,0,140,0"
+            Padding="16,0,140,0"
             Background="#141c2e"
             BorderBrush="#0b1320"
             BorderThickness="0,0,0,1">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <Border
-                    Width="24"
-                    Height="24"
+                <TextBlock
+                    x:Name="NativeTitleText"
                     VerticalAlignment="Center"
-                    Background="#3b82f6"
-                    CornerRadius="6">
-                    <TextBlock
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        FontFamily="Segoe UI"
-                        FontSize="10"
-                        FontWeight="SemiBold"
-                        Foreground="White"
-                        Text="FL" />
-                </Border>
-
-                <StackPanel
-                    Grid.Column="1"
-                    Margin="10,0,0,0"
-                    VerticalAlignment="Center"
-                    Spacing="2">
-                    <TextBlock
-                        FontFamily="Segoe UI"
-                        FontSize="13"
-                        FontWeight="SemiBold"
-                        Foreground="#f1f5f9"
-                        Text="FileLocker" />
-                    <TextBlock
-                        FontFamily="Segoe UI"
-                        FontSize="10"
-                        Foreground="#94a3b8"
-                        Text="Local file security" />
-                </StackPanel>
-
-                <StackPanel
-                    Grid.Column="2"
-                    VerticalAlignment="Center"
-                    Orientation="Horizontal"
-                    Spacing="8">
-                    <Ellipse
-                        Width="7"
-                        Height="7"
-                        Fill="#22c55e" />
-                    <TextBlock
-                        VerticalAlignment="Center"
-                        FontFamily="Segoe UI"
-                        FontSize="11"
-                        Foreground="#94a3b8"
-                        Text="Ready" />
-                </StackPanel>
+                    FontFamily="Segoe UI"
+                    FontSize="13"
+                    FontWeight="SemiBold"
+                    Foreground="#f1f5f9"
+                    Text="FileLocker — Dashboard"
+                    TextTrimming="CharacterEllipsis" />
             </Grid>
         </Border>
 

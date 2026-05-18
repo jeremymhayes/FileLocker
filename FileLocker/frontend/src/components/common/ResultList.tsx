@@ -11,7 +11,7 @@ type ResultListProps = {
 export function ResultList({ results, onReveal }: ResultListProps) {
   return (
     <section className="security-section">
-      <div className="mb-4 flex items-end justify-between gap-3">
+      <div className="mb-2 flex items-end justify-between gap-3">
         <div>
           <div className="security-section-title">Results</div>
           <p className="security-description">{results.length === 0 ? "No run results yet." : `${results.length} item${results.length === 1 ? "" : "s"} finished`}</p>
@@ -19,10 +19,10 @@ export function ResultList({ results, onReveal }: ResultListProps) {
       </div>
       <div className="max-h-80 overflow-y-auto border-t border-border">
         {results.length === 0 ? (
-          <pre className="terminal-output border-t-0 text-secondary">Run output will appear here.</pre>
+          <div className="min-h-12 px-3 py-2.5 font-mono text-xs leading-snug text-secondary">No results yet. Run an operation to populate this log.</div>
         ) : (
           results.map((result) => (
-            <div key={`${result.sourcePath}-${result.outputPath ?? result.status}`} className="border-b border-border py-3">
+            <div key={`${result.sourcePath}-${result.outputPath ?? result.status}`} className="border-b border-border py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate font-mono text-xs text-primary">{fileName(result.outputPath ?? result.sourcePath)}</div>
@@ -39,7 +39,7 @@ export function ResultList({ results, onReveal }: ResultListProps) {
                   ) : null}
                 </div>
               </div>
-              <pre className="mt-3 border border-border bg-background p-3 font-mono text-xs leading-relaxed text-secondary whitespace-pre-wrap break-all">{result.message ?? result.outputPath ?? result.sourcePath}</pre>
+              <pre className="mt-2 border border-border bg-background p-2.5 font-mono text-xs leading-snug text-secondary whitespace-pre-wrap break-all">{result.message ?? result.outputPath ?? result.sourcePath}</pre>
             </div>
           ))
         )}

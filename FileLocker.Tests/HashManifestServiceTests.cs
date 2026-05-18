@@ -7,15 +7,16 @@ public sealed class HashManifestServiceTests
     [Fact]
     public async Task CreateManifestAsync_WritesRelativeSha256Manifest()
     {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         string root = CreateTempDirectory();
         try
         {
             string filePath = Path.Combine(root, "docs", "alpha.txt");
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-            await File.WriteAllTextAsync(filePath, "alpha");
+            await File.WriteAllTextAsync(filePath, "alpha", cancellationToken);
 
-            HashManifestResult result = await HashManifestService.CreateManifestAsync([root], "SHA-256", root);
-            string manifest = await File.ReadAllTextAsync(result.ManifestPath);
+            HashManifestResult result = await HashManifestService.CreateManifestAsync([root], "SHA-256", root, cancellationToken);
+            string manifest = await File.ReadAllTextAsync(result.ManifestPath, cancellationToken);
 
             Assert.Equal("SHA-256", result.Algorithm);
             Assert.Equal(1, result.FileCount);
@@ -32,14 +33,15 @@ public sealed class HashManifestServiceTests
     [Fact]
     public async Task VerifyManifestAsync_ReportsMatchedEntries()
     {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         string root = CreateTempDirectory();
         try
         {
             string filePath = Path.Combine(root, "alpha.txt");
-            await File.WriteAllTextAsync(filePath, "alpha");
-            HashManifestResult result = await HashManifestService.CreateManifestAsync([filePath], "SHA-256", root);
+            await File.WriteAllTextAsync(filePath, "alpha", cancellationToken);
+            HashManifestResult result = await HashManifestService.CreateManifestAsync([filePath], "SHA-256", root, cancellationToken);
 
-            HashManifestVerificationResult verification = await HashManifestService.VerifyManifestAsync(result.ManifestPath, root);
+            HashManifestVerificationResult verification = await HashManifestService.VerifyManifestAsync(result.ManifestPath, root, cancellationToken);
 
             Assert.Equal(1, verification.EntryCount);
             Assert.Equal(1, verification.MatchedCount);

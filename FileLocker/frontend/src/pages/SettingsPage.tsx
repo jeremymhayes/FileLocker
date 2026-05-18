@@ -1,23 +1,51 @@
-import { useEffect, useRef, useState } from "react"
-import { Clock3, Download, EyeOff, FolderCog, FolderOpen, Info, Loader2, MonitorCog, Paintbrush, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react"
-import { Field } from "@/components/common/Field"
-import { FolderPickerRow } from "@/components/settings/FolderPickerRow"
-import { SettingsSection } from "@/components/settings/SettingsSection"
-import { SidePanel } from "@/components/settings/SidePanel"
-import { SettingsToggle as Toggle } from "@/components/settings/SettingsToggle"
+import { useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  ArrowUpRight,
+  Download,
+  EyeOff,
+  FolderCog,
+  FolderOpen,
+  GitBranch,
+  Info,
+  Loader2,
+  MonitorCog,
+  Paintbrush,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import type { DashboardState, SettingsState, UpdateCheckResult, UpdateRelease } from "@/types/bridge"
+import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
+import type { DashboardState, InitialState, SettingsState, UpdateCheckResult, UpdateRelease } from "@/types/bridge"
 
 type SettingsPageProps = {
+  app: InitialState["app"]
   settings: SettingsState
   invoke: <T>(action: string, payload?: unknown) => Promise<T>
   onSettingsUpdate: (settings: SettingsState) => void
   onDashboardUpdate: (dashboard: DashboardState) => void
 }
 
-export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUpdate }: SettingsPageProps) {
+type SettingsTab = "general" | "files" | "privacy" | "updates" | "integration" | "about"
+
+const tabs: Array<{ key: SettingsTab; label: string; icon: LucideIcon }> = [
+  { key: "general", label: "General", icon: Paintbrush },
+  { key: "files", label: "Files", icon: FolderCog },
+  { key: "privacy", label: "Privacy", icon: EyeOff },
+  { key: "updates", label: "Updates", icon: RefreshCw },
+  { key: "integration", label: "Integration", icon: MonitorCog },
+  { key: "about", label: "About", icon: Info },
+]
+
+export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashboardUpdate }: SettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general")
   const [draft, setDraft] = useState(settings)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [isLoadingSettings, setIsLoadingSettings] = useState(false)
@@ -48,11 +76,8 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
         if (!mounted) {
           return
         }
-        dirtyRef.current = false
-        setHasUnsavedChanges(false)
-        setDraft(loaded)
-        draftRef.current = loaded
-        onSettingsUpdate(loaded)
+
+        applySettingsResponse(loaded)
       })
       .catch((error) => {
         toast.error(error instanceof Error ? error.message : "Settings load failed.")
@@ -65,19 +90,8 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
 
     return () => {
       mounted = false
-      if (dirtyRef.current) {
-        const pendingSettings = draftRef.current
-        dirtyRef.current = false
-        void invoke<SettingsState>("settings.save", pendingSettings)
-          .then(onSettingsUpdate)
-          .catch((error) => {
-            toast.error(error instanceof Error ? error.message : "Unsaved settings could not be saved.")
-          })
-      }
     }
-  }, [invoke, onSettingsUpdate])
-
-  const historyEnabled = draft.preferences.historyPrivacyMode !== "Off"
+  }, [invoke])
 
   function updateDraft(updater: (current: SettingsState) => SettingsState) {
     dirtyRef.current = true
@@ -89,15 +103,25 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
     })
   }
 
+  function applySettingsResponse(response: SettingsState) {
+    dirtyRef.current = false
+    setHasUnsavedChanges(false)
+    setDraft(response)
+    draftRef.current = response
+    onSettingsUpdate(response)
+  }
+
   async function save() {
     setIsSavingSettings(true)
     try {
       const response = await invoke<SettingsState>("settings.save", draftRef.current)
-      dirtyRef.current = false
-      setHasUnsavedChanges(false)
-      setDraft(response)
-      draftRef.current = response
-      onSettingsUpdate(response)
+      applySettingsResponse(response)
+
+      if (response.preferences.incognitoMode) {
+        const cleared = await invoke<{ dashboard: DashboardState }>("history.clear")
+        onDashboardUpdate(cleared.dashboard)
+      }
+
       toast.success("Settings saved.")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Settings save failed.")
@@ -109,23 +133,11 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
   async function reset() {
     try {
       const response = await invoke<SettingsState>("settings.reset")
-      dirtyRef.current = false
-      setHasUnsavedChanges(false)
-      setDraft(response)
-      draftRef.current = response
-      onSettingsUpdate(response)
+      applySettingsResponse(response)
       toast.success("Settings reset.")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Settings reset failed.")
     }
-  }
-
-  function applySettingsResponse(response: SettingsState) {
-    dirtyRef.current = false
-    setHasUnsavedChanges(false)
-    setDraft(response)
-    draftRef.current = response
-    onSettingsUpdate(response)
   }
 
   async function pickOutputFolder(target: "encrypt" | "decrypt") {
@@ -168,8 +180,8 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
     try {
       const response = await invoke<{ installerPath: string; fileName: string }>("updates.download")
       setDownloadedInstallerPath(response.installerPath)
-      toast.success(`Downloaded ${response.fileName}.`)
       setUpdateStatus(`Downloaded ${response.fileName}`)
+      toast.success(`Downloaded ${response.fileName}.`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Update download failed.")
     }
@@ -183,8 +195,8 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
     try {
       const response = await invoke<{ installerPath: string; fileName: string }>("updates.install")
       setDownloadedInstallerPath(response.installerPath)
-      toast.success(`Opening ${response.fileName}.`)
       setUpdateStatus(`Opening ${response.fileName}`)
+      toast.success(`Opening ${response.fileName}.`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Update install failed.")
     }
@@ -199,7 +211,7 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
       const response = await invoke<SettingsState>("updates.skip", { version: availableRelease.displayVersion })
       applySettingsResponse(response)
       setAvailableRelease(null)
-      setUpdateStatus(`Skipped version ${availableRelease.displayVersion}`)
+      setUpdateStatus(`Skipped ${availableRelease.displayVersion}`)
       toast.message(`Skipped version ${availableRelease.displayVersion}.`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Update skip failed.")
@@ -232,7 +244,7 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
   async function exportHistory(format: "json" | "csv") {
     try {
       const response = await invoke<{ exportPath: string; fileName: string; recordCount: number }>("history.export", { format })
-      toast.success(`Exported ${response.recordCount} history record(s) to ${response.fileName}.`)
+      toast.success(`Exported ${response.recordCount} record(s) to ${response.fileName}.`)
       await invoke("files.revealPath", { path: response.exportPath })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "History export failed.")
@@ -259,16 +271,71 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
     }
   }
 
+  async function openExternal(url: string, fallbackMessage: string) {
+    try {
+      await invoke("links.openExternal", { url })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : fallbackMessage)
+    }
+  }
+
+  const explorer = draft.explorerIntegration
+
   return (
     <div className="security-page">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0 space-y-6">
-          <SettingsSection icon={Paintbrush} title="Appearance" description="Choose how FileLocker looks and how many options are shown.">
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Theme">
+      <div className="border-y border-border bg-transparent">
+        <header className="flex flex-col gap-3 border-b border-border py-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <h1 className="font-display text-lg font-semibold leading-tight text-primary">Settings</h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {isLoadingSettings ? (
+              <span className="inline-flex items-center gap-2 rounded-md border border-border bg-bg-dropzone px-3 py-1.5 text-xs text-secondary">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                Loading
+              </span>
+            ) : null}
+            {hasUnsavedChanges ? <span className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-accent">Unsaved</span> : null}
+            <Button variant="secondary" size="sm" onClick={reset}>
+              <RotateCcw data-icon="inline-start" />
+              Reset
+            </Button>
+            <Button size="sm" onClick={save} disabled={!hasUnsavedChanges || isSavingSettings}>
+              {isSavingSettings ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Save data-icon="inline-start" />}
+              Save
+            </Button>
+          </div>
+        </header>
+
+        <div className="border-b border-border">
+          <div className="flex gap-1 overflow-x-auto">
+            {tabs.map((tab) => {
+              const Icon = tab.icon
+              const isActive = activeTab === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  className={cn(
+                    "flex h-10 items-center gap-2 border-b-2 border-transparent px-3 text-sm font-semibold text-secondary transition-colors hover:text-primary",
+                    isActive && "border-accent text-primary"
+                  )}
+                  onClick={() => setActiveTab(tab.key)}
+                >
+                  <Icon className="size-4" aria-hidden />
+                  {tab.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="py-3">
+          {activeTab === "general" ? (
+            <SettingsPanel>
+              <SettingRow label="Theme">
                 <Select value={draft.preferences.themePreference} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, themePreference: value } }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Theme" />
+                  <SelectTrigger size="sm">
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
@@ -278,30 +345,11 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </Field>
-              <Field label="Experience Level">
-                <Select value={draft.preferences.experienceLevel} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, experienceLevel: value, hasSelectedExperienceLevel: true } }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Experience level" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="Beginner">Beginner</SelectItem>
-                      <SelectItem value="Intermediate">Intermediate</SelectItem>
-                      <SelectItem value="Advanced">Advanced</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
-          </SettingsSection>
-
-          <SettingsSection icon={ShieldCheck} title="Security Defaults" description="Defaults used when you encrypt, decrypt, hash, or delete files.">
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Output Timestamp Policy">
+              </SettingRow>
+              <SettingRow label="Output timestamps">
                 <Select value={draft.preferences.outputTimestampPolicy} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, outputTimestampPolicy: value } }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Timestamp policy" />
+                  <SelectTrigger size="sm">
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
@@ -311,154 +359,160 @@ export function SettingsPage({ settings, invoke, onSettingsUpdate, onDashboardUp
                     </SelectGroup>
                   </SelectContent>
                 </Select>
-              </Field>
-              <Field label="History Privacy">
-                <Select value={draft.preferences.historyPrivacyMode} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, historyPrivacyMode: value } }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="History privacy" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="Off">Off</SelectItem>
-                      <SelectItem value="Redacted">Redacted</SelectItem>
-                      <SelectItem value="Full">Full</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-            </div>
-          </SettingsSection>
+              </SettingRow>
+            </SettingsPanel>
+          ) : null}
 
-          <SettingsSection icon={FolderCog} title="File Handling" description="Output folders are selected with the native Windows folder picker.">
-            <Toggle
-              label="Use custom encrypt output folder"
-              detail="When enabled, encryption requests can default to this folder."
-              checked={draft.preferences.useCustomEncryptOutputDirectory}
-              onChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, useCustomEncryptOutputDirectory: value } }))}
-            />
-            <FolderPickerRow label="Default Encrypt Output Folder" folderPath={draft.preferences.customEncryptOutputDirectory} onBrowse={() => pickOutputFolder("encrypt")} />
-            <Toggle
-              label="Use custom decrypt output folder"
-              detail="When enabled, decrypted files can default to this folder."
-              checked={draft.preferences.useCustomDecryptOutputDirectory}
-              onChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, useCustomDecryptOutputDirectory: value } }))}
-            />
-            <FolderPickerRow label="Default Decrypt Output Folder" folderPath={draft.preferences.customDecryptOutputDirectory} onBrowse={() => pickOutputFolder("decrypt")} />
-          </SettingsSection>
+          {activeTab === "files" ? (
+            <SettingsPanel>
+              <SettingRow label="Encrypt output">
+                <Switch size="sm" checked={draft.preferences.useCustomEncryptOutputDirectory} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, useCustomEncryptOutputDirectory: value } }))} />
+              </SettingRow>
+              {draft.preferences.useCustomEncryptOutputDirectory ? (
+                <PathRow value={draft.preferences.customEncryptOutputDirectory} placeholder="Choose encrypt folder" onBrowse={() => void pickOutputFolder("encrypt")} />
+              ) : null}
+              <SettingRow label="Decrypt output">
+                <Switch size="sm" checked={draft.preferences.useCustomDecryptOutputDirectory} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, useCustomDecryptOutputDirectory: value } }))} />
+              </SettingRow>
+              {draft.preferences.useCustomDecryptOutputDirectory ? (
+                <PathRow value={draft.preferences.customDecryptOutputDirectory} placeholder="Choose decrypt folder" onBrowse={() => void pickOutputFolder("decrypt")} />
+              ) : null}
+            </SettingsPanel>
+          ) : null}
 
-          <SettingsSection icon={MonitorCog} title="Explorer Integration" description="Add or remove the FileLocker right-click entry for files and folders.">
-            <Toggle
-              label="Encrypt with FileLocker"
-              detail={draft.explorerIntegration.statusMessage}
-              checked={draft.explorerIntegration.isRegistered}
-              onChange={(value) => void setExplorerIntegration(value)}
-            />
-          </SettingsSection>
-
-          <SettingsSection icon={EyeOff} title="Privacy And History" description="Local history is stored according to the selected privacy mode.">
-            <Toggle
-              label="Store local activity history"
-              detail="Disable to stop loading and saving operation history."
-              checked={historyEnabled}
-              onChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, historyPrivacyMode: value ? "Redacted" : "Off" } }))}
-            />
-            <Toggle
-              label="Include full paths in exports"
-              detail="When disabled, exported history uses redacted paths."
-              checked={draft.preferences.includeFullPathsInExports}
-              onChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, includeFullPathsInExports: value } }))}
-            />
-            <div className="flex flex-wrap gap-3">
-              <Button variant="secondary" onClick={() => exportHistory("json")}>
-                <Download data-icon="inline-start" />
-                Export JSON
-              </Button>
-              <Button variant="secondary" onClick={() => exportHistory("csv")}>
-                <Download data-icon="inline-start" />
-                Export CSV
-              </Button>
-            </div>
-            <Button variant="destructive" onClick={clearHistory}>
-              <Trash2 data-icon="inline-start" />
-              Clear History
-            </Button>
-          </SettingsSection>
-
-          <SettingsSection icon={RefreshCw} title="Updates" description="Check for newer FileLocker releases.">
-            <Toggle
-              label="Automatic update checks"
-              detail="Allow FileLocker to check for newer GitHub releases."
-              checked={draft.updates.autoCheckEnabled}
-              onChange={(value) => updateDraft((current) => ({ ...current, updates: { ...current.updates, autoCheckEnabled: value } }))}
-            />
-            <pre className="terminal-output text-secondary">{updateStatus}</pre>
-            {availableRelease ? (
-              <div className="rounded-2xl border border-border bg-bg-dropzone p-4 text-sm text-secondary">
-                <div className="font-display font-semibold text-primary">{availableRelease.displayVersion}</div>
-                <div className="mt-2 grid gap-2 md:grid-cols-2">
-                  <span>SHA-256: {availableRelease.sha256DigestHex || availableRelease.sha256DigestDownloadUrl ? "available" : "missing"}</span>
-                  <span>Signing: checked after download</span>
+          {activeTab === "privacy" ? (
+            <SettingsPanel>
+              <SettingRow label="Incognito Mode" detail="Do not save history or recent files.">
+                <Switch size="sm" checked={draft.preferences.incognitoMode} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, incognitoMode: value } }))} />
+              </SettingRow>
+              <SettingRow label="Full paths in exports">
+                <Switch size="sm" checked={draft.preferences.includeFullPathsInExports} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, includeFullPathsInExports: value } }))} />
+              </SettingRow>
+              <SettingRow label="History export">
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => void exportHistory("json")} disabled={draft.preferences.incognitoMode}>
+                    <Download data-icon="inline-start" />
+                    JSON
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => void exportHistory("csv")} disabled={draft.preferences.incognitoMode}>
+                    <Download data-icon="inline-start" />
+                    CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearHistory}>
+                    <Trash2 data-icon="inline-start" />
+                    Clear
+                  </Button>
                 </div>
-                {availableRelease.notes ? <pre className="terminal-output mt-3 max-h-36 overflow-auto text-secondary">{availableRelease.notes}</pre> : null}
-              </div>
-            ) : null}
-            <div className="flex flex-wrap gap-3">
-              <Button variant="secondary" onClick={checkUpdates}>
-                <RefreshCw data-icon="inline-start" />
-                Check Now
-              </Button>
+              </SettingRow>
+            </SettingsPanel>
+          ) : null}
+
+          {activeTab === "updates" ? (
+            <SettingsPanel>
+              <SettingRow label="Automatic checks">
+                <Switch size="sm" checked={draft.updates.autoCheckEnabled} onCheckedChange={(value) => updateDraft((current) => ({ ...current, updates: { ...current.updates, autoCheckEnabled: value } }))} />
+              </SettingRow>
+              <SettingRow label="Status" detail={updateStatus}>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button variant="secondary" size="sm" onClick={checkUpdates}>
+                    <RefreshCw data-icon="inline-start" />
+                    Check
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearSkippedUpdate} disabled={!draft.updates.skippedVersion}>
+                    Clear Skip
+                  </Button>
+                </div>
+              </SettingRow>
               {availableRelease ? (
-                <>
-                  <Button variant="secondary" onClick={downloadUpdate}>
-                    <Download data-icon="inline-start" />
-                    Download Only
-                  </Button>
-                  <Button onClick={installUpdate}>
-                    <Download data-icon="inline-start" />
-                    Install Now
-                  </Button>
-                  <Button variant="outline" onClick={skipUpdate}>
-                    Skip Version
-                  </Button>
-                </>
+                <SettingRow label={`Version ${availableRelease.displayVersion}`}>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button size="sm" onClick={downloadUpdate}>
+                      <Download data-icon="inline-start" />
+                      Download
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={installUpdate}>
+                      Install
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={skipUpdate}>
+                      Skip
+                    </Button>
+                  </div>
+                </SettingRow>
               ) : null}
               {downloadedInstallerPath ? (
-                <Button variant="outline" onClick={revealDownloadedInstaller}>
-                  <FolderOpen data-icon="inline-start" />
-                  Show in Folder
-                </Button>
+                <SettingRow label="Installer">
+                  <Button variant="outline" size="sm" onClick={revealDownloadedInstaller}>
+                    <FolderOpen data-icon="inline-start" />
+                    Open Folder
+                  </Button>
+                </SettingRow>
               ) : null}
-              {draft.updates.skippedVersion ? (
-                <Button variant="outline" onClick={clearSkippedUpdate}>
-                  Clear Skipped Version
-                </Button>
-              ) : null}
-            </div>
-          </SettingsSection>
-        </div>
+            </SettingsPanel>
+          ) : null}
 
-        <aside className="space-y-4">
-          <SidePanel icon={MonitorCog} title="Current Theme" value={draft.preferences.themePreference} detail="Applies after settings are saved." />
-          <SidePanel icon={Clock3} title="Timestamp Policy" value={draft.preferences.outputTimestampPolicy} detail="Used for new file operations." />
-          <SidePanel icon={Info} title="History Mode" value={draft.preferences.historyPrivacyMode} detail="Controls recent activity rows." />
-          <div className="surface-card">
-            <div className="font-display text-lg font-semibold text-primary">Apply Settings</div>
-            <p className="mt-1 text-sm leading-[1.65] text-secondary">
-              {isLoadingSettings ? "Loading saved settings..." : hasUnsavedChanges ? "Unsaved changes will be saved automatically when you leave this page." : "Settings are saved."}
-            </p>
-            <div className="mt-5 flex flex-col gap-3">
-              <Button onClick={save} disabled={isSavingSettings}>
-                {isSavingSettings ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Save data-icon="inline-start" />}
-                Save Settings
-              </Button>
-              <Button variant="outline" onClick={reset}>
-                <RotateCcw data-icon="inline-start" />
-                Reset Defaults
-              </Button>
-            </div>
-          </div>
-        </aside>
+          {activeTab === "integration" ? (
+            <SettingsPanel>
+              <SettingRow label="Explorer menu" detail={explorer.statusMessage}>
+                <Switch size="sm" checked={explorer.isRegistered} disabled={!explorer.canManage} onCheckedChange={(value) => void setExplorerIntegration(value)} />
+              </SettingRow>
+              <SettingRow label="Administrator">
+                <span className="justify-self-end rounded-md border border-border bg-bg-dropzone px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-secondary">
+                  {app.isAdministrator ? "Running as admin" : app.canRestartAsAdministrator ? "Standard user" : "Unavailable"}
+                </span>
+              </SettingRow>
+            </SettingsPanel>
+          ) : null}
+
+          {activeTab === "about" ? (
+            <SettingsPanel>
+              <SettingRow label="Version">
+                <span className="font-mono text-sm text-primary">{app.version}</span>
+              </SettingRow>
+              <SettingRow label="Repository">
+                <Button variant="secondary" size="sm" onClick={() => void openExternal(app.repositoryUrl, "Could not open repository.")}>
+                  <GitBranch data-icon="inline-start" />
+                  Open
+                  <ArrowUpRight data-icon="inline-end" />
+                </Button>
+              </SettingRow>
+              <SettingRow label="Protection model">
+                <span className="flex items-center justify-end gap-2 text-sm text-secondary">
+                  <ShieldCheck className="size-4 text-accent-green" aria-hidden />
+                  Local-first
+                </span>
+              </SettingRow>
+            </SettingsPanel>
+          ) : null}
+        </div>
       </div>
+    </div>
+  )
+}
+
+function SettingsPanel({ children }: { children: ReactNode }) {
+  return <div className="border-y border-border">{children}</div>
+}
+
+function SettingRow({ label, detail, children }: { label: string; detail?: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-3 border-b border-border/80 px-3 py-2.5 last:border-b-0 md:grid-cols-[minmax(0,1fr)_minmax(220px,340px)] md:items-center">
+      <div className="min-w-0">
+        <div className="font-display text-sm font-semibold text-primary">{label}</div>
+        {detail ? <div className="mt-1 truncate text-xs text-secondary">{detail}</div> : null}
+      </div>
+      <div className="flex min-w-0 justify-start md:justify-end">{children}</div>
+    </div>
+  )
+}
+
+function PathRow({ value, placeholder, onBrowse }: { value: string; placeholder: string; onBrowse: () => void }) {
+  return (
+    <div className="grid gap-3 border-b border-border/80 px-3 py-2.5 last:border-b-0 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+      <Input className="h-9" readOnly value={value} placeholder={placeholder} />
+      <Button variant="secondary" size="sm" onClick={onBrowse}>
+        <FolderOpen data-icon="inline-start" />
+        Browse
+      </Button>
     </div>
   )
 }

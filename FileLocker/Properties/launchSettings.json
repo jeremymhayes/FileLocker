@@ -4,7 +4,9 @@
       "commandName": "MsixPackage"
     },
     "FileLocker (Unpackaged)": {
-      "commandName": "Project"
+      "commandName": "Project",
+      "jsWebView2Debugging": false,
+      "nativeDebugging": false
     }
   }
 }

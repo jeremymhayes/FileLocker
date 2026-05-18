@@ -68,12 +68,12 @@ export function FileDropZone({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-3">
       <div
         role="button"
         tabIndex={0}
         className={cn(
-          "flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-border-accent bg-bg-dropzone p-6 text-center transition-[background,border-color,transform] duration-150 outline-none focus-visible:ring-2 focus-visible:ring-accent",
+          "flex min-h-[7.5rem] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-border-accent bg-bg-dropzone/80 p-4 text-center transition-[background,border-color,transform] duration-150 outline-none focus-visible:ring-2 focus-visible:ring-accent",
           dragging && "scale-[1.005] border-solid border-accent bg-bg-surface-hover"
         )}
         onClick={handleZoneClick}
@@ -85,16 +85,16 @@ export function FileDropZone({
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
       >
-        <UploadCloud className="size-11 text-accent-blue" aria-hidden />
-        <div className="mt-4 security-section-title">{title}</div>
+        <UploadCloud className="size-6 text-accent-blue" aria-hidden />
+        <div className="mt-3 security-section-title">{title}</div>
         <div className="security-description max-w-xl">{description}</div>
-        <div className="mt-5 flex flex-wrap justify-center gap-3" onClick={stop}>
-          <Button className="h-10" variant="secondary" onClick={onPickFiles}>
+        <div className="mt-4 flex flex-wrap justify-center gap-2" onClick={stop}>
+          <Button variant="secondary" onClick={onPickFiles}>
             <Plus data-icon="inline-start" />
             Browse Files
           </Button>
           {allowFolder ? (
-            <Button className="h-10" variant="outline" onClick={onPickFolder}>
+            <Button variant="outline" onClick={onPickFolder}>
               <FolderOpen data-icon="inline-start" />
               Browse Folder
             </Button>
@@ -102,17 +102,19 @@ export function FileDropZone({
         </div>
       </div>
 
-      <div className="rounded-2xl border border-border bg-bg-dropzone">
+      <div className="border-y border-border bg-transparent">
         {paths.length === 0 ? (
-          <div className="flex min-h-24 flex-col items-center justify-center p-4 text-center text-sm text-secondary">
-            <FileText className="size-7 text-muted" aria-hidden />
-            <p className="mt-2">No files selected.</p>
-            <p className="text-xs text-muted">Selected files and folders will appear here.</p>
+          <div className="flex min-h-[4rem] items-center gap-2.5 px-3 py-3 text-sm text-secondary">
+            <FileText className="size-4 text-muted" aria-hidden />
+            <div className="min-w-0">
+              <p className="leading-tight">No files selected.</p>
+              <p className="text-xs leading-snug text-muted">Drop files above or choose files to continue.</p>
+            </div>
           </div>
         ) : (
           <div className="max-h-56 overflow-y-auto">
             {paths.map((path) => (
-              <div key={path} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
+              <div key={path} className="flex min-h-10 items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0">
                 <FileTypeIcon filename={path} />
                 <div className="min-w-0 flex-1 text-left">
                   <div className="truncate font-mono text-sm text-primary">{fileName(path)}</div>
@@ -123,7 +125,7 @@ export function FileDropZone({
                 </div>
                 <button
                   type="button"
-                  className="rounded-lg p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
+                  className="rounded-md p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
                   aria-label={`Remove ${path}`}
                   onClick={() => onPathsChange(paths.filter((item) => item !== path))}
                 >

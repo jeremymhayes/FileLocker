@@ -19,7 +19,7 @@ import { InfoPill } from "@/components/dashboard/InfoPill"
 import { PasswordField } from "@/components/dashboard/PasswordField"
 import { RecentFileTableRow } from "@/components/dashboard/RecentFileTableRow"
 import { SelectedPathList } from "@/components/dashboard/SelectedPathList"
-import { StatCard } from "@/components/dashboard/StatCard"
+import { SummaryMetric } from "@/components/dashboard/SummaryMetric"
 import { StatusBadge } from "@/components/common/StatusBadge"
 import { Button } from "@/components/ui/button"
 import { ProgressBar } from "@/components/common/ProgressBar"
@@ -52,11 +52,11 @@ type EncryptOutputSuggestion = {
 }
 
 const quickActions: Array<{ page: PageKey; label: string; detail: string; icon: LucideIcon; tone: string }> = [
-  { page: "encrypt", label: "Encrypt Files", detail: "Protect files with AES-256-GCM", icon: Lock, tone: "text-accent-blue bg-accent-blue/10" },
-  { page: "hash", label: "Hash Files", detail: "Generate SHA-256 or SHA-512 digests", icon: Hash, tone: "text-accent-teal bg-accent-teal/10" },
-  { page: "encode", label: "Encode Text", detail: "Convert Base64, URL, Hex, HTML", icon: Binary, tone: "text-accent-orange bg-accent-orange/10" },
-  { page: "metadata", label: "Metadata Scrambler", detail: "Inspect and scrub file metadata", icon: Fingerprint, tone: "text-accent-purple bg-accent-purple/10" },
-  { page: "secure-delete", label: "Secure Delete", detail: "Overwrite and remove selected files", icon: Trash2, tone: "text-accent-red bg-accent-red/10" },
+  { page: "encrypt", label: "Encrypt Files", detail: "AES-256-GCM", icon: Lock, tone: "text-accent-blue bg-accent-blue/10" },
+  { page: "hash", label: "Hash Files", detail: "SHA-256 / SHA-512", icon: Hash, tone: "text-accent-teal bg-accent-teal/10" },
+  { page: "encode", label: "Encode Text", detail: "Base64, URL, Hex, HTML", icon: Binary, tone: "text-accent-orange bg-accent-orange/10" },
+  { page: "metadata", label: "Metadata Scrambler", detail: "Inspect and scrub", icon: Fingerprint, tone: "text-accent-purple bg-accent-purple/10" },
+  { page: "secure-delete", label: "Secure Delete", detail: "Overwrite and remove", icon: Trash2, tone: "text-accent-red bg-accent-red/10" },
 ]
 
 const dashboardEncryptDefaults = {
@@ -95,9 +95,9 @@ export function DashboardPage({
   const [encryptAttempted, setEncryptAttempted] = useState(false)
   const [encryptOutputSuggestion, setEncryptOutputSuggestion] = useState<EncryptOutputSuggestion | null>(null)
 
-  const recentFiles = dashboard.recentFiles
+  const recentFiles = dashboard.incognitoMode ? [] : dashboard.recentFiles
   const latestProgress = progressEvents.at(-1)
-  const issueCount = dashboard.history.filter((entry) => entry.failureCount > 0 || entry.cancelled).length
+  const issueCount = dashboard.incognitoMode ? 0 : dashboard.history.filter((entry) => entry.failureCount > 0 || entry.cancelled).length
 
   useEffect(() => {
     if (droppedPaths.length === 0) {
@@ -222,11 +222,11 @@ export function DashboardPage({
 
   return (
     <div className="security-page">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="min-w-0 space-y-6">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="min-w-0 flex flex-col gap-4">
           <section
             className={cn(
-              "rounded-3xl border border-dashed border-border-accent bg-bg-dropzone p-5 transition-[background,border-color,transform] duration-150",
+              "rounded-md border border-dashed border-border-accent bg-bg-dropzone/80 p-3 transition-[background,border-color,transform] duration-150",
               isDragging && "scale-[1.005] border-solid border-accent-blue bg-bg-surface-hover"
             )}
             onDragOver={(event) => {
@@ -239,7 +239,7 @@ export function DashboardPage({
             <div
               role="button"
               tabIndex={0}
-              className="flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className="flex min-h-[130px] cursor-pointer flex-col items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent"
               onClick={pickFiles}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
@@ -248,12 +248,10 @@ export function DashboardPage({
                 }
               }}
             >
-              <Lock className="size-[52px] text-accent-blue" aria-hidden />
-              <h2 className="mt-5 text-center font-display text-xl font-semibold text-primary">Drag & drop files or folders to encrypt</h2>
-              <p className="mt-2 text-center text-sm text-secondary">or click anywhere in this area to browse</p>
-              <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <Lock className="size-6 text-accent-blue" aria-hidden />
+              <h2 className="mt-2 text-center font-display text-base font-semibold text-primary">Drop files or folders to encrypt</h2>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
                 <Button
-                  className="h-10"
                   onClick={(event) => {
                     event.stopPropagation()
                     void pickFiles()
@@ -263,7 +261,6 @@ export function DashboardPage({
                   Browse Files
                 </Button>
                 <Button
-                  className="h-10"
                   variant="secondary"
                   onClick={(event) => {
                     event.stopPropagation()
@@ -277,12 +274,11 @@ export function DashboardPage({
             </div>
           </section>
 
-          <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="rounded-2xl border border-border bg-bg-surface p-5">
+          <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="border-y border-border py-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-lg font-semibold text-primary">Encryption Queue</h2>
-                  <p className="mt-1 text-sm text-secondary">Selected files and folders ready to encrypt.</p>
+                  <h2 className="font-display text-base font-semibold text-primary">Encryption Queue</h2>
                 </div>
                 <Button variant="outline" onClick={() => setQueuedPaths([])} disabled={queuedPaths.length === 0}>
                   Clear Queue
@@ -292,23 +288,23 @@ export function DashboardPage({
               <SelectedPathList paths={queuedPaths} onRemove={(path) => setQueuedPaths((current) => current.filter((item) => item !== path))} emptyMessage="No files queued. Drag items into the large area above or use Browse Files." />
 
               {latestProgress ? (
-                <div className="mt-5">
+                <div className="mt-3">
                   <ProgressBar value={latestProgress.percent} label={`${latestProgress.fileName} / ${latestProgress.status}`} />
                 </div>
               ) : null}
             </div>
 
-            <div className="rounded-2xl border border-border bg-bg-surface p-5">
+            <div className="border-y border-border py-3">
               <div className="font-display text-base font-semibold text-primary">Quick Encrypt</div>
-              <p className="mt-1 text-sm leading-[1.65] text-secondary">Encrypt selected items with the same safe defaults used on the Encrypt Files page.</p>
+              <p className="mt-1 text-sm leading-snug text-secondary">Safe defaults, local output.</p>
               {encryptOutputSuggestion?.suggestedPath ? (
-                <p className="mt-2 text-sm leading-[1.65] text-secondary">
+                <p className="mt-2 text-sm leading-snug text-secondary">
                   Folder selection detected. Output will default to a separate sibling folder:
                   {" "}
                   <span className="font-mono text-xs text-muted">{encryptOutputSuggestion.suggestedPath}</span>
                 </p>
               ) : null}
-              <div className="mt-4 space-y-3">
+              <div className="mt-3 flex flex-col gap-2">
                 <PasswordField label="Password" value={password} onChange={setPassword} placeholder="Password" />
                 {encryptAttempted && !password ? <p className="text-sm text-accent-red">Password is required.</p> : null}
                 <PasswordField label="Confirm Password" value={confirmPassword} onChange={setConfirmPassword} placeholder="Confirm password" />
@@ -319,66 +315,71 @@ export function DashboardPage({
                   {isEncrypting ? "Encrypting" : "Encrypt Queue"}
                 </Button>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <InfoPill label="Queued" value={queuedPaths.length.toString()} />
                 <InfoPill label="Output" value={encryptOutputSuggestion?.suggestedPath ? fileName(encryptOutputSuggestion.suggestedPath) : "Source folders"} />
               </div>
             </div>
           </section>
 
-          <section>
-            <div className="mb-4 flex items-end justify-between gap-4">
+          <section className="border-y border-border py-3">
+            <div className="mb-2 flex items-end justify-between gap-3">
               <div>
-                <h2 className="font-display text-lg font-semibold leading-[1.3] text-primary">Quick Actions</h2>
-                <p className="mt-1 text-sm text-secondary">Open the most common FileLocker workflows.</p>
+                <h2 className="font-display text-base font-semibold leading-[1.3] text-primary">Quick Actions</h2>
               </div>
             </div>
-            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-5">
+            <div className="divide-y divide-border">
               {quickActions.map((item) => {
                 const Icon = item.icon
                 return (
-                  <button key={item.page} className="surface-card surface-card-hover min-h-36 text-left" onClick={() => onNavigate(item.page)}>
-                    <span className={cn("flex size-12 items-center justify-center rounded-2xl", item.tone)}>
-                      <Icon className="size-6" aria-hidden />
+                  <button key={item.page} className="flex min-h-10 w-full items-center gap-2.5 px-1 py-2 text-left transition-colors hover:bg-bg-surface-hover/60" onClick={() => onNavigate(item.page)}>
+                    <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", item.tone)}>
+                      <Icon className="size-4" aria-hidden />
                     </span>
-                    <span className="mt-5 block font-display text-base font-semibold text-primary">{item.label}</span>
-                    <span className="mt-2 block text-sm leading-[1.55] text-secondary">{item.detail}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-display text-sm font-semibold text-primary">{item.label}</span>
+                      <span className="block truncate text-xs text-secondary">{item.detail}</span>
+                    </span>
+                    <ArrowRight className="size-4 shrink-0 text-muted" aria-hidden />
                   </button>
                 )
               })}
             </div>
           </section>
 
-          <section className="surface-card">
-            <div className="mb-4 flex items-center justify-between gap-4">
+          <section className="section-surface">
+            <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <h2 className="font-display text-lg font-semibold leading-[1.3] text-primary">Recent Files</h2>
-                <p className="mt-1 text-sm text-secondary">Latest activity tracked by the selected privacy mode.</p>
+                <h2 className="font-display text-base font-semibold leading-[1.3] text-primary">Recent Files</h2>
               </div>
               <button className="flex items-center gap-1 text-sm font-medium text-accent transition-colors hover:text-accent-hover" onClick={() => onNavigate("settings")}>
-                View all activity
+                Settings
                 <ArrowRight className="size-4" aria-hidden />
               </button>
             </div>
             {recentFiles.length === 0 ? (
-              <div className="empty-state flex min-h-48 flex-col items-center justify-center rounded-2xl border border-border bg-bg-dropzone p-6 text-center">
-                <FileText className="size-8 text-muted" aria-hidden />
-                <p className="mt-3 font-display text-base font-semibold text-primary">No recent activity yet.</p>
-                <p className="sub mt-1 text-sm text-secondary">Files you encrypt, hash, or process will appear here.</p>
-                <Button className="mt-4" variant="secondary" onClick={() => onNavigate("encrypt")}>
-                  Encrypt Files
+              <div className="empty-state flex min-h-[4.5rem] items-center justify-between gap-3 border-y border-border px-3 py-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <FileText className="size-4 shrink-0 text-muted" aria-hidden />
+                  <div className="min-w-0">
+                    <p className="font-display text-sm font-semibold leading-tight text-primary">{dashboard.incognitoMode ? "Incognito Mode On" : "No recent files"}</p>
+                    <p className="sub mt-0.5 text-xs leading-snug text-secondary">{dashboard.incognitoMode ? "Activity is not saved." : "Run a workflow to populate this list."}</p>
+                  </div>
+                </div>
+                <Button variant="secondary" onClick={() => onNavigate(dashboard.incognitoMode ? "settings" : "encrypt")}>
+                  {dashboard.incognitoMode ? "Open Settings" : "Encrypt Files"}
                 </Button>
               </div>
             ) : (
-              <div className="overflow-hidden rounded-2xl border border-border">
+              <div className="overflow-hidden border-y border-border">
                 <table className="w-full table-fixed border-collapse">
                   <thead className="bg-bg-dropzone text-left">
                     <tr className="font-mono text-xs uppercase tracking-wider text-muted">
-                      <th className="w-[36%] px-4 py-3 font-semibold">Name</th>
-                      <th className="w-[22%] px-4 py-3 font-semibold">Type</th>
-                      <th className="w-[20%] px-4 py-3 font-semibold">Status</th>
-                      <th className="w-[17%] px-4 py-3 font-semibold">Last Modified</th>
-                      <th className="w-[5%] px-2 py-3 font-semibold" aria-label="Actions" />
+                      <th className="w-[36%] px-3 py-2.5 font-semibold">Name</th>
+                      <th className="w-[22%] px-3 py-2.5 font-semibold">Type</th>
+                      <th className="w-[20%] px-3 py-2.5 font-semibold">Status</th>
+                      <th className="w-[17%] px-3 py-2.5 font-semibold">Last Modified</th>
+                      <th className="w-[5%] px-2 py-2.5 font-semibold" aria-label="Actions" />
                     </tr>
                   </thead>
                   <tbody>
@@ -390,9 +391,9 @@ export function DashboardPage({
               </div>
             )}
             {results.length > 0 ? (
-              <div className="mt-5 rounded-2xl border border-border bg-bg-dropzone p-4">
+              <div className="mt-4 border-y border-border py-3">
                 <div className="mb-3 font-display text-base font-semibold text-primary">Latest Encryption Result</div>
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   {results.slice(0, 5).map((result) => (
                     <div key={`${result.sourcePath}-${result.outputPath ?? result.status}`} className="flex items-center gap-3 text-sm">
                       <StatusBadge status={result.status} />
@@ -405,11 +406,11 @@ export function DashboardPage({
           </section>
         </div>
 
-        <aside className="space-y-4">
-          <StatCard icon={ShieldCheck} title="Protected Files" value={dashboard.protectedFilesCount} detail={dashboard.protectedFilesSubtitle || "Files are encrypted"} delta={dashboard.protectedFilesDeltaText} tone="text-accent-green bg-accent-green/10" />
-          <StatCard icon={HardDrive} title="Storage Saved" value={dashboard.storageSavedDisplay} detail={dashboard.storageSavedSubtitle || "Space saved by encryption"} delta={dashboard.storageSavedDeltaText} tone="text-accent-blue bg-accent-blue/10" />
-          <StatCard icon={Clock3} title="Last Operation" value={dashboard.lastOperationName} detail={dashboard.lastOperationFileName || "No file recorded"} delta={dashboard.lastOperationTimeDisplay} tone="text-accent-purple bg-accent-purple/10" success />
-          <StatCard icon={ShieldCheck} title="Security Status" value={dashboard.securityStatusTitle} detail={dashboard.securityStatusDetail || dashboard.securityStatusSubtitle} delta={`${issueCount} issue${issueCount === 1 ? "" : "s"}`} tone={dashboard.securityStatusTitle.toLowerCase().includes("warning") ? "text-accent-orange bg-accent-orange/10" : "text-accent-green bg-accent-green/10"} />
+        <aside className="border-l border-border pl-4">
+          <SummaryMetric icon={ShieldCheck} title="Protected Files" value={dashboard.protectedFilesCount} detail={dashboard.protectedFilesSubtitle || "Files are encrypted"} delta={dashboard.protectedFilesDeltaText} tone="text-accent-green bg-accent-green/10" />
+          <SummaryMetric icon={HardDrive} title="Storage Saved" value={dashboard.storageSavedDisplay} detail={dashboard.storageSavedSubtitle || "Space saved by encryption"} delta={dashboard.storageSavedDeltaText} tone="text-accent-blue bg-accent-blue/10" />
+          <SummaryMetric icon={Clock3} title={dashboard.incognitoMode ? "Privacy Mode" : "Last Operation"} value={dashboard.incognitoMode ? "Incognito" : dashboard.lastOperationName} detail={dashboard.incognitoMode ? "Activity is not saved" : dashboard.lastOperationFileName || "No file recorded"} delta={dashboard.incognitoMode ? "On" : dashboard.lastOperationTimeDisplay} tone="text-accent-purple bg-accent-purple/10" success />
+          <SummaryMetric icon={ShieldCheck} title="Security Status" value={dashboard.securityStatusTitle} detail={dashboard.securityStatusDetail || dashboard.securityStatusSubtitle} delta={`${issueCount} issue${issueCount === 1 ? "" : "s"}`} tone={dashboard.securityStatusTitle.toLowerCase().includes("warning") ? "text-accent-orange bg-accent-orange/10" : "text-accent-green bg-accent-green/10"} />
         </aside>
       </div>
     </div>

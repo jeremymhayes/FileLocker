@@ -6,6 +6,10 @@ export type PageKey =
   | "encode"
   | "metadata"
   | "secure-delete"
+  | "custom-clean"
+  | "partition-cleaner"
+  | "drive-optimizer"
+  | "registry-fixer"
   | "settings"
   | "about"
   | "security-guide"
@@ -41,6 +45,7 @@ export type HistoryEntry = {
 }
 
 export type DashboardState = {
+  incognitoMode: boolean
   protectedFilesCount: string
   protectedFilesDeltaText: string
   protectedFilesSubtitle: string
@@ -66,9 +71,7 @@ export type RecentFile = {
 }
 
 export type Preferences = {
-  hasSelectedExperienceLevel: boolean
-  experienceLevel: string
-  historyPrivacyMode: string
+  incognitoMode: boolean
   includeFullPathsInExports: boolean
   outputTimestampPolicy: string
   useCustomEncryptOutputDirectory: boolean
@@ -122,6 +125,8 @@ export type InitialState = {
     repositoryUrl: string
     launchPaths: string[]
     launchAction?: string
+    isAdministrator: boolean
+    canRestartAsAdministrator: boolean
   }
   dashboard: DashboardState
   settings: SettingsState

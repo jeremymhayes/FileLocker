@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <AppInstaller
     Uri="https://downloads.jeremymhayes.com/FileLocker.appinstaller"
-    Version="1.1.0.0"
+    Version="1.1.1.0"
     xmlns="http://schemas.microsoft.com/appx/appinstaller/2017/2">
 	<MainBundle
 		Name="04c72652-51b0-4214-8ed0-f43e6751e7ae"
-		Version="1.1.0.0"
+		Version="1.1.1.0"
 		Publisher="CN=Jeremy Hayes"
-		Uri="https://downloads.jeremymhayes.com/FileLocker_1.1.0.0_x86_x64.msixbundle" />
+		Uri="https://downloads.jeremymhayes.com/FileLocker_1.1.1.0_x86_x64.msixbundle" />
 	<UpdateSettings>
 		<OnLaunch
 			HoursBetweenUpdateChecks="0"

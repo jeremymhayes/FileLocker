@@ -6,7 +6,7 @@ namespace FileLocker
 {
     public sealed partial class MainWindow
     {
-        // Temporary compatibility fields for older MainWindow partials while the native shell hosts the new interface.
+        // Compatibility fields for older MainWindow partials while the native shell hosts the current interface.
         private Microsoft.UI.Xaml.Controls.Button AboutButton = null!;
         private Microsoft.UI.Xaml.Controls.Button AboutNavButton = null!;
         private Microsoft.UI.Xaml.Controls.MenuFlyoutItem AboutRecentOperationMenuItem = null!;
@@ -69,7 +69,7 @@ namespace FileLocker
         private Microsoft.UI.Xaml.Controls.Button DecryptBrowseFilesButton = null!;
         private Microsoft.UI.Xaml.Controls.Button DecryptBrowseFolderButton = null!;
         private Microsoft.UI.Xaml.Controls.Button DecryptButton = null!;
-        private Microsoft.UI.Xaml.Controls.Button DecryptCardClearSelectionButton = null!;
+        private Microsoft.UI.Xaml.Controls.Button DecryptPanelClearSelectionButton = null!;
         private Microsoft.UI.Xaml.Controls.Button DecryptClearSelectionButton = null!;
         private Microsoft.UI.Xaml.Controls.ToggleSwitch DecryptDeleteEncryptedAfterSuccessToggle = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock DecryptDropHintText = null!;
@@ -101,7 +101,7 @@ namespace FileLocker
         private Microsoft.UI.Xaml.Controls.ToggleSwitch DefaultCompressBeforeEncryptionToggle = null!;
         private Microsoft.UI.Xaml.Controls.ToggleSwitch DefaultDeleteOriginalsToggle = null!;
         private Microsoft.UI.Xaml.Controls.Button DeleteActionButton = null!;
-        private Microsoft.UI.Xaml.Controls.Border DropBatchCard = null!;
+        private Microsoft.UI.Xaml.Controls.Border DropBatchPanel = null!;
         private Microsoft.UI.Xaml.Controls.Grid DropFeatureGrid = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock DropHintText = null!;
         private Microsoft.UI.Xaml.Controls.Border DropIconTile = null!;
@@ -111,8 +111,8 @@ namespace FileLocker
         private Microsoft.UI.Xaml.Shapes.Rectangle DropPanelDashBorder = null!;
         private Microsoft.UI.Xaml.Media.ScaleTransform DropPanelScaleTransform = null!;
         private Microsoft.UI.Xaml.Controls.StackPanel DropPrimaryContent = null!;
-        private Microsoft.UI.Xaml.Controls.Border DropReviewCard = null!;
-        private Microsoft.UI.Xaml.Controls.Border DropVisibilityCard = null!;
+        private Microsoft.UI.Xaml.Controls.Border DropReviewPanel = null!;
+        private Microsoft.UI.Xaml.Controls.Border DropVisibilityPanel = null!;
         private Microsoft.UI.Xaml.Controls.Button EncodeActionButton = null!;
         private Microsoft.UI.Xaml.Controls.ToggleSwitch EncodeAutoDetectToggle = null!;
         private Microsoft.UI.Xaml.Controls.Button EncodeClearInputButton = null!;
@@ -150,7 +150,7 @@ namespace FileLocker
         private Microsoft.UI.Xaml.Controls.Button EncryptBrowseFilesButton = null!;
         private Microsoft.UI.Xaml.Controls.Button EncryptBrowseFolderButton = null!;
         private Microsoft.UI.Xaml.Controls.Button EncryptButton = null!;
-        private Microsoft.UI.Xaml.Controls.Button EncryptCardClearSelectionButton = null!;
+        private Microsoft.UI.Xaml.Controls.Button EncryptPanelClearSelectionButton = null!;
         private Microsoft.UI.Xaml.Controls.Button EncryptClearSelectionButton = null!;
         private Microsoft.UI.Xaml.Controls.ToggleSwitch EncryptCompressBeforeEncryptionToggle = null!;
         private Microsoft.UI.Xaml.Controls.Grid EncryptCustomDestinationPanel = null!;
@@ -343,16 +343,16 @@ namespace FileLocker
         private Microsoft.UI.Xaml.Controls.Grid QueueActionGrid = null!;
         private Microsoft.UI.Xaml.Controls.Border QueueEmptyStatePanel = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock QueueFileCountMetricText = null!;
-        private Microsoft.UI.Xaml.Controls.Border QueueFileMetricCard = null!;
+        private Microsoft.UI.Xaml.Controls.Border QueueFileMetricPanel = null!;
         private Microsoft.UI.Xaml.Controls.StackPanel QueueListPanel = null!;
         private Microsoft.UI.Xaml.Controls.Grid QueueMetricGrid = null!;
         private Microsoft.UI.Xaml.Controls.StackPanel QueuePane = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock QueueRootCountMetricText = null!;
-        private Microsoft.UI.Xaml.Controls.Border QueueRootMetricCard = null!;
-        private Microsoft.UI.Xaml.Controls.Border QueueSizeMetricCard = null!;
+        private Microsoft.UI.Xaml.Controls.Border QueueRootMetricPanel = null!;
+        private Microsoft.UI.Xaml.Controls.Border QueueSizeMetricPanel = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock QueueSizeMetricText = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock QueueSummaryText = null!;
-        private Microsoft.UI.Xaml.Controls.Border QuickStartCard = null!;
+        private Microsoft.UI.Xaml.Controls.Border QuickStartPanel = null!;
         private Microsoft.UI.Xaml.Controls.Button QuickStartHeaderButton = null!;
         private Microsoft.UI.Xaml.Controls.TextBlock RecentJobsEmptyText = null!;
         private Microsoft.UI.Xaml.Controls.ListView RecentJobsListView = null!;

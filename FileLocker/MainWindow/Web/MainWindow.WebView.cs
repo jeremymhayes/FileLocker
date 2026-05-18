@@ -28,6 +28,14 @@ namespace FileLocker
             WriteIndented = false
         };
 
+        private static readonly HashSet<string> RestartPageKeys = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "partition-cleaner",
+            "drive-optimizer",
+            "custom-clean",
+            "registry-fixer"
+        };
+
         private IReadOnlyList<string> _launchPaths = [];
         private string? _launchAction;
 
@@ -174,8 +182,11 @@ namespace FileLocker
             return request.Action switch
             {
                 "app.getInitialState" => GetInitialStateAsync(),
+                "app.setTitlePage" => Task.FromResult<object?>(SetTitlePageFromBridge(ReadPayload<TitlePageRequest>(request.Payload))),
+                "app.restartAsAdministrator" => RestartAsAdministratorFromBridgeAsync(ReadPayload<RestartAsAdministratorRequest>(request.Payload)),
                 "files.pickFiles" => PickFilesAsync(),
                 "files.pickFolder" => PickFolderAsync(),
+                "files.describePaths" => Task.FromResult<object?>(DescribePathsFromBridge(ReadPayload<PathListRequest>(request.Payload))),
                 "files.suggestEncryptOutput" => Task.FromResult<object?>(SuggestEncryptOutputFromBridge(ReadPayload<PathListRequest>(request.Payload))),
                 "files.revealPath" => RevealPathAsync(ReadPayload<RevealPathRequest>(request.Payload)),
                 "links.openExternal" => OpenExternalLinkAsync(ReadPayload<OpenExternalRequest>(request.Payload)),
@@ -189,6 +200,13 @@ namespace FileLocker
                 "text.convert" => Task.FromResult<object?>(ConvertTextFromBridge(ReadPayload<TextConvertRequest>(request.Payload))),
                 "metadata.inspect" => Task.FromResult<object?>(InspectMetadataFromBridge(ReadPayload<MetadataInspectRequest>(request.Payload))),
                 "secureDelete.delete" => SecureDeleteFromBridgeAsync(ReadPayload<SecureDeleteRequest>(request.Payload)),
+                "maintenance.getDrives" => Task.FromResult<object?>(SystemMaintenanceService.GetDrives()),
+                "maintenance.scanCleanup" => Task.FromResult<object?>(SystemMaintenanceService.ScanCleanup(ReadPayload<MaintenanceCleanupRequest>(request.Payload).CategoryIds)),
+                "maintenance.runCleanup" => Task.FromResult<object?>(SystemMaintenanceService.RunCleanup(ReadPayload<MaintenanceCleanupRequest>(request.Payload).CategoryIds)),
+                "maintenance.optimizeDrive" => OptimizeDriveFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.wipeFreeSpace" => WipeFreeSpaceFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.scanRegistry" => Task.FromResult<object?>(SystemMaintenanceService.ScanRegistry()),
+                "maintenance.cleanRegistry" => Task.FromResult<object?>(CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
                 "settings.get" => Task.FromResult<object?>(BuildSettingsPayload()),
                 "settings.save" => SaveSettingsFromBridgeAsync(ReadPayload<SettingsSaveRequest>(request.Payload)),
                 "settings.reset" => ResetSettingsFromBridgeAsync(),
@@ -253,11 +271,83 @@ namespace FileLocker
                     version = UpdateService.GetCurrentVersionLabel(),
                     repositoryUrl = UpdateService.GitHubRepositoryUrl,
                     launchPaths = _launchPaths,
-                    launchAction = _launchAction
+                    launchAction = _launchAction,
+                    isAdministrator = IsRunningAsAdministrator(),
+                    canRestartAsAdministrator = !IsRunningAsAdministrator()
                 },
                 dashboard = BuildDashboardPayload(),
                 settings = BuildSettingsPayload()
             };
+        }
+
+        private Task<object?> RestartAsAdministratorFromBridgeAsync(RestartAsAdministratorRequest request)
+        {
+            if (IsRunningAsAdministrator())
+            {
+                return Task.FromResult<object?>(new
+                {
+                    restarted = false,
+                    isAdministrator = true,
+                    message = "FileLocker is already running as administrator."
+                });
+            }
+
+            string? processPath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(processPath) || !File.Exists(processPath))
+            {
+                throw new InvalidOperationException("FileLocker could not find its executable to restart as administrator.");
+            }
+
+            string targetPage = NormalizeRestartTargetPage(request.TargetPage);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = processPath,
+                UseShellExecute = true,
+                Verb = "runas",
+                Arguments = string.IsNullOrWhiteSpace(targetPage) ? string.Empty : $"--page={targetPage}"
+            };
+
+            Process.Start(startInfo);
+            DispatcherQueue.TryEnqueue(() => Close());
+
+            return Task.FromResult<object?>(new
+            {
+                restarted = true,
+                isAdministrator = false,
+                targetPage
+            });
+        }
+
+        private object SetTitlePageFromBridge(TitlePageRequest request)
+        {
+            string pageName = string.IsNullOrWhiteSpace(request.PageName)
+                ? "Dashboard"
+                : request.PageName.Trim();
+
+            if (pageName.Length > 80)
+            {
+                pageName = pageName[..80];
+            }
+
+            string title = $"FileLocker — {pageName}";
+            NativeTitleText.Text = title;
+            return new { title };
+        }
+
+        private static string NormalizeRestartTargetPage(string? targetPage)
+        {
+            if (string.IsNullOrWhiteSpace(targetPage))
+            {
+                return string.Empty;
+            }
+
+            string normalized = targetPage.Trim().TrimStart('#').ToLowerInvariant();
+            return RestartPageKeys.Contains(normalized) ? normalized : string.Empty;
+        }
+
+        private static bool IsRunningAsAdministrator()
+        {
+            return SystemMaintenanceService.IsRunningAsAdministrator();
         }
 
         private async Task<object?> PickFilesAsync()
@@ -672,42 +762,96 @@ namespace FileLocker
             };
         }
 
-        private static object InspectMetadataFromBridge(MetadataInspectRequest request)
+        private object InspectMetadataFromBridge(MetadataInspectRequest request)
         {
-            string path = RequireExistingFile(request.Path);
-            var fileInfo = new FileInfo(path);
-            string extension = fileInfo.Extension.ToLowerInvariant();
-            string mode = string.IsNullOrWhiteSpace(request.Mode) ? "Remove metadata" : request.Mode;
-            string timestampAction = string.Equals(mode, "Randomize metadata", StringComparison.OrdinalIgnoreCase)
-                ? "Preview only"
-                : "Preview only";
-
-            var preview = new[]
+            if (MetadataCategories.Count == 0)
             {
-                new MetadataPreviewDto("File name", fileInfo.Name, "Preserved in preview"),
-                new MetadataPreviewDto("File type", GetMetadataFileTypeDisplay(extension), "Preserved in preview"),
-                new MetadataPreviewDto("Size", FormatFileSize(fileInfo.Length), "Preserved in preview"),
-                new MetadataPreviewDto("Created", FormatMetadataDate(fileInfo.CreationTime), timestampAction),
-                new MetadataPreviewDto("Modified", FormatMetadataDate(fileInfo.LastWriteTime), timestampAction),
-                new MetadataPreviewDto("Last accessed", FormatMetadataDate(fileInfo.LastAccessTime), timestampAction),
-                new MetadataPreviewDto("Attributes", fileInfo.Attributes.ToString(), "Preserved in preview")
-            };
+                InitializeMetadataCategories();
+            }
+
+            string[] requestedPaths = request.Paths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path.Trim())
+                .ToArray();
+
+            if (requestedPaths.Length == 0 && !string.IsNullOrWhiteSpace(request.Path))
+            {
+                requestedPaths = [request.Path.Trim()];
+            }
+
+            if (requestedPaths.Length == 0)
+            {
+                throw new InvalidOperationException("Select at least one file or folder to inspect.");
+            }
+
+            MetadataPathExpansionResult expansion = ExpandMetadataScramblerPaths(requestedPaths);
+            List<MetadataSelectedFileViewModel> files = expansion.FilePaths
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(CreateMetadataSelectedFile)
+                .ToList();
+
+            if (files.Count == 0)
+            {
+                throw new InvalidOperationException("No supported files were found for metadata preview.");
+            }
+
+            MetadataSelectedFileViewModel activeFile = files.FirstOrDefault(file =>
+                    string.Equals(file.FullPath, request.Path, StringComparison.OrdinalIgnoreCase))
+                ?? files[0];
+
+            var fileInfo = new FileInfo(activeFile.FullPath);
+            string mode = string.IsNullOrWhiteSpace(request.Mode) ? "Remove metadata" : request.Mode;
+            HashSet<string> selectedCategoryNames = BuildSelectedMetadataCategorySet(request.SelectedCategories);
+
+            MetadataCategoryDto[] categories = MetadataCategories
+                .Select(category => new MetadataCategoryDto(
+                    category.Name,
+                    category.Description,
+                    selectedCategoryNames.Contains(category.Name),
+                    category.IsSupported,
+                    EstimateMetadataCategoryCount(category.Name, fileInfo)))
+                .ToArray();
+
+            MetadataPreviewDto[] preview = BuildMetadataPreviewDtos(fileInfo, mode, selectedCategoryNames);
 
             return new
             {
+                files = files.Select(file => new
+                {
+                    file.DisplayName,
+                    file.FullPath,
+                    file.FileType,
+                    file.SizeDisplay,
+                    file.MetadataTagCount,
+                    file.MetadataCountDisplay,
+                    file.StatusDisplay,
+                    file.IsSupported
+                }).ToArray(),
+                activeFilePath = activeFile.FullPath,
                 file = new
                 {
                     displayName = fileInfo.Name,
                     fullPath = fileInfo.FullName,
-                    fileType = GetMetadataFileTypeDisplay(extension),
+                    fileType = GetMetadataFileTypeDisplay(fileInfo.Extension.ToLowerInvariant()),
                     sizeDisplay = FormatFileSize(fileInfo.Length),
                     metadataTagCount = CountBasicMetadataFields(fileInfo),
-                    statusDisplay = IsCommonMetadataFileType(extension) ? "Ready" : "Review",
-                    isSupported = IsCommonMetadataFileType(extension)
+                    statusDisplay = IsCommonMetadataFileType(fileInfo.Extension.ToLowerInvariant()) ? "Ready" : "Review",
+                    isSupported = IsCommonMetadataFileType(fileInfo.Extension.ToLowerInvariant())
                 },
                 mode,
-                writeSupportEnabled = false,
+                writeSupportEnabled = MetadataWriteSupportEnabled,
+                categories,
                 preview,
+                summary = new
+                {
+                    filesSelected = files.Count,
+                    tagsFound = files.Sum(file => file.MetadataTagCount),
+                    categoriesSelected = categories.Count(category => category.IsSelected),
+                    mode,
+                    output = MetadataWriteSupportEnabled ? "Create cleaned copies" : "Preview only",
+                    status = MetadataWriteSupportEnabled ? "Ready to scramble" : "Ready to preview"
+                },
+                warnings = expansion.Warnings.ToArray(),
                 report = BuildMetadataPreviewReportText(fileInfo, mode, preview)
             };
         }
@@ -730,6 +874,121 @@ namespace FileLocker
             return builder.ToString();
         }
 
+        private HashSet<string> BuildSelectedMetadataCategorySet(string[] selectedCategories)
+        {
+            if (selectedCategories.Length > 0)
+            {
+                return new HashSet<string>(
+                    selectedCategories.Where(category => !string.IsNullOrWhiteSpace(category)),
+                    StringComparer.OrdinalIgnoreCase);
+            }
+
+            return new HashSet<string>(
+                MetadataCategories
+                    .Where(category => category.IsSelected)
+                    .Select(category => category.Name),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private MetadataPreviewDto[] BuildMetadataPreviewDtos(FileInfo fileInfo, string mode, HashSet<string> selectedCategoryNames)
+        {
+            var preview = new List<MetadataPreviewDto>();
+            string extension = fileInfo.Extension.ToLowerInvariant();
+
+            if (selectedCategoryNames.Contains("Document properties"))
+            {
+                preview.Add(new MetadataPreviewDto("File name", fileInfo.Name, "Preserved in preview"));
+                preview.Add(new MetadataPreviewDto("File type", GetMetadataFileTypeDisplay(extension), "Preserved in preview"));
+                preview.Add(new MetadataPreviewDto("Size", FormatFileSize(fileInfo.Length), "Preserved in preview"));
+            }
+
+            if (selectedCategoryNames.Contains("Timestamps"))
+            {
+                string timestampAction = BuildMetadataCategoryAfterValue(mode);
+                preview.Add(new MetadataPreviewDto("Created", FormatMetadataDate(fileInfo.CreationTime), timestampAction));
+                preview.Add(new MetadataPreviewDto("Modified", FormatMetadataDate(fileInfo.LastWriteTime), timestampAction));
+                preview.Add(new MetadataPreviewDto("Last accessed", FormatMetadataDate(fileInfo.LastAccessTime), timestampAction));
+            }
+
+            if (selectedCategoryNames.Contains("Custom metadata"))
+            {
+                preview.Add(new MetadataPreviewDto("Attributes", fileInfo.Attributes.ToString(), "Preserved in preview"));
+            }
+
+            foreach (string categoryName in selectedCategoryNames.Where(name =>
+                         !string.Equals(name, "Document properties", StringComparison.OrdinalIgnoreCase) &&
+                         !string.Equals(name, "Timestamps", StringComparison.OrdinalIgnoreCase) &&
+                         !string.Equals(name, "Custom metadata", StringComparison.OrdinalIgnoreCase)))
+            {
+                preview.Add(new MetadataPreviewDto(
+                    categoryName,
+                    BuildMetadataCategoryBeforeValue(categoryName, extension),
+                    BuildMetadataCategoryAfterValue(mode)));
+            }
+
+            if (preview.Count == 0)
+            {
+                preview.Add(new MetadataPreviewDto("Selection", "No metadata categories selected", "Choose one or more categories to build a preview."));
+            }
+
+            return preview.ToArray();
+        }
+
+        private static string BuildMetadataCategoryBeforeValue(string categoryName, string extension)
+        {
+            return categoryName switch
+            {
+                "Author information" => IsDocumentLikeMetadataExtension(extension)
+                    ? "Potential author, owner, or creator fields"
+                    : "No common author fields detected",
+                "GPS/location data" => IsMediaMetadataExtension(extension)
+                    ? "Location fields may exist in supported media"
+                    : "Usually absent for this file type",
+                "Camera/device data" => IsMediaMetadataExtension(extension)
+                    ? "Device and capture fields may be present"
+                    : "Not typical for this file type",
+                "Application metadata" => "Editing application fields may be present",
+                _ => "Preview representative fields only"
+            };
+        }
+
+        private static string BuildMetadataCategoryAfterValue(string mode)
+        {
+            return "Preview only";
+        }
+
+        private static int EstimateMetadataCategoryCount(string categoryName, FileInfo fileInfo)
+        {
+            string extension = fileInfo.Extension.ToLowerInvariant();
+
+            return categoryName switch
+            {
+                "Document properties" => 3,
+                "Timestamps" => 3,
+                "Custom metadata" => 1,
+                "Author information" => IsDocumentLikeMetadataExtension(extension) ? 1 : 0,
+                "GPS/location data" => IsImageMetadataExtension(extension) ? 1 : 0,
+                "Camera/device data" => IsMediaMetadataExtension(extension) ? 1 : 0,
+                "Application metadata" => IsCommonMetadataFileType(extension) ? 1 : 0,
+                _ => 0
+            };
+        }
+
+        private static bool IsDocumentLikeMetadataExtension(string extension)
+        {
+            return extension is ".pdf" or ".docx" or ".xlsx" or ".pptx" or ".rtf" or ".txt";
+        }
+
+        private static bool IsImageMetadataExtension(string extension)
+        {
+            return extension is ".jpg" or ".jpeg" or ".png" or ".webp" or ".tif" or ".tiff" or ".heic" or ".bmp";
+        }
+
+        private static bool IsMediaMetadataExtension(string extension)
+        {
+            return IsImageMetadataExtension(extension) || extension is ".mp4" or ".mov" or ".webm" or ".mkv" or ".mp3" or ".wav";
+        }
+
         private async Task<object?> SecureDeleteFromBridgeAsync(SecureDeleteRequest request)
         {
             if (request.Paths.Length == 0)
@@ -737,6 +996,8 @@ namespace FileLocker
                 throw new InvalidOperationException("Select at least one file or folder to delete.");
             }
 
+            int overwritePasses = NormalizeSecureDeletePasses(request.OverwritePasses, request.Method);
+            string methodLabel = GetSecureDeleteMethodLabel(request.Method, overwritePasses);
             var results = new List<FileOperationResult>();
             foreach (string rawPath in request.Paths)
             {
@@ -748,11 +1009,11 @@ namespace FileLocker
                     {
                         if (Directory.Exists(path))
                         {
-                            DeleteSourceDirectory(path, secureDelete: true);
+                            DeleteSourceDirectory(path, secureDelete: true, secureDeletePasses: overwritePasses);
                         }
                         else
                         {
-                            SecureDelete(path);
+                            SecureDelete(path, overwritePasses);
                         }
                     });
 
@@ -760,7 +1021,7 @@ namespace FileLocker
                     {
                         SourcePath = path,
                         Status = "Completed",
-                        Message = "Secure delete completed with best-effort overwrite.",
+                        Message = $"Secure delete completed using {methodLabel}.",
                         OriginalRetained = false,
                         OutputVerified = false,
                         ElapsedMilliseconds = elapsed.ElapsedMilliseconds
@@ -781,12 +1042,62 @@ namespace FileLocker
                 }
             }
 
-            await AppendBridgeHistoryAsync("Secure Delete", CreateHistoryOnlyRunOptions("Secure Delete", "Best-effort overwrite"), results, cancelled: false);
+            await AppendBridgeHistoryAsync("Secure Delete", CreateHistoryOnlyRunOptions("Secure Delete", methodLabel), results, cancelled: false);
             return new
             {
                 results = results.Select(ToResultDto).ToArray(),
                 dashboard = BuildDashboardPayload()
             };
+        }
+
+        private static int NormalizeSecureDeletePasses(int requestedPasses, string? method)
+        {
+            if (string.Equals(method, "quick", StringComparison.OrdinalIgnoreCase))
+            {
+                return 1;
+            }
+
+            if (string.Equals(method, "gutmann", StringComparison.OrdinalIgnoreCase))
+            {
+                return 35;
+            }
+
+            if (requestedPasses > 0)
+            {
+                return Math.Clamp(requestedPasses, 1, 35);
+            }
+
+            return 3;
+        }
+
+        private static string GetSecureDeleteMethodLabel(string? method, int passes)
+        {
+            if (string.Equals(method, "quick", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Quick (1 pass)";
+            }
+
+            if (string.Equals(method, "gutmann", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Gutmann (35 passes)";
+            }
+
+            return $"DoD 5220.22-M ({passes} passes)";
+        }
+
+        private async Task<object?> OptimizeDriveFromBridgeAsync(MaintenanceDriveActionRequest request)
+        {
+            return await SystemMaintenanceService.OptimizeDriveAsync(request.DriveRoot, request.Mode);
+        }
+
+        private async Task<object?> WipeFreeSpaceFromBridgeAsync(MaintenanceDriveActionRequest request)
+        {
+            return await SystemMaintenanceService.WipeFreeSpaceAsync(request.DriveRoot, request.Confirmation);
+        }
+
+        private static object CleanRegistryFromBridge(RegistryCleanRequest request)
+        {
+            return SystemMaintenanceService.CleanRegistry(request.IssueIds, request.Confirmation);
         }
 
         private object BuildSettingsPayload()
@@ -795,9 +1106,7 @@ namespace FileLocker
             {
                 preferences = new
                 {
-                    _preferences.HasSelectedExperienceLevel,
-                    ExperienceLevel = _preferences.ExperienceLevel.ToString(),
-                    HistoryPrivacyMode = _preferences.HistoryPrivacyMode.ToString(),
+                    _preferences.IncognitoMode,
                     _preferences.IncludeFullPathsInExports,
                     _preferences.OutputTimestampPolicy,
                     _preferences.UseCustomEncryptOutputDirectory,
@@ -827,6 +1136,12 @@ namespace FileLocker
             }
 
             await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+            if (_preferences.IncognitoMode)
+            {
+                _operationHistory.Clear();
+                await SaveHistoryAsync();
+            }
+
             return BuildSettingsPayload();
         }
 
@@ -843,6 +1158,12 @@ namespace FileLocker
             _updateSettings.SkippedVersion = null;
             UpdateService.SaveSettings(_updateSettings);
             await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+            if (_preferences.IncognitoMode)
+            {
+                _operationHistory.Clear();
+                await SaveHistoryAsync();
+            }
+
             return BuildSettingsPayload();
         }
 
@@ -1027,6 +1348,13 @@ namespace FileLocker
 
         private async Task AppendBridgeHistoryAsync(string operation, ProcessingRunOptions options, List<FileOperationResult> results, bool cancelled)
         {
+            if (_preferences.IncognitoMode)
+            {
+                _operationHistory.Clear();
+                await SaveHistoryAsync();
+                return;
+            }
+
             OperationMetricsSummary metrics = OperationHistoryMetrics.Calculate(results);
             _operationHistory.Insert(0, new OperationHistoryEntry
             {
@@ -1096,8 +1424,24 @@ namespace FileLocker
         private object BuildDashboardPayload()
         {
             DashboardStats stats = BuildDashboardStats();
+            bool hideActivity = _preferences.IncognitoMode;
+            object[] recentFiles = hideActivity
+                ? Array.Empty<object>()
+                : BuildDashboardRecentFilesFromHistory().Take(5).Select(item => (object)new
+                {
+                    item.Name,
+                    item.FileIconText,
+                    item.Type,
+                    item.Status,
+                    item.LastModified
+                }).ToArray();
+            object[] history = hideActivity
+                ? Array.Empty<object>()
+                : _operationHistory.Take(10).Select(ToHistoryDto).ToArray();
+
             return new
             {
+                incognitoMode = _preferences.IncognitoMode,
                 protectedFilesCount = stats.ProtectedFilesCount,
                 protectedFilesDeltaText = stats.ProtectedFilesDeltaText,
                 protectedFilesSubtitle = stats.ProtectedFilesSubtitle,
@@ -1110,15 +1454,8 @@ namespace FileLocker
                 securityStatusTitle = stats.SecurityStatusTitle,
                 securityStatusSubtitle = stats.SecurityStatusSubtitle,
                 securityStatusDetail = stats.SecurityStatusDetail,
-                recentFiles = BuildDashboardRecentFilesFromHistory().Take(5).Select(item => new
-                {
-                    item.Name,
-                    item.FileIconText,
-                    item.Type,
-                    item.Status,
-                    item.LastModified
-                }).ToArray(),
-                history = _operationHistory.Take(10).Select(ToHistoryDto).ToArray()
+                recentFiles,
+                history
             };
         }
 
@@ -1181,9 +1518,7 @@ namespace FileLocker
         private void ApplyPreferencesDto(PreferencesDto? dto)
         {
             dto ??= new PreferencesDto();
-            _preferences.HasSelectedExperienceLevel = dto.HasSelectedExperienceLevel;
-            _preferences.ExperienceLevel = ParseEnum(dto.ExperienceLevel, UserExperienceLevel.Beginner);
-            _preferences.HistoryPrivacyMode = ParseEnum(dto.HistoryPrivacyMode, HistoryPrivacyMode.Redacted);
+            _preferences.IncognitoMode = dto.IncognitoMode;
             _preferences.IncludeFullPathsInExports = dto.IncludeFullPathsInExports;
             _preferences.OutputTimestampPolicy = string.IsNullOrWhiteSpace(dto.OutputTimestampPolicy) ? "Current time" : dto.OutputTimestampPolicy;
             _preferences.UseCustomEncryptOutputDirectory = dto.UseCustomEncryptOutputDirectory;
@@ -1191,7 +1526,7 @@ namespace FileLocker
             _preferences.UseCustomDecryptOutputDirectory = dto.UseCustomDecryptOutputDirectory;
             _preferences.CustomDecryptOutputDirectory = dto.CustomDecryptOutputDirectory ?? string.Empty;
             _preferences.ThemePreference = ParseEnum(dto.ThemePreference, ThemePreference.Dark);
-            _currentExperienceLevel = _preferences.ExperienceLevel;
+            _currentExperienceLevel = UserExperienceLevel.Advanced;
             _themePreference = _preferences.ThemePreference;
             isDarkTheme = _themePreference != ThemePreference.Light;
             ApplyWindowTitleBarColors();
@@ -1267,6 +1602,109 @@ namespace FileLocker
             };
         }
 
+        private object DescribePathsFromBridge(PathListRequest request)
+        {
+            string[] selectedPaths = request.Paths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => Path.GetFullPath(path.Trim()))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (selectedPaths.Length == 0)
+            {
+                return new
+                {
+                    items = Array.Empty<object>(),
+                    totalSizeBytes = 0L,
+                    totalSizeDisplay = FormatFileSize(0),
+                    warnings = Array.Empty<string>()
+                };
+            }
+
+            QueueExpandResult expansion = ExpandQueuePaths(selectedPaths);
+            Dictionary<string, (long SizeBytes, int FileCount)> folderMetrics = expansion.Files
+                .GroupBy(file => file.RootPath, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => (group.Sum(file => file.SizeBytes), group.Count()),
+                    StringComparer.OrdinalIgnoreCase);
+
+            List<object> items = [];
+            long totalSizeBytes = 0;
+
+            foreach (string selectedPath in selectedPaths)
+            {
+                if (File.Exists(selectedPath))
+                {
+                    var fileInfo = new FileInfo(selectedPath);
+                    long sizeBytes = fileInfo.Length;
+                    totalSizeBytes += sizeBytes;
+                    items.Add(new
+                    {
+                        fullPath = fileInfo.FullName,
+                        displayName = fileInfo.Name,
+                        itemType = GetBridgePathTypeDisplay(fileInfo.FullName, isDirectory: false),
+                        sizeBytes,
+                        sizeDisplay = FormatFileSize(sizeBytes),
+                        isDirectory = false,
+                        details = "Ready to encrypt"
+                    });
+                    continue;
+                }
+
+                if (Directory.Exists(selectedPath))
+                {
+                    (long sizeBytes, int fileCount) = folderMetrics.TryGetValue(selectedPath, out var metrics)
+                        ? metrics
+                        : (0L, 0);
+                    totalSizeBytes += sizeBytes;
+                    items.Add(new
+                    {
+                        fullPath = selectedPath,
+                        displayName = Path.GetFileName(selectedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                        itemType = "Folder",
+                        sizeBytes,
+                        sizeDisplay = fileCount > 0 ? FormatFileSize(sizeBytes) : "Calculated at run start",
+                        isDirectory = true,
+                        details = fileCount > 0 ? $"{fileCount} file(s) will be queued" : "Folder contents checked at run start"
+                    });
+                }
+            }
+
+            return new
+            {
+                items = items.ToArray(),
+                totalSizeBytes,
+                totalSizeDisplay = FormatFileSize(totalSizeBytes),
+                warnings = expansion.Warnings.ToArray()
+            };
+        }
+
+        private static string GetBridgePathTypeDisplay(string path, bool isDirectory)
+        {
+            if (isDirectory)
+            {
+                return "Folder";
+            }
+
+            string extension = Path.GetExtension(path).ToLowerInvariant();
+            return extension switch
+            {
+                ".pdf" => "PDF Document",
+                ".doc" or ".docx" => "Word Document",
+                ".xls" or ".xlsx" => "Excel Workbook",
+                ".ppt" or ".pptx" => "PowerPoint Deck",
+                ".zip" => "ZIP Archive",
+                ".txt" => "Text File",
+                ".jpg" or ".jpeg" => "JPG Image",
+                ".png" => "PNG Image",
+                ".mp4" => "MP4 Video",
+                ".locked" => "Locked File",
+                "" => "File",
+                _ => $"{extension.TrimStart('.').ToUpperInvariant()} File"
+            };
+        }
+
         private sealed class BridgeRequest
         {
             public string Id { get; set; } = string.Empty;
@@ -1279,6 +1717,13 @@ namespace FileLocker
         private sealed record BridgeError(string Code, string Message);
 
         private sealed record MetadataPreviewDto(string Label, string BeforeValue, string AfterValue);
+
+        private sealed record MetadataCategoryDto(
+            string Name,
+            string Description,
+            bool IsSelected,
+            bool IsSupported,
+            int DetectedCount);
 
         private sealed class RevealPathRequest
         {
@@ -1362,12 +1807,44 @@ namespace FileLocker
         private sealed class MetadataInspectRequest
         {
             public string Path { get; set; } = string.Empty;
+            public string[] Paths { get; set; } = [];
             public string Mode { get; set; } = "Remove metadata";
+            public string[] SelectedCategories { get; set; } = [];
         }
 
         private sealed class SecureDeleteRequest
         {
             public string[] Paths { get; set; } = [];
+            public string Method { get; set; } = "dod";
+            public int OverwritePasses { get; set; } = 3;
+        }
+
+        private sealed class TitlePageRequest
+        {
+            public string PageName { get; set; } = "Dashboard";
+        }
+
+        private sealed class RestartAsAdministratorRequest
+        {
+            public string TargetPage { get; set; } = string.Empty;
+        }
+
+        private sealed class MaintenanceCleanupRequest
+        {
+            public string[] CategoryIds { get; set; } = [];
+        }
+
+        private sealed class MaintenanceDriveActionRequest
+        {
+            public string DriveRoot { get; set; } = string.Empty;
+            public string Mode { get; set; } = "analyze";
+            public string Confirmation { get; set; } = string.Empty;
+        }
+
+        private sealed class RegistryCleanRequest
+        {
+            public string[] IssueIds { get; set; } = [];
+            public string Confirmation { get; set; } = string.Empty;
         }
 
         private sealed class ExplorerIntegrationRequest
@@ -1393,9 +1870,7 @@ namespace FileLocker
 
         private sealed class PreferencesDto
         {
-            public bool HasSelectedExperienceLevel { get; set; } = true;
-            public string ExperienceLevel { get; set; } = nameof(UserExperienceLevel.Advanced);
-            public string HistoryPrivacyMode { get; set; } = nameof(FileLocker.HistoryPrivacyMode.Redacted);
+            public bool IncognitoMode { get; set; }
             public bool IncludeFullPathsInExports { get; set; }
             public string OutputTimestampPolicy { get; set; } = "Current time";
             public bool UseCustomEncryptOutputDirectory { get; set; }

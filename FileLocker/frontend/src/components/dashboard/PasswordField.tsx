@@ -19,7 +19,7 @@ export function PasswordField({ label, value, onChange, placeholder }: PasswordF
         <Input className="pr-11" type={visible ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
         <button
           type="button"
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-muted transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
           aria-label={visible ? `Hide ${label}` : `Show ${label}`}
           onClick={() => setVisible((current) => !current)}
         >

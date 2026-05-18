@@ -18,5 +18,5 @@ export function StatusBadge({ status }: StatusBadgeProps) {
               ? "border-accent-orange/30 bg-accent-orange/10 text-accent-orange"
               : "border-border bg-bg-surface-hover text-secondary"
 
-  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 font-mono text-xs font-semibold uppercase tracking-wider ${tone}`}>{status}</span>
+  return <span className={`inline-flex items-center rounded-md border px-2.5 py-1 font-mono text-xs font-semibold uppercase tracking-wider ${tone}`}>{status}</span>
 }

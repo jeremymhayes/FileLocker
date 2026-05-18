@@ -23,18 +23,18 @@ export function RecentFileTableRow({ item, active, onReveal }: RecentFileTableRo
 
   return (
     <tr className={cn("border-t border-border bg-surface text-sm transition-colors hover:bg-bg-surface-hover", active && "border-l-2 border-l-accent-blue")}>
-      <td className="min-w-0 px-4 py-4">
-        <div className="flex items-center gap-3">
+      <td className="min-w-0 px-3 py-2">
+        <div className="flex items-center gap-2.5">
           <FileTypeIcon filename={item.name} />
           <span className="truncate font-medium text-primary">{item.name}</span>
         </div>
       </td>
-      <td className="truncate px-4 py-4 text-secondary">{item.type}</td>
-      <td className="px-4 py-4">
+      <td className="truncate px-3 py-2 text-secondary">{item.type}</td>
+      <td className="px-3 py-2">
         <StatusBadge status={item.status} />
       </td>
-      <td className="truncate px-4 py-4 font-mono text-xs text-muted">{item.lastModified}</td>
-      <td className="px-2 py-4 text-right">
+      <td className="truncate px-3 py-2 font-mono text-xs text-muted">{item.lastModified}</td>
+      <td className="px-2 py-2 text-right">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label={`Open actions for ${item.name}`}>

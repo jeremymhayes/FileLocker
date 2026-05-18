@@ -12,8 +12,8 @@ export function ProgressBar({ value, label }: ProgressBarProps) {
         <span>{label ?? "Progress"}</span>
         <span>{Math.round(clamped)}%</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-bg-dropzone">
-        <div className="h-2 rounded-full bg-accent transition-[width]" style={{ width: `${clamped}%` }} />
+      <div className="h-2 w-full overflow-hidden rounded-md bg-bg-dropzone">
+        <div className="h-2 rounded-md bg-accent transition-[width]" style={{ width: `${clamped}%` }} />
       </div>
     </div>
   )

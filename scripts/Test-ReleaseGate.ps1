@@ -104,7 +104,13 @@ if (-not $SkipBuild) {
 
 if (-not $SkipTests) {
     Write-Host "Running tests..."
-    dotnet test $testProjectPath -c $Configuration -nologo --no-restore
+    dotnet test --project $testProjectPath `
+        -c $Configuration `
+        --no-restore `
+        -p:Platform=x64 `
+        -p:RuntimeIdentifier=$RuntimeIdentifier `
+        -p:SelfContained=true `
+        -p:SkipFrontendBuild=true
 }
 
 if (-not $SkipPublish) {

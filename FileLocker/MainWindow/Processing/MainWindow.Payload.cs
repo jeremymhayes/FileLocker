@@ -1349,11 +1349,11 @@ namespace FileLocker
             }
         }
 
-        private static void DeleteSourceDirectory(string directoryPath, bool secureDelete)
+        private static void DeleteSourceDirectory(string directoryPath, bool secureDelete, int secureDeletePasses = 3)
         {
             foreach (string file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
             {
-                DeleteSourceFile(file, secureDelete);
+                DeleteSourceFile(file, secureDelete, secureDeletePasses);
             }
 
             Directory.Delete(directoryPath, recursive: true);
@@ -1627,11 +1627,11 @@ namespace FileLocker
             return destination;
         }
 
-        private static void DeleteSourceFile(string sourcePath, bool secureDelete)
+        private static void DeleteSourceFile(string sourcePath, bool secureDelete, int secureDeletePasses = 3)
         {
             if (secureDelete)
             {
-                SecureDelete(sourcePath);
+                SecureDelete(sourcePath, secureDeletePasses);
             }
             else
             {
@@ -2493,16 +2493,17 @@ namespace FileLocker
             }
         }
 
-        private static void SecureDelete(string filePath)
+        private static void SecureDelete(string filePath, int passes = 3)
         {
             try
             {
+                passes = Math.Clamp(passes, 1, 35);
                 var fileInfo = new FileInfo(filePath);
                 long fileSize = fileInfo.Length;
                 using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Write))
                 {
                     byte[] randomData = GenerateRandomBytes(4096);
-                    for (int pass = 0; pass < 3; pass++)
+                    for (int pass = 0; pass < passes; pass++)
                     {
                         fs.Seek(0, SeekOrigin.Begin);
                         long written = 0;
@@ -2563,7 +2564,7 @@ namespace FileLocker
             EncryptDeleteOriginalsToggle.IsEnabled = enabled;
             EncryptPreserveFolderStructureToggle.IsEnabled = enabled;
             EncryptClearSelectionButton.IsEnabled = enabled && FileList.Count > 0;
-            EncryptCardClearSelectionButton.IsEnabled = enabled && FileList.Count > 0;
+            EncryptPanelClearSelectionButton.IsEnabled = enabled && FileList.Count > 0;
             StartEncryptionButton.IsEnabled = enabled && CanStartEncryptFiles();
             DecryptBrowseFilesButton.IsEnabled = enabled;
             DecryptBrowseFolderButton.IsEnabled = enabled;
@@ -2576,7 +2577,7 @@ namespace FileLocker
             DecryptOutputLocationBox.IsEnabled = enabled && !DecryptSaveNextToEncryptedToggle.IsOn;
             DecryptOutputBrowseButton.IsEnabled = enabled && !DecryptSaveNextToEncryptedToggle.IsOn;
             DecryptClearSelectionButton.IsEnabled = enabled && DecryptSelectedFiles.Count > 0;
-            DecryptCardClearSelectionButton.IsEnabled = enabled && DecryptSelectedFiles.Count > 0;
+            DecryptPanelClearSelectionButton.IsEnabled = enabled && DecryptSelectedFiles.Count > 0;
             StartDecryptionButton.IsEnabled = enabled && CanStartDecryption();
             HashBrowseFileButton.IsEnabled = enabled && !_isHashingFile;
             HashDropPanel.AllowDrop = enabled && !_isHashingFile;

@@ -104,8 +104,8 @@ namespace FileLocker
             bool canStart = CanStartDecryption();
             StartDecryptionButton.IsEnabled = canStart;
             DecryptClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
-            DecryptCardClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
-            DecryptCardClearSelectionButton.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;
+            DecryptPanelClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
+            DecryptPanelClearSelectionButton.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;
             DecryptOutputLocationBox.IsEnabled = !_isProcessing && !DecryptSaveNextToEncryptedToggle.IsOn;
             DecryptOutputBrowseButton.IsEnabled = !_isProcessing && !DecryptSaveNextToEncryptedToggle.IsOn;
         }

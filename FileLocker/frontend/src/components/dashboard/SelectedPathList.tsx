@@ -11,17 +11,17 @@ type SelectedPathListProps = {
 export function SelectedPathList({ paths, onRemove, emptyMessage }: SelectedPathListProps) {
   if (paths.length === 0) {
     return (
-      <div className="mt-5 flex min-h-32 flex-col items-center justify-center rounded-2xl border border-border bg-bg-dropzone p-5 text-center">
-        <FileText className="size-7 text-muted" aria-hidden />
-        <p className="mt-2 text-sm text-secondary">{emptyMessage}</p>
+      <div className="mt-3 flex min-h-[4rem] items-center gap-2.5 border-y border-border px-3 py-3 text-left">
+        <FileText className="size-4 text-muted" aria-hidden />
+        <p className="text-sm leading-snug text-secondary">{emptyMessage}</p>
       </div>
     )
   }
 
   return (
-    <div className="mt-5 max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-dropzone">
+    <div className="mt-3 max-h-56 overflow-y-auto border-y border-border bg-transparent">
       {paths.map((path) => (
-        <div key={path} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0">
+        <div key={path} className="flex min-h-10 items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0">
           <FileTypeIcon filename={path} />
           <div className="min-w-0 flex-1">
             <div className="truncate font-mono text-sm text-primary">{fileName(path)}</div>
@@ -31,7 +31,7 @@ export function SelectedPathList({ paths, onRemove, emptyMessage }: SelectedPath
             </div>
           </div>
           <button
-            className="rounded-lg p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
+            className="rounded-md p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
             aria-label={`Remove ${path}`}
             onClick={() => onRemove(path)}
           >
