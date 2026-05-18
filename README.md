@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="FileLocker/frontend/public/assets/logo.png" alt="FileLocker logo" width="120" />
+  <img src="FileLocker/frontend/public/assets/FileLocker_Wordmark.png" alt="FileLocker Wordmark" width="900" />
 </p>
 
 <h1 align="center">FileLocker</h1>
@@ -49,7 +49,7 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current repo version | `1.1.0.0` |
+| Current repo version | `1.1.1.0` |
 | Installer | Standard 64-bit Windows installer |
 | Internet required | No, not after installation |
 | Cloud account | None |
@@ -173,7 +173,7 @@ It is a focused desktop utility for local file protection and cleanup workflows.
 Requirements:
 
 - Windows 10 or Windows 11
-- .NET 8 SDK
+- .NET 10 SDK
 - Node.js 20 or newer
 - Visual Studio 2022 with WinUI / Windows App SDK support if you want the full desktop development setup
 - NSIS if you want to build the installer
@@ -192,7 +192,7 @@ dotnet build .\FileLocker.csproj -c Release
 Run tests:
 
 ```powershell
-dotnet test ..\FileLocker.Tests\FileLocker.Tests.csproj -nologo
+dotnet test --project ..\FileLocker.Tests\FileLocker.Tests.csproj -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:SelfContained=true -p:SkipFrontendBuild=true
 ```
 
 Build the installer:

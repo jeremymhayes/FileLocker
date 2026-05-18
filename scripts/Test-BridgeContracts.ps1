@@ -2,11 +2,19 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $contractPath = Join-Path $repoRoot "contracts\bridge-actions.json"
-$bridgePath = Join-Path $repoRoot "FileLocker\MainWindow.WebView.cs"
+$bridgePathCandidates = @(
+    (Join-Path $repoRoot "FileLocker\MainWindow\Web\MainWindow.WebView.cs"),
+    (Join-Path $repoRoot "FileLocker\MainWindow.WebView.cs")
+)
+$bridgePath = $bridgePathCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $frontendSrc = Join-Path $repoRoot "FileLocker\frontend\src"
 
 if (-not (Test-Path -LiteralPath $contractPath)) {
     throw "Bridge action contract is missing: $contractPath"
+}
+
+if (-not $bridgePath) {
+    throw "Bridge dispatch file is missing. Checked: $($bridgePathCandidates -join ', ')"
 }
 
 $contract = Get-Content -Raw -LiteralPath $contractPath | ConvertFrom-Json

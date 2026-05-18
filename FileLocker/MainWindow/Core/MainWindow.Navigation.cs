@@ -37,7 +37,7 @@ namespace FileLocker
             public string StorageSavedSubtitle { get; init; } = "Storage tracking not available yet";
             public Brush StorageSavedAccentBrush { get; init; } = new SolidColorBrush(Colors.MediumAquamarine);
             public string LastOperationName { get; init; } = "No recent activity";
-            public string LastOperationFileName { get; init; } = "Run an action to populate this card";
+            public string LastOperationFileName { get; init; } = "Run an action to populate this summary";
             public string LastOperationTimeDisplay { get; init; } = "Waiting for the next completed job";
             public string SecurityStatusTitle { get; init; } = "Secure";
             public string SecurityStatusSubtitle { get; init; } = "No issues detected";
@@ -262,11 +262,11 @@ namespace FileLocker
                 ? "No recent activity"
                 : GetDashboardOperationDisplay(latestEntry, latestResult);
             string lastOperationFileName = latestResult == null
-                ? "Run an action to populate this card"
+                ? "Run an action to populate this summary"
                 : Path.GetFileName(GetResultDisplayPath(latestResult));
             if (string.IsNullOrWhiteSpace(lastOperationFileName))
             {
-                lastOperationFileName = latestEntry == null ? "Run an action to populate this card" : "Multiple files";
+                lastOperationFileName = latestEntry == null ? "Run an action to populate this summary" : "Multiple files";
             }
 
             bool queueHasIssues = FileList.Any(item =>
@@ -685,15 +685,15 @@ namespace FileLocker
                 return;
             }
 
-            PlaceActionCard(EncryptActionButton, 0, 0);
-            PlaceActionCard(DecryptActionButton, 0, 1);
-            PlaceActionCard(HashActionButton, 0, 2);
-            PlaceActionCard(EncodeActionButton, 0, 3);
-            PlaceActionCard(MetadataActionButton, 0, 4);
-            PlaceActionCard(DeleteActionButton, 0, 5);
+            PlaceActionTile(EncryptActionButton, 0, 0);
+            PlaceActionTile(DecryptActionButton, 0, 1);
+            PlaceActionTile(HashActionButton, 0, 2);
+            PlaceActionTile(EncodeActionButton, 0, 3);
+            PlaceActionTile(MetadataActionButton, 0, 4);
+            PlaceActionTile(DeleteActionButton, 0, 5);
         }
 
-        private static void PlaceActionCard(FrameworkElement element, int row, int column, int columnSpan = 1)
+        private static void PlaceActionTile(FrameworkElement element, int row, int column, int columnSpan = 1)
         {
             Grid.SetRow(element, row);
             Grid.SetColumn(element, column);

@@ -896,46 +896,46 @@ namespace FileLocker
 
         private void ApplyHeroLayout(double width)
         {
-            if (QuickStartCard.Visibility != Visibility.Visible &&
+            if (QuickStartPanel.Visibility != Visibility.Visible &&
                 DropFeatureGrid.Visibility != Visibility.Visible)
             {
                 return;
             }
 
             bool stackQuickStart = width < 980;
-            Grid.SetRow(QuickStartCard, stackQuickStart ? 1 : 0);
-            Grid.SetColumn(QuickStartCard, stackQuickStart ? 0 : 1);
-            Grid.SetColumnSpan(QuickStartCard, stackQuickStart ? 2 : 1);
-            QuickStartCard.Margin = stackQuickStart ? new Thickness(0, 8, 0, 0) : new Thickness(0);
+            Grid.SetRow(QuickStartPanel, stackQuickStart ? 1 : 0);
+            Grid.SetColumn(QuickStartPanel, stackQuickStart ? 0 : 1);
+            Grid.SetColumnSpan(QuickStartPanel, stackQuickStart ? 2 : 1);
+            QuickStartPanel.Margin = stackQuickStart ? new Thickness(0, 8, 0, 0) : new Thickness(0);
 
-            bool stackFeatureCards = width < 760;
-            if (stackFeatureCards)
+            bool stackFeaturePanels = width < 760;
+            if (stackFeaturePanels)
             {
-                Grid.SetColumn(DropVisibilityCard, 0);
-                Grid.SetColumnSpan(DropVisibilityCard, 3);
-                Grid.SetRow(DropVisibilityCard, 0);
+                Grid.SetColumn(DropVisibilityPanel, 0);
+                Grid.SetColumnSpan(DropVisibilityPanel, 3);
+                Grid.SetRow(DropVisibilityPanel, 0);
 
-                Grid.SetColumn(DropReviewCard, 0);
-                Grid.SetColumnSpan(DropReviewCard, 3);
-                Grid.SetRow(DropReviewCard, 1);
+                Grid.SetColumn(DropReviewPanel, 0);
+                Grid.SetColumnSpan(DropReviewPanel, 3);
+                Grid.SetRow(DropReviewPanel, 1);
 
-                Grid.SetColumn(DropBatchCard, 0);
-                Grid.SetColumnSpan(DropBatchCard, 3);
-                Grid.SetRow(DropBatchCard, 2);
+                Grid.SetColumn(DropBatchPanel, 0);
+                Grid.SetColumnSpan(DropBatchPanel, 3);
+                Grid.SetRow(DropBatchPanel, 2);
             }
             else
             {
-                Grid.SetColumn(DropVisibilityCard, 0);
-                Grid.SetColumnSpan(DropVisibilityCard, 1);
-                Grid.SetRow(DropVisibilityCard, 0);
+                Grid.SetColumn(DropVisibilityPanel, 0);
+                Grid.SetColumnSpan(DropVisibilityPanel, 1);
+                Grid.SetRow(DropVisibilityPanel, 0);
 
-                Grid.SetColumn(DropReviewCard, 1);
-                Grid.SetColumnSpan(DropReviewCard, 1);
-                Grid.SetRow(DropReviewCard, 0);
+                Grid.SetColumn(DropReviewPanel, 1);
+                Grid.SetColumnSpan(DropReviewPanel, 1);
+                Grid.SetRow(DropReviewPanel, 0);
 
-                Grid.SetColumn(DropBatchCard, 2);
-                Grid.SetColumnSpan(DropBatchCard, 1);
-                Grid.SetRow(DropBatchCard, 0);
+                Grid.SetColumn(DropBatchPanel, 2);
+                Grid.SetColumnSpan(DropBatchPanel, 1);
+                Grid.SetRow(DropBatchPanel, 0);
             }
         }
 
@@ -943,45 +943,45 @@ namespace FileLocker
         {
             if (width < 620)
             {
-                Grid.SetColumn(QueueFileMetricCard, 0);
-                Grid.SetColumnSpan(QueueFileMetricCard, 3);
-                Grid.SetRow(QueueFileMetricCard, 0);
+                Grid.SetColumn(QueueFileMetricPanel, 0);
+                Grid.SetColumnSpan(QueueFileMetricPanel, 3);
+                Grid.SetRow(QueueFileMetricPanel, 0);
 
-                Grid.SetColumn(QueueRootMetricCard, 0);
-                Grid.SetColumnSpan(QueueRootMetricCard, 3);
-                Grid.SetRow(QueueRootMetricCard, 1);
+                Grid.SetColumn(QueueRootMetricPanel, 0);
+                Grid.SetColumnSpan(QueueRootMetricPanel, 3);
+                Grid.SetRow(QueueRootMetricPanel, 1);
 
-                Grid.SetColumn(QueueSizeMetricCard, 0);
-                Grid.SetColumnSpan(QueueSizeMetricCard, 3);
-                Grid.SetRow(QueueSizeMetricCard, 2);
+                Grid.SetColumn(QueueSizeMetricPanel, 0);
+                Grid.SetColumnSpan(QueueSizeMetricPanel, 3);
+                Grid.SetRow(QueueSizeMetricPanel, 2);
             }
             else if (width < 860)
             {
-                Grid.SetColumn(QueueFileMetricCard, 0);
-                Grid.SetColumnSpan(QueueFileMetricCard, 1);
-                Grid.SetRow(QueueFileMetricCard, 0);
+                Grid.SetColumn(QueueFileMetricPanel, 0);
+                Grid.SetColumnSpan(QueueFileMetricPanel, 1);
+                Grid.SetRow(QueueFileMetricPanel, 0);
 
-                Grid.SetColumn(QueueRootMetricCard, 1);
-                Grid.SetColumnSpan(QueueRootMetricCard, 2);
-                Grid.SetRow(QueueRootMetricCard, 0);
+                Grid.SetColumn(QueueRootMetricPanel, 1);
+                Grid.SetColumnSpan(QueueRootMetricPanel, 2);
+                Grid.SetRow(QueueRootMetricPanel, 0);
 
-                Grid.SetColumn(QueueSizeMetricCard, 0);
-                Grid.SetColumnSpan(QueueSizeMetricCard, 3);
-                Grid.SetRow(QueueSizeMetricCard, 1);
+                Grid.SetColumn(QueueSizeMetricPanel, 0);
+                Grid.SetColumnSpan(QueueSizeMetricPanel, 3);
+                Grid.SetRow(QueueSizeMetricPanel, 1);
             }
             else
             {
-                Grid.SetColumn(QueueFileMetricCard, 0);
-                Grid.SetColumnSpan(QueueFileMetricCard, 1);
-                Grid.SetRow(QueueFileMetricCard, 0);
+                Grid.SetColumn(QueueFileMetricPanel, 0);
+                Grid.SetColumnSpan(QueueFileMetricPanel, 1);
+                Grid.SetRow(QueueFileMetricPanel, 0);
 
-                Grid.SetColumn(QueueRootMetricCard, 1);
-                Grid.SetColumnSpan(QueueRootMetricCard, 1);
-                Grid.SetRow(QueueRootMetricCard, 0);
+                Grid.SetColumn(QueueRootMetricPanel, 1);
+                Grid.SetColumnSpan(QueueRootMetricPanel, 1);
+                Grid.SetRow(QueueRootMetricPanel, 0);
 
-                Grid.SetColumn(QueueSizeMetricCard, 2);
-                Grid.SetColumnSpan(QueueSizeMetricCard, 1);
-                Grid.SetRow(QueueSizeMetricCard, 0);
+                Grid.SetColumn(QueueSizeMetricPanel, 2);
+                Grid.SetColumnSpan(QueueSizeMetricPanel, 1);
+                Grid.SetRow(QueueSizeMetricPanel, 0);
             }
         }
 

@@ -86,9 +86,9 @@ namespace FileLocker
 
             bool canStart = CanStartEncryptFiles();
             StartEncryptionButton.IsEnabled = canStart;
-            EncryptCardClearSelectionButton.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;
+            EncryptPanelClearSelectionButton.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;
             EncryptClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
-            EncryptCardClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
+            EncryptPanelClearSelectionButton.IsEnabled = fileCount > 0 && !_isProcessing;
         }
 
         private (string StatusText, Brush StatusBrush, string StatusGlyph) GetEncryptOperationStatus()

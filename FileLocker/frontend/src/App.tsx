@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Bell, BookOpen } from "lucide-react"
+import { Bell } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell } from "@/components/layout/AppShell"
 import { PageHeader } from "@/components/layout/PageHeader"
@@ -15,49 +15,24 @@ import { HashFilesPage } from "@/pages/HashFilesPage"
 import { MetadataScramblerPage } from "@/pages/MetadataScramblerPage"
 import { SecurityGuidePage } from "@/pages/SecurityGuidePage"
 import { SettingsPage } from "@/pages/SettingsPage"
+import { CustomCleanPage, DriveOptimizerPage, PartitionCleanerPage, RegistryFixerPage } from "@/pages/SystemMaintenancePages"
 import type { DashboardState, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
 
-const pageTitles: Record<PageKey, { title: string; description: string }> = {
-  dashboard: {
-    title: "Dashboard",
-    description: "Recent local activity, shortcuts, and security status.",
-  },
-  encrypt: {
-    title: "Encrypt Files",
-    description: "Protect files with strong local encryption.",
-  },
-  decrypt: {
-    title: "Decrypt Files",
-    description: "Restore files from FileLocker .locked files.",
-  },
-  hash: {
-    title: "Hash Files",
-    description: "Generate and compare SHA fingerprints for local files.",
-  },
-  encode: {
-    title: "Encode Text",
-    description: "Convert text between common safe transport formats.",
-  },
-  metadata: {
-    title: "Metadata Scrambler",
-    description: "Preview metadata fields without modifying files.",
-  },
-  "secure-delete": {
-    title: "Secure Delete",
-    description: "Overwrite selected files where possible before removing them.",
-  },
-  settings: {
-    title: "Settings",
-    description: "Preferences, history privacy, update checks, and defaults.",
-  },
-  about: {
-    title: "About",
-    description: "Version, project details, and local protection model.",
-  },
-  "security-guide": {
-    title: "Security Guide",
-    description: "Practical handling guidance for local file protection.",
-  },
+const pageTitles: Record<PageKey, { title: string; description?: string }> = {
+  dashboard: { title: "Dashboard" },
+  encrypt: { title: "Encrypt Files" },
+  decrypt: { title: "Decrypt Files" },
+  hash: { title: "Hash Files" },
+  encode: { title: "Encode Text" },
+  metadata: { title: "Metadata Scrambler" },
+  "secure-delete": { title: "Secure Delete" },
+  "custom-clean": { title: "Custom Clean" },
+  "partition-cleaner": { title: "Partition Cleaner" },
+  "drive-optimizer": { title: "Drive Optimizer" },
+  "registry-fixer": { title: "Registry Fixer" },
+  settings: { title: "Settings" },
+  about: { title: "About" },
+  "security-guide": { title: "Security Guide" },
 }
 
 export function App() {
@@ -85,6 +60,10 @@ export function App() {
         setInitialState(state)
         setDashboard(state.dashboard)
         setSettings(state.settings)
+        const launchPage = parseLaunchPage(state.app.launchAction)
+        if (launchPage) {
+          navigate(launchPage)
+        }
       })
       .catch((error) => {
         toast.error(error instanceof Error ? error.message : "Unable to load FileLocker state.")
@@ -114,6 +93,11 @@ export function App() {
   }, [])
 
   const pageMeta = pageTitles[activePage]
+  const showSharedPageHeader = activePage !== "settings" && activePage !== "metadata" && activePage !== "encrypt" && activePage !== "decrypt" && activePage !== "hash" && activePage !== "encode" && activePage !== "secure-delete"
+
+  useEffect(() => {
+    void invokeBridge("app.setTitlePage", { pageName: pageMeta.title }).catch(() => undefined)
+  }, [pageMeta.title])
 
   function navigate(page: PageKey) {
     window.location.hash = page
@@ -166,11 +150,20 @@ export function App() {
     }
   }
 
+  async function restartAsAdministrator(targetPage: PageKey) {
+    try {
+      await invokeBridge("app.restartAsAdministrator", { targetPage })
+      toast.message("Approve the Windows administrator prompt to continue.")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to restart as administrator.")
+    }
+  }
+
   if (!initialState || !dashboard || !settings) {
     return (
       <TooltipProvider>
         <AppShell activePage={activePage} onNavigate={navigate}>
-          <PageHeader title="FileLocker" description="Preparing your local security tools." />
+          <PageHeader title="FileLocker" />
           <div className="security-page">
             <div className="border-y border-border py-4">
               <div className="security-label">Startup</div>
@@ -186,29 +179,31 @@ export function App() {
   return (
     <TooltipProvider>
       <AppShell activePage={activePage} version={initialState.app.version} settings={settings} onNavigate={navigate} onThemeToggle={toggleDarkMode}>
-        <PageHeader
-          title={pageMeta.title}
-          description={pageMeta.description}
-          actions={
-            <>
-              <Button variant="secondary" onClick={() => navigate("security-guide")}>
-                <BookOpen data-icon="inline-start" />
-                Quick Start Guide
-              </Button>
-              <Button variant="ghost" size="icon" aria-label="Check notifications" onClick={checkNotifications}>
-                <Bell className="size-5" aria-hidden />
-              </Button>
-            </>
-          }
-        />
+        {showSharedPageHeader ? (
+          <PageHeader
+            title={pageMeta.title}
+            description={pageMeta.description}
+            actions={
+              <>
+                <Button variant="ghost" size="icon" aria-label="Check notifications" onClick={checkNotifications}>
+                  <Bell className="size-5" aria-hidden />
+                </Button>
+              </>
+            }
+          />
+        ) : null}
         {activePage === "dashboard" ? <DashboardPage dashboard={dashboard} onNavigate={navigate} invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={setDashboard} onReveal={reveal} droppedPaths={droppedPathsByPage.dashboard ?? []} onDroppedPathsHandled={() => clearDroppedPaths("dashboard")} /> : null}
-        {activePage === "encrypt" ? <FileOperationPage kind="encrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} droppedPaths={droppedPathsByPage.encrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("encrypt")} /> : null}
-        {activePage === "decrypt" ? <FileOperationPage kind="decrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} droppedPaths={droppedPathsByPage.decrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("decrypt")} /> : null}
-        {activePage === "hash" ? <HashFilesPage invoke={invokeBridge} onDashboardUpdate={setDashboard} droppedPaths={droppedPathsByPage.hash ?? []} onDroppedPathsHandled={() => clearDroppedPaths("hash")} /> : null}
+        {activePage === "encrypt" ? <FileOperationPage kind="encrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage.encrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("encrypt")} /> : null}
+        {activePage === "decrypt" ? <FileOperationPage kind="decrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage.decrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("decrypt")} /> : null}
+        {activePage === "hash" ? <HashFilesPage invoke={invokeBridge} onDashboardUpdate={setDashboard} dashboard={dashboard} droppedPaths={droppedPathsByPage.hash ?? []} onDroppedPathsHandled={() => clearDroppedPaths("hash")} /> : null}
         {activePage === "encode" ? <EncodeTextPage invoke={invokeBridge} /> : null}
         {activePage === "metadata" ? <MetadataScramblerPage invoke={invokeBridge} droppedPaths={droppedPathsByPage.metadata ?? []} onDroppedPathsHandled={() => clearDroppedPaths("metadata")} /> : null}
-        {activePage === "secure-delete" ? <SecureDeletePage invoke={invokeBridge} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} droppedPaths={droppedPathsByPage["secure-delete"] ?? []} onDroppedPathsHandled={() => clearDroppedPaths("secure-delete")} /> : null}
-        {activePage === "settings" ? <SettingsPage settings={settings} invoke={invokeBridge} onSettingsUpdate={setSettings} onDashboardUpdate={setDashboard} /> : null}
+        {activePage === "secure-delete" ? <SecureDeletePage invoke={invokeBridge} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage["secure-delete"] ?? []} onDroppedPathsHandled={() => clearDroppedPaths("secure-delete")} /> : null}
+        {activePage === "partition-cleaner" ? <PartitionCleanerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("partition-cleaner")} /> : null}
+        {activePage === "drive-optimizer" ? <DriveOptimizerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("drive-optimizer")} /> : null}
+        {activePage === "custom-clean" ? <CustomCleanPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("custom-clean")} /> : null}
+        {activePage === "registry-fixer" ? <RegistryFixerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("registry-fixer")} /> : null}
+        {activePage === "settings" ? <SettingsPage app={initialState.app} settings={settings} invoke={invokeBridge} onSettingsUpdate={setSettings} onDashboardUpdate={setDashboard} /> : null}
         {activePage === "about" ? <AboutPage app={initialState.app} onOpenRepository={() => invokeBridge("links.openExternal", { url: initialState.app.repositoryUrl })} /> : null}
         {activePage === "security-guide" ? <SecurityGuidePage /> : null}
       </AppShell>
@@ -220,6 +215,16 @@ export function App() {
 function parseHashPage(): PageKey {
   const value = window.location.hash.replace(/^#/, "") as PageKey
   return value in pageTitles ? value : "dashboard"
+}
+
+function parseLaunchPage(action?: string): PageKey | null {
+  const prefix = "--page="
+  if (!action?.startsWith(prefix)) {
+    return null
+  }
+
+  const value = action.slice(prefix.length) as PageKey
+  return value in pageTitles ? value : null
 }
 
 function acceptsDroppedPaths(page: PageKey) {

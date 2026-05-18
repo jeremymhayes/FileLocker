@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace FileLocker;
@@ -30,11 +31,20 @@ public enum ThemePreference
 
 public sealed class AppPreferences
 {
-    public bool HasSelectedExperienceLevel { get; set; }
+    public bool IncognitoMode { get; set; }
 
-    public UserExperienceLevel ExperienceLevel { get; set; } = UserExperienceLevel.Beginner;
+    [JsonIgnore]
+    public bool HasSelectedExperienceLevel { get; set; } = true;
 
-    public HistoryPrivacyMode HistoryPrivacyMode { get; set; } = HistoryPrivacyMode.Redacted;
+    [JsonIgnore]
+    public UserExperienceLevel ExperienceLevel { get; set; } = UserExperienceLevel.Advanced;
+
+    [JsonIgnore]
+    public HistoryPrivacyMode HistoryPrivacyMode
+    {
+        get => IncognitoMode ? HistoryPrivacyMode.Off : HistoryPrivacyMode.Redacted;
+        set => IncognitoMode = value == HistoryPrivacyMode.Off;
+    }
 
     public bool IncludeFullPathsInExports { get; set; }
 
@@ -69,7 +79,8 @@ internal static class AppPreferencesStore
         try
         {
             string json = await File.ReadAllTextAsync(path, Encoding.UTF8);
-            return JsonSerializer.Deserialize<AppPreferences>(json, JsonOptions) ?? new AppPreferences();
+            AppPreferences preferences = JsonSerializer.Deserialize<AppPreferences>(json, JsonOptions) ?? new AppPreferences();
+            return ApplyLegacyMigration(preferences, json);
         }
         catch
         {
@@ -97,5 +108,43 @@ internal static class AppPreferencesStore
     private static string GetPreferencesPath(string appDataDirectory)
     {
         return Path.Combine(appDataDirectory, "preferences.json");
+    }
+
+    private static AppPreferences ApplyLegacyMigration(AppPreferences preferences, string json)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement root = document.RootElement;
+
+            bool hasIncognitoMode = TryGetProperty(root, nameof(AppPreferences.IncognitoMode), out _);
+            if (!hasIncognitoMode &&
+                TryGetProperty(root, nameof(AppPreferences.HistoryPrivacyMode), out JsonElement historyMode) &&
+                string.Equals(historyMode.GetString(), nameof(HistoryPrivacyMode.Off), StringComparison.OrdinalIgnoreCase))
+            {
+                preferences.IncognitoMode = true;
+            }
+        }
+        catch
+        {
+            return preferences;
+        }
+
+        return preferences;
+    }
+
+    private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 }

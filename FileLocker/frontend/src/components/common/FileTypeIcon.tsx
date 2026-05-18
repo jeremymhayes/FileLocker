@@ -8,8 +8,8 @@ type FileTypeIconProps = {
 
 export function FileTypeIcon({ filename, size = "sm" }: FileTypeIconProps) {
   if (fileExtension(filename) === "locked") {
-    return <Lock size={size === "md" ? 40 : 28} color="var(--accent-blue)" aria-hidden />
+    return <Lock size={size === "md" ? 24 : 18} color="var(--accent-blue)" aria-hidden />
   }
 
-  return <span className={fileIconClass(filename)} style={{ fontSize: size === "md" ? "2.5rem" : "1.75rem" }} aria-hidden />
+  return <span className={fileIconClass(filename)} style={{ fontSize: size === "md" ? "1.5rem" : "1.125rem" }} aria-hidden />
 }

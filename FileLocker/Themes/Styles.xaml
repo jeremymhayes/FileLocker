@@ -72,37 +72,20 @@
     <x:Double x:Key="Spacing32">32</x:Double>
     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
     <CornerRadius x:Key="OverlayCornerRadius">6</CornerRadius>
-    <CornerRadius x:Key="CardCornerRadius">14</CornerRadius>
+    <CornerRadius x:Key="PanelCornerRadius">14</CornerRadius>
     <CornerRadius x:Key="ButtonCornerRadius">10</CornerRadius>
     <CornerRadius x:Key="PillCornerRadius">8</CornerRadius>
-    <Thickness x:Key="CardPadding">22</Thickness>
-    <Thickness x:Key="StatusCardPadding">22</Thickness>
+    <Thickness x:Key="PanelPadding">22</Thickness>
+    <Thickness x:Key="StatusPanelPadding">22</Thickness>
     <Thickness x:Key="StandardSpacing">16</Thickness>
     <Thickness x:Key="FocusRingMargin">2</Thickness>
     <GridLength x:Key="SidebarWidth">260</GridLength>
     <Thickness x:Key="StandardBorderThickness">1</Thickness>
 
-    <LinearGradientBrush x:Key="MainWindowBackgroundBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="{ThemeResource AppBackgroundStartColor}" Offset="0" />
-        <GradientStop Color="{ThemeResource AppBackgroundEndColor}" Offset="1" />
-    </LinearGradientBrush>
-
-    <LinearGradientBrush x:Key="HeroSurfaceBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#142641" Offset="0" />
-        <GradientStop Color="{ThemeResource AppSurfaceRaisedColor}" Offset="0.52" />
-        <GradientStop Color="{ThemeResource AppSurfaceColor}" Offset="1" />
-    </LinearGradientBrush>
-
-    <LinearGradientBrush x:Key="SoftPanelBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="{ThemeResource AppSurfaceRaisedColor}" Offset="0" />
-        <GradientStop Color="{ThemeResource AppSurfaceAltColor}" Offset="1" />
-    </LinearGradientBrush>
-
-    <LinearGradientBrush x:Key="DashboardAccentBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="{ThemeResource AppAccentColor}" Offset="0" />
-        <GradientStop Color="{ThemeResource AppBrightBlueColor}" Offset="0.62" />
-        <GradientStop Color="{ThemeResource AppCyanColor}" Offset="1" />
-    </LinearGradientBrush>
+    <SolidColorBrush x:Key="MainWindowBackgroundBrush" Color="{ThemeResource AppBackgroundStartColor}" />
+    <SolidColorBrush x:Key="HeroSurfaceBrush" Color="{ThemeResource AppSurfaceRaisedColor}" />
+    <SolidColorBrush x:Key="SoftPanelBrush" Color="{ThemeResource AppSurfaceAltColor}" />
+    <SolidColorBrush x:Key="DashboardAccentBrush" Color="{ThemeResource AppAccentColor}" />
 
     <SolidColorBrush x:Key="HeaderSurfaceBrush" Color="{ThemeResource AppHeaderSurfaceColor}" />
     <SolidColorBrush x:Key="SidebarSurfaceBrush" Color="{ThemeResource AppSidebarSurfaceColor}" />
@@ -204,7 +187,7 @@
         <Setter Property="Background" Value="{ThemeResource WorkspaceSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
+        <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
     </Style>
 
     <Style x:Key="HeroPanelBorderStyle" TargetType="Border">
@@ -215,19 +198,19 @@
         <Setter Property="Padding" Value="20" />
     </Style>
 
-    <Style x:Key="SectionCardBorderStyle" TargetType="Border">
+    <Style x:Key="SectionPanelBorderStyle" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource WorkspaceSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
+        <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
         <Setter Property="Padding" Value="20" />
     </Style>
 
-    <Style x:Key="MetricCardBorderStyle" TargetType="Border">
+    <Style x:Key="MetricPanelBorderStyle" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource RaisedSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
+        <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
         <Setter Property="Padding" Value="14" />
     </Style>
 
@@ -254,21 +237,21 @@
         <Setter Property="CornerRadius" Value="14" />
     </Style>
 
-    <Style x:Key="DashboardCardBorderStyle" TargetType="Border">
+    <Style x:Key="DashboardPanelBorderStyle" TargetType="Border">
         <Setter Property="Background" Value="{ThemeResource WorkspaceSurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
-        <Setter Property="Padding" Value="{StaticResource CardPadding}" />
+        <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
+        <Setter Property="Padding" Value="{StaticResource PanelPadding}" />
     </Style>
 
-    <Style x:Key="DashboardElevatedCardBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardCardBorderStyle}">
+    <Style x:Key="DashboardElevatedPanelBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardPanelBorderStyle}">
         <Setter Property="Background" Value="{ThemeResource RaisedSurfaceBrush}" />
     </Style>
 
-    <Style x:Key="DashboardStatusCardBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardCardBorderStyle}">
+    <Style x:Key="DashboardStatusPanelBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardPanelBorderStyle}">
         <Setter Property="Background" Value="{ThemeResource StatusSurfaceBrush}" />
-        <Setter Property="Padding" Value="{StaticResource StatusCardPadding}" />
+        <Setter Property="Padding" Value="{StaticResource StatusPanelPadding}" />
         <Setter Property="MinHeight" Value="150" />
     </Style>
 
@@ -298,7 +281,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="{StaticResource CardCornerRadius}" />
+        <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="VerticalContentAlignment" Value="Stretch" />
@@ -307,7 +290,7 @@
         <Setter Property="FocusVisualMargin" Value="{StaticResource FocusRingMargin}" />
     </Style>
 
-    <Style x:Key="DashboardActionCardBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardCardBorderStyle}">
+    <Style x:Key="DashboardActionPanelBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardPanelBorderStyle}">
         <Setter Property="Width" Value="286" />
         <Setter Property="Height" Value="210" />
         <Setter Property="Padding" Value="16" />
@@ -335,7 +318,7 @@
         <Setter Property="Foreground" Value="{ThemeResource TextPrimaryBrush}" />
     </Style>
 
-    <Style x:Key="SettingsCardBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardCardBorderStyle}">
+    <Style x:Key="SettingsPanelBorderStyle" TargetType="Border" BasedOn="{StaticResource DashboardPanelBorderStyle}">
         <Setter Property="Padding" Value="22" />
     </Style>
 

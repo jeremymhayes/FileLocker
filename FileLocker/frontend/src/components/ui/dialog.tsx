@@ -34,13 +34,13 @@ function DialogOverlay({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
-    <DialogPrimitive.Overlay
-      data-slot="dialog-overlay"
-      className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-        className
-      )}
-      {...props}
+      <DialogPrimitive.Overlay
+        data-slot="dialog-overlay"
+        className={cn(
+          "fixed inset-0 isolate z-50 bg-black/36 duration-150 supports-backdrop-filter:backdrop-blur-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+          className
+        )}
+        {...props}
     />
   )
 }
@@ -59,7 +59,7 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-none border border-border bg-popover p-4 text-sm text-popover-foreground shadow-none duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-md border border-border/80 bg-popover p-5 text-sm text-popover-foreground shadow-[var(--shadow-soft)] duration-150 outline-none sm:max-w-lg data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-top-2 data-closed:animate-out data-closed:fade-out-0",
           className
         )}
         {...props}
@@ -105,7 +105,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 border-t border-border bg-surface p-4 sm:flex-row sm:justify-end",
+        "-mx-5 -mb-5 flex flex-col-reverse gap-2 border-t border-border/70 bg-bg-subtle/55 p-5 sm:flex-row sm:justify-end",
         className
       )}
       {...props}
@@ -128,7 +128,7 @@ function DialogTitle({
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "font-display text-base leading-none font-medium text-primary",
+        "font-display text-[1.05rem] leading-none font-semibold tracking-tight text-primary",
         className
       )}
       {...props}

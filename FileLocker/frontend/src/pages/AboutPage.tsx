@@ -17,45 +17,45 @@ const runtimeRows = [
 export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
   return (
     <div className="security-page">
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <section className="surface-card">
-          <div className="flex items-start gap-4">
-            <div className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-accent-blue text-white">
-              <Shield className="size-7" aria-hidden />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <section className="section-surface">
+          <div className="flex items-start gap-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/12 text-accent-blue">
+              <Shield className="size-4" aria-hidden />
             </div>
             <div className="min-w-0">
-              <h2 className="font-display text-2xl font-semibold leading-[1.3] text-primary">FileLocker</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-[1.65] text-secondary">
+              <h2 className="font-display text-lg font-semibold leading-tight text-primary">FileLocker</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-snug text-secondary">
                 A local-first desktop security utility for encryption, decryption, hashing, text encoding, metadata inspection, and secure delete workflows.
               </p>
-              <div className="mt-5 flex flex-wrap gap-3">
+              <div className="mt-3 flex flex-wrap gap-2">
                 <Button onClick={onOpenRepository}>
                   <ExternalLink data-icon="inline-start" />
                   Open Project Page
                 </Button>
-                <span className="inline-flex h-10 items-center rounded-xl border border-border bg-bg-dropzone px-4 font-mono text-sm text-secondary">Version {app.version}</span>
+                <span className="inline-flex h-9 items-center rounded-md border border-border bg-transparent px-3 font-mono text-sm text-secondary">Version {app.version}</span>
               </div>
             </div>
           </div>
         </section>
 
-        <aside className="space-y-4 xl:row-span-2">
+        <aside className="border-l border-border pl-4 xl:row-span-2">
           <SideFact icon={Monitor} label="App" value="Windows Desktop" detail="Runs locally on your machine." />
           <SideFact icon={LockKeyhole} label="Security" value="Local First" detail="Passwords and file contents stay on this device." />
           <SideFact icon={GitBranch} label="Updates" value="Project Releases" detail="Optional checks look for newer FileLocker versions." />
         </aside>
 
-        <section className="surface-card">
-          <div className="mb-5 flex items-start gap-3">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-accent-blue/10 text-accent-blue">
-              <Info className="size-5" aria-hidden />
+        <section className="section-surface">
+          <div className="mb-3 flex items-start gap-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+              <Info className="size-4" aria-hidden />
             </div>
             <div>
-              <h2 className="font-display text-lg font-semibold leading-[1.3] text-primary">App Details</h2>
-              <p className="mt-1 text-sm text-secondary">What FileLocker handles and where your files stay.</p>
+              <h2 className="font-display text-base font-semibold leading-tight text-primary">App Details</h2>
+              <p className="mt-1 text-sm leading-snug text-secondary">What FileLocker handles and where your files stay.</p>
             </div>
           </div>
-          <div className="overflow-hidden rounded-2xl border border-border">
+          <div className="overflow-hidden border-y border-border">
             {runtimeRows.map(([label, value]) => (
               <InfoRow key={label} label={label} value={value} />
             ))}
@@ -69,7 +69,7 @@ export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid gap-3 border-b border-border bg-bg-dropzone px-4 py-4 last:border-b-0 md:grid-cols-[220px_1fr]">
+    <div className="grid gap-3 border-b border-border py-2.5 last:border-b-0 md:grid-cols-[160px_1fr]">
       <div className="security-label">{label}</div>
       <div className="min-w-0 break-words font-mono text-sm text-secondary">{value}</div>
     </div>
@@ -78,15 +78,15 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 function SideFact({ icon: Icon, label, value, detail }: { icon: LucideIcon; label: string; value: string; detail: string }) {
   return (
-    <section className="surface-card">
+    <section className="section-surface">
       <div className="flex items-start gap-3">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent-blue/10 text-accent-blue">
-          <Icon className="size-5" aria-hidden />
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+          <Icon className="size-4" aria-hidden />
         </div>
         <div className="min-w-0">
           <div className="security-label">{label}</div>
-          <div className="mt-2 font-display text-lg font-semibold text-primary">{value}</div>
-          <p className="mt-1 text-sm leading-[1.55] text-secondary">{detail}</p>
+          <div className="mt-1 font-display text-base font-semibold text-primary">{value}</div>
+          <p className="mt-1 text-sm leading-snug text-secondary">{detail}</p>
         </div>
       </div>
     </section>

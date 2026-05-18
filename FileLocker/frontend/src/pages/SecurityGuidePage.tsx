@@ -44,16 +44,16 @@ const guideSections = [
 export function SecurityGuidePage() {
   return (
     <div className="security-page">
-      <section className="surface-card">
-        <div className="mb-6">
-          <h2 className="font-display text-xl font-semibold text-primary">Security Guide</h2>
-          <p className="mt-2 max-w-[680px] text-[15px] leading-[1.65] text-secondary">Practical guidance for using FileLocker safely on a local Windows desktop.</p>
+      <section className="section-surface">
+        <div className="mb-3">
+          <h2 className="font-display text-lg font-semibold text-primary">Security Guide</h2>
+          <p className="mt-1 max-w-[680px] text-sm leading-snug text-secondary">Practical guidance for using FileLocker safely on a local Windows desktop.</p>
         </div>
-        <div className="space-y-6">
+        <div className="flex flex-col gap-0">
           {guideSections.map((section) => (
-            <article key={section.title} className="border-b border-border pb-6 last:border-b-0 last:pb-0">
+            <article key={section.title} className="border-b border-border py-3 first:pt-0 last:border-b-0 last:pb-0">
               <h3 className="font-display text-base font-semibold text-primary">{section.title}</h3>
-              <p className="mt-2 max-w-[680px] text-[15px] leading-[1.65] text-secondary">{section.body}</p>
+              <p className="mt-1 max-w-[680px] text-sm leading-snug text-secondary">{section.body}</p>
             </article>
           ))}
         </div>
