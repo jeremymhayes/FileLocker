@@ -52,23 +52,33 @@ internal static class EncryptOutputPathAdvisor
             return Path.Combine(parentDirectory, $"{folderName} (Encrypted)");
         }
 
-        List<string> parentDirectories = roots
+        List<string?> parentDirectories = roots
             .Select(Path.GetDirectoryName)
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Cast<string>()
             .ToList();
-
-        if (parentDirectories.Count != 1)
+        if (parentDirectories.Any(string.IsNullOrWhiteSpace))
         {
             return null;
         }
 
-        return Path.Combine(parentDirectories[0], MultiFolderOutputName);
+        List<string> distinctParentDirectories = parentDirectories
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToList();
+
+        if (distinctParentDirectories.Count != 1)
+        {
+            return null;
+        }
+
+        return Path.Combine(distinctParentDirectories[0], MultiFolderOutputName);
     }
 
     private static string NormalizeDirectoryPath(string path)
     {
-        return Path.GetFullPath(path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        string fullPath = Path.GetFullPath(path.Trim());
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        return string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)
+            ? fullPath
+            : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 }

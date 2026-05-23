@@ -32,6 +32,16 @@ const listeners = new Set<(event: BridgeEvent) => void>()
 
 let initialized = false
 
+function notifyBridgeListeners(event: BridgeEvent) {
+  listeners.forEach((listener) => {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error("FileLocker bridge event listener failed.", error)
+    }
+  })
+}
+
 function ensureListener() {
   if (initialized || !window.chrome?.webview) {
     return
@@ -39,8 +49,8 @@ function ensureListener() {
 
   window.chrome.webview.addEventListener("message", (event) => {
     const message = event.data as BridgeResponse
-    if (message.type === "progress" || message.type === "droppedPaths") {
-      listeners.forEach((listener) => listener(message as BridgeEvent))
+    if (message.type === "progress" || message.type === "droppedPaths" || message.type === "dropError") {
+      notifyBridgeListeners(message as BridgeEvent)
       return
     }
 
@@ -67,7 +77,8 @@ function ensureListener() {
 export function invokeBridge<T>(action: string, payload: unknown = {}): Promise<T> {
   ensureListener()
 
-  if (!window.chrome?.webview) {
+  const webview = window.chrome?.webview
+  if (!webview) {
     return Promise.reject(new Error("FileLocker is not available in this window. Restart the app and try again."))
   }
 
@@ -76,7 +87,12 @@ export function invokeBridge<T>(action: string, payload: unknown = {}): Promise<
 
   return new Promise<T>((resolve, reject) => {
     pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
-    window.chrome?.webview?.postMessage(request)
+    try {
+      webview.postMessage(request)
+    } catch (error) {
+      pending.delete(id)
+      reject(error instanceof Error ? error : new Error("FileLocker could not send the request."))
+    }
   })
 }
 

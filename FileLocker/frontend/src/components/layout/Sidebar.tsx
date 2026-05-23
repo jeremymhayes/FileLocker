@@ -1,4 +1,4 @@
-import { Binary, BookOpen, Database, Fingerprint, Gauge, HardDrive, Hash, Info, Lock, Moon, RefreshCcw, Settings, Sparkles, Trash2, Unlock, type LucideIcon } from "lucide-react"
+import { Binary, BookOpen, Database, Fingerprint, Gauge, HardDrive, Hash, Info, Lock, Moon, Package, Power, RefreshCcw, Settings, Sparkles, Trash2, Unlock, type LucideIcon } from "lucide-react"
 import { useState } from "react"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -31,6 +31,8 @@ const navSections: Array<{ label: string; items: Array<{ key: PageKey; label: st
       { key: "partition-cleaner", label: "Partition Cleaner", icon: HardDrive },
       { key: "drive-optimizer", label: "Drive Optimizer", icon: RefreshCcw },
       { key: "registry-fixer", label: "Registry Fixer", icon: Database },
+      { key: "startup-manager", label: "Startup Manager", icon: Power },
+      { key: "app-manager", label: "App Manager", icon: Package },
     ],
   },
 ]
@@ -46,9 +48,10 @@ type SidebarProps = {
   version?: string
   settings?: SettingsState
   onThemeToggle?: (enabled: boolean) => void
+  isThemeToggleBusy?: boolean
 }
 
-export function Sidebar({ activePage, onNavigate, version, settings, onThemeToggle }: SidebarProps) {
+export function Sidebar({ activePage, onNavigate, version, settings, onThemeToggle, isThemeToggleBusy = false }: SidebarProps) {
   const [logoFailed, setLogoFailed] = useState(false)
   const darkModeEnabled = settings?.preferences.themePreference !== "Light"
 
@@ -84,12 +87,18 @@ export function Sidebar({ activePage, onNavigate, version, settings, onThemeTogg
 
       <div className="border-t border-sidebar-border p-3">
         <NavGroup items={secondaryNavItems} activePage={activePage} onNavigate={onNavigate} />
-        <label className="mt-3 flex items-center justify-between gap-3 border-t border-border px-1 py-2.5 text-secondary">
+        <label
+          aria-disabled={!onThemeToggle || isThemeToggleBusy}
+          className={cn(
+            "mt-3 flex items-center justify-between gap-3 border-t border-border px-1 py-2.5 text-secondary",
+            isThemeToggleBusy && "opacity-60"
+          )}
+        >
           <span className="flex min-w-0 items-center gap-2">
             <Moon className="size-4 text-muted" aria-hidden />
             <span className="truncate text-sm">Dark Mode</span>
           </span>
-          <Switch size="sm" checked={darkModeEnabled} onCheckedChange={onThemeToggle} disabled={!onThemeToggle} />
+          <Switch size="sm" checked={darkModeEnabled} onCheckedChange={onThemeToggle} disabled={!onThemeToggle || isThemeToggleBusy} />
         </label>
       </div>
     </aside>
@@ -133,11 +142,13 @@ function NavGroup({
           <Tooltip key={item.key}>
             <TooltipTrigger asChild>
               <button
+                type="button"
                 className={cn(
                   "flex min-h-9 w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-1.5 text-left font-display text-sm font-medium text-secondary transition-colors hover:border-border-accent hover:bg-bg-surface/70 hover:text-primary",
                   isActive && "border-nav-active-border bg-nav-active-bg text-primary"
                 )}
                 onClick={() => onNavigate(item.key)}
+                aria-current={isActive ? "page" : undefined}
               >
                 <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md text-muted", isActive && "bg-accent/15 text-accent-blue")}>
                   <Icon className="size-4" aria-hidden />

@@ -48,7 +48,10 @@ internal static class ExplorerIntegrationService
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            return new ExplorerIntegrationState(false, false, $"Explorer integration status could not be read: {ex.Message}");
+            return new ExplorerIntegrationState(
+                false,
+                false,
+                $"Explorer integration status could not be read: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
         }
     }
 

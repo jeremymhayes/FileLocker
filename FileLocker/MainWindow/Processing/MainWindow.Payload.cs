@@ -39,7 +39,12 @@ namespace FileLocker
         private ProcessingRunOptions CaptureProcessingRunOptions()
         {
             string keyfilePath = KeyfilePathBox.Text?.Trim() ?? string.Empty;
-            byte[]? keyfileBytes = ReadKeyfileBytesIfConfigured(keyfilePath);
+            return CaptureProcessingRunOptions(keyfilePath, ReadKeyfileBytesIfConfigured(keyfilePath));
+        }
+
+        private ProcessingRunOptions CaptureProcessingRunOptions(string keyfilePath, byte[]? keyfileBytes)
+        {
+            keyfilePath = keyfilePath.Trim();
             bool useDecryptPageOutputOptions = _currentSection == AppSection.DecryptFiles;
 
             ProcessingRunOptions rawOptions = new(
@@ -77,6 +82,7 @@ namespace FileLocker
 
         private ProcessingRunOptions NormalizeRunOptionsForCurrentMode(ProcessingRunOptions options)
         {
+            byte[]? originalKeyfileBytes = options.KeyfileBytes;
             ProcessingRunOptions normalized = options with
             {
                 Algorithm = "AES-GCM",
@@ -125,6 +131,12 @@ namespace FileLocker
                 normalized = normalized with { VerifyAfterWrite = true };
             }
 
+            if (originalKeyfileBytes is { Length: > 0 } &&
+                !ReferenceEquals(normalized.KeyfileBytes, originalKeyfileBytes))
+            {
+                CryptographicOperations.ZeroMemory(originalKeyfileBytes);
+            }
+
             return normalized;
         }
 
@@ -138,10 +150,10 @@ namespace FileLocker
             return File.Exists(sourcePath);
         }
 
-        private static byte[] ComputeSha256ForFile(string filePath)
+        internal static byte[] ComputeSha256ForFile(string filePath, CancellationToken cancellationToken = default)
         {
             using FileStream stream = File.OpenRead(filePath);
-            return SHA256.HashData(stream);
+            return ComputeStreamHash(stream, cancellationToken);
         }
 
         private static long CalculateSizeHidingPadding(long originalSize)
@@ -174,7 +186,7 @@ namespace FileLocker
             return Math.Max(0, nextBucket - originalSize);
         }
 
-        private static void WriteRandomPadding(Stream stream, long paddingLength, CancellationToken cancellationToken)
+        internal static void WriteRandomPadding(Stream stream, long paddingLength, CancellationToken cancellationToken)
         {
             if (paddingLength <= 0)
             {
@@ -182,18 +194,25 @@ namespace FileLocker
             }
 
             byte[] buffer = new byte[131072];
-            long remaining = paddingLength;
-            while (remaining > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                int toWrite = (int)Math.Min(buffer.Length, remaining);
-                RandomNumberGenerator.Fill(buffer.AsSpan(0, toWrite));
-                stream.Write(buffer, 0, toWrite);
-                remaining -= toWrite;
+                long remaining = paddingLength;
+                while (remaining > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int toWrite = (int)Math.Min(buffer.Length, remaining);
+                    RandomNumberGenerator.Fill(buffer.AsSpan(0, toWrite));
+                    stream.Write(buffer, 0, toWrite);
+                    remaining -= toWrite;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
             }
         }
 
-        private static void SkipBytes(Stream stream, long byteCount, CancellationToken cancellationToken)
+        internal static void SkipBytes(Stream stream, long byteCount, CancellationToken cancellationToken)
         {
             if (byteCount <= 0)
             {
@@ -201,27 +220,34 @@ namespace FileLocker
             }
 
             byte[] buffer = new byte[131072];
-            long remaining = byteCount;
-            while (remaining > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                int toRead = (int)Math.Min(buffer.Length, remaining);
-                int read = stream.Read(buffer, 0, toRead);
-                if (read == 0)
+                long remaining = byteCount;
+                while (remaining > 0)
                 {
-                    throw new EndOfStreamException();
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int toRead = (int)Math.Min(buffer.Length, remaining);
+                    int read = stream.Read(buffer, 0, toRead);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException();
+                    }
 
-                remaining -= read;
+                    remaining -= read;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
             }
         }
 
-        private static string ComputeSha256Base64ForFile(string filePath)
+        private static string ComputeSha256Base64ForFile(string filePath, CancellationToken cancellationToken = default)
         {
-            return Convert.ToBase64String(ComputeSha256ForFile(filePath));
+            return Convert.ToBase64String(ComputeSha256ForFile(filePath, cancellationToken));
         }
 
-        private static void CopyStreamWithProgress(
+        internal static void CopyStreamWithProgress(
             Stream input,
             Stream output,
             CancellationToken cancellationToken,
@@ -232,18 +258,30 @@ namespace FileLocker
             string status)
         {
             byte[] buffer = new byte[131072];
-            long processed = 0;
-            int read;
-            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                output.Write(buffer, 0, read);
-                processed += read;
-                if (totalLength > 0)
+                long processed = 0;
+                while (true)
                 {
-                    double percent = startPercent + ((double)processed / totalLength) * (endPercent - startPercent);
-                    progress?.Invoke(percent, status);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int read = input.Read(buffer, 0, buffer.Length);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    output.Write(buffer, 0, read);
+                    processed += read;
+                    if (totalLength > 0)
+                    {
+                        double percent = startPercent + ((double)processed / totalLength) * (endPercent - startPercent);
+                        progress?.Invoke(percent, status);
+                    }
                 }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
             }
         }
 
@@ -257,8 +295,23 @@ namespace FileLocker
         {
             using FileStream input = File.OpenRead(filePath);
             using var memory = new MemoryStream();
-            CopyStreamWithProgress(input, memory, cancellationToken, input.Length, progress, startPercent, endPercent, status);
-            return memory.ToArray();
+            try
+            {
+                CopyStreamWithProgress(input, memory, cancellationToken, input.Length, progress, startPercent, endPercent, status);
+                return memory.ToArray();
+            }
+            finally
+            {
+                ClearMemoryStreamBuffer(memory);
+            }
+        }
+
+        private static void ClearMemoryStreamBuffer(MemoryStream memory)
+        {
+            if (memory.TryGetBuffer(out ArraySegment<byte> buffer) && buffer.Array is not null)
+            {
+                CryptographicOperations.ZeroMemory(buffer.Array.AsSpan(0, buffer.Array.Length));
+            }
         }
 
         private void WriteAllBytesWithProgress(
@@ -270,7 +323,7 @@ namespace FileLocker
             double endPercent,
             string status)
         {
-            using FileStream output = new(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using FileStream output = new(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             using var input = new MemoryStream(data, writable: false);
             CopyStreamWithProgress(input, output, cancellationToken, data.LongLength, progress, startPercent, endPercent, status);
         }
@@ -325,6 +378,49 @@ namespace FileLocker
             return relative.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
         }
 
+        internal static bool IsSafeFolderPackageRelativePath(string? relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath) ||
+                Path.IsPathFullyQualified(relativePath) ||
+                Path.IsPathRooted(relativePath))
+            {
+                return false;
+            }
+
+            return relativePath
+                .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .All(segment => segment is not "." and not ".." && IsSafeRestoredFileName(segment));
+        }
+
+        internal static string ResolveFolderPackageEntryPath(string rootPath, string relativePath)
+        {
+            if (!IsSafeFolderPackageRelativePath(relativePath))
+            {
+                throw new UnauthorizedAccessException("Folder package contains an unsafe restore path.");
+            }
+
+            string fullRoot = Path.GetFullPath(rootPath.Trim());
+            string fullPath = Path.GetFullPath(Path.Combine(fullRoot, relativePath));
+            if (!IsSameDirectoryOrChild(fullPath, fullRoot))
+            {
+                throw new UnauthorizedAccessException("Folder package entry resolved outside the restore folder.");
+            }
+
+            return fullPath;
+        }
+
+        private static bool IsSameDirectoryOrChild(string candidatePath, string rootPath)
+        {
+            string normalizedRoot = rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(candidatePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string rootWithSeparator = normalizedRoot + Path.DirectorySeparatorChar;
+            return candidatePath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+        }
+
         private static void WriteInt64(Stream stream, long value)
         {
             Span<byte> buffer = stackalloc byte[sizeof(long)];
@@ -363,6 +459,8 @@ namespace FileLocker
             bool sourceRootIsFolder = false,
             Action<double, string>? progress = null)
         {
+            ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
+
             if (CanUseChunkedPayload(filePath, options))
             {
                 return EncryptFileAdvancedV3Core(filePath, password, options, sourceRootPath, sourceRootIsFolder, progress);
@@ -372,14 +470,26 @@ namespace FileLocker
             string? backupPath = null;
             string encryptedPath = string.Empty;
             string tempPath = string.Empty;
+            byte[]? salt = null;
+            byte[]? iv = null;
+            byte[]? key = null;
+            byte[]? fileData = null;
+            byte[]? dataToEncrypt = null;
+            byte[]? padding = null;
+            byte[]? metadataBytes = null;
+            byte[]? combined = null;
+            byte[]? ciphertext = null;
+            byte[]? tag = null;
+            byte[]? payload = null;
+            byte[]? outputBytes = null;
 
             try
             {
                 progress?.Invoke(5, "Reading source");
-                byte[] salt = GenerateRandomBytes(SALT_SIZE);
-                byte[] iv = GenerateRandomBytes(IV_SIZE);
-                byte[] key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
-                byte[] fileData = ReadAllBytesWithProgress(filePath, _processingCancellation?.Token ?? CancellationToken.None, progress, 5, 30, "Reading source");
+                salt = GenerateRandomBytes(SALT_SIZE);
+                iv = GenerateRandomBytes(IV_SIZE);
+                key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
+                fileData = ReadAllBytesWithProgress(filePath, _processingCancellation?.Token ?? CancellationToken.None, progress, 5, 30, "Reading source");
                 string originalFileName = Path.GetFileName(filePath) ?? string.Empty;
 
                 FileMetadata metadata = new()
@@ -395,7 +505,7 @@ namespace FileLocker
 
                 ApplyMetadataOverrides(metadata, filePath, options);
 
-                byte[] dataToEncrypt = fileData;
+                dataToEncrypt = fileData;
                 bool compressionApplied = false;
                 long? compressedSizeBytes = null;
                 string compressionReason = options.CompressFiles
@@ -421,9 +531,9 @@ namespace FileLocker
 
                 metadata.ContentHash = ComputeSha256(fileData);
 
-                byte[] padding = GenerateRandomBytes((int)Math.Min(int.MaxValue, CalculateSizeHidingPadding(fileData.LongLength)));
-                byte[] metadataBytes = SerializeMetadata(metadata);
-                byte[] combined = new byte[4 + metadataBytes.Length + 4 + padding.Length + dataToEncrypt.Length];
+                padding = GenerateRandomBytes((int)Math.Min(int.MaxValue, CalculateSizeHidingPadding(fileData.LongLength)));
+                metadataBytes = SerializeMetadata(metadata);
+                combined = new byte[4 + metadataBytes.Length + 4 + padding.Length + dataToEncrypt.Length];
                 int offset = 0;
                 Buffer.BlockCopy(BitConverter.GetBytes(metadataBytes.Length), 0, combined, offset, 4);
                 offset += 4;
@@ -435,15 +545,15 @@ namespace FileLocker
                 offset += padding.Length;
                 Buffer.BlockCopy(dataToEncrypt, 0, combined, offset, dataToEncrypt.Length);
 
-                byte[] ciphertext = new byte[combined.Length];
-                byte[] tag = new byte[TAG_SIZE];
+                ciphertext = new byte[combined.Length];
+                tag = new byte[TAG_SIZE];
                 progress?.Invoke(60, "Encrypting");
                 using (var aes = new AesGcm(key, TAG_SIZE))
                 {
                     aes.Encrypt(iv, combined, ciphertext, tag);
                 }
 
-                byte[] payload = BuildEncryptedPayload(salt, iv, tag, ciphertext);
+                payload = BuildEncryptedPayload(salt, iv, tag, ciphertext);
                 encryptedPath = ResolveAvailablePath(BuildOutputPath(
                     filePath,
                     options.ScrambleNames,
@@ -451,8 +561,8 @@ namespace FileLocker
                     options.UseCustomEncryptOutputDirectory ? options.EncryptOutputDirectory : null,
                     sourceRootPath,
                     sourceRootIsFolder));
-                tempPath = encryptedPath + ".tmp";
-                byte[] outputBytes = options.UseSteganography ? EmbedInPngContainer(payload) : payload;
+                tempPath = ResolveTemporaryOutputPath(encryptedPath);
+                outputBytes = options.UseSteganography ? EmbedInPngContainer(payload) : payload;
 
                 if (!string.IsNullOrWhiteSpace(options.BackupFolderPath))
                 {
@@ -501,10 +611,37 @@ namespace FileLocker
                     ElapsedMilliseconds = elapsed.ElapsedMilliseconds
                 };
             }
+            catch (OperationCanceledException)
+            {
+                CleanupTemporaryFile(tempPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 CleanupTemporaryFile(tempPath);
                 throw new InvalidOperationException($"Encryption failed: {GetFriendlyExceptionMessage(ex, "Unknown error while encrypting.")}", ex);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(salt);
+                ClearSensitiveBuffer(iv);
+                ClearSensitiveBuffer(key);
+                if (dataToEncrypt is not null && !ReferenceEquals(dataToEncrypt, fileData))
+                {
+                    ClearSensitiveBuffer(dataToEncrypt);
+                }
+
+                ClearSensitiveBuffer(fileData);
+                ClearSensitiveBuffer(padding);
+                ClearSensitiveBuffer(metadataBytes);
+                ClearSensitiveBuffer(combined);
+                ClearSensitiveBuffer(ciphertext);
+                ClearSensitiveBuffer(tag);
+                ClearSensitiveBuffer(payload);
+                if (outputBytes is not null && !ReferenceEquals(outputBytes, payload))
+                {
+                    ClearSensitiveBuffer(outputBytes);
+                }
             }
         }
 
@@ -515,6 +652,8 @@ namespace FileLocker
             Action<double, string>? progress = null,
             string? relativeOutputDirectory = null)
         {
+            ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
+
             var elapsed = Stopwatch.StartNew();
             if (IsPayloadV3File(filePath))
             {
@@ -524,17 +663,19 @@ namespace FileLocker
             string? backupPath = null;
             string finalPath = string.Empty;
             string tempPath = string.Empty;
+            byte[]? fileData = null;
             try
             {
                 long encryptedInputSize = new FileInfo(filePath).Length;
                 progress?.Invoke(5, "Reading payload");
-                (FileMetadata metadata, byte[] fileData) = UnlockFilePayload(filePath, password, options, progress);
+                (FileMetadata metadata, byte[] unlockedFileData) = UnlockFilePayload(filePath, password, options, progress);
+                fileData = unlockedFileData;
 
                 string directory = ResolveDecryptOutputDirectory(filePath, options, relativeOutputDirectory);
                 string outputFileName = ResolveDecryptedFileName(filePath, metadata.OriginalFileName, options.RestoreOriginalFilenames);
                 string originalPath = Path.Combine(directory, outputFileName);
                 finalPath = ResolveAvailablePath(originalPath);
-                tempPath = finalPath + ".tmp";
+                tempPath = ResolveTemporaryOutputPath(finalPath);
 
                 if (!string.IsNullOrWhiteSpace(options.BackupFolderPath))
                 {
@@ -582,10 +723,19 @@ namespace FileLocker
                     ElapsedMilliseconds = elapsed.ElapsedMilliseconds
                 };
             }
+            catch (OperationCanceledException)
+            {
+                CleanupTemporaryFile(tempPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 CleanupTemporaryFile(tempPath);
                 throw new InvalidOperationException($"Decryption failed: {GetFriendlyExceptionMessage(ex, "Unknown error while decrypting.")}", ex);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(fileData);
             }
         }
 
@@ -597,22 +747,32 @@ namespace FileLocker
             }
 
             progress?.Invoke(10, "Reading payload");
-            (FileMetadata metadata, byte[] fileData) = UnlockFilePayload(filePath, password, options, progress);
-            progress?.Invoke(100, "Verified");
-            return new FileOperationResult
+            byte[]? fileData = null;
+            try
             {
-                SourcePath = filePath,
-                OutputPath = null,
-                BackupPath = null,
-                Status = "Completed",
-                OriginalRetained = true,
-                OutputVerified = true,
-                Message = $"Verified {metadata.OriginalFileName} ({FormatFileSize(fileData.LongLength)}) without writing output."
-            };
+                (FileMetadata metadata, byte[] unlockedFileData) = UnlockFilePayload(filePath, password, options, progress);
+                fileData = unlockedFileData;
+                progress?.Invoke(100, "Verified");
+                return new FileOperationResult
+                {
+                    SourcePath = filePath,
+                    OutputPath = null,
+                    BackupPath = null,
+                    Status = "Completed",
+                    OriginalRetained = true,
+                    OutputVerified = true,
+                    Message = $"Verified {metadata.OriginalFileName} ({FormatFileSize(fileData.LongLength)}) without writing output."
+                };
+            }
+            finally
+            {
+                ClearSensitiveBuffer(fileData);
+            }
         }
 
         private FileOperationResult EncryptFileAdvancedV3(string filePath, string password, ProcessingRunOptions options, Action<double, string>? progress = null)
         {
+            ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
             return EncryptFileAdvancedV3Core(filePath, password, options, null, false, progress);
         }
 
@@ -632,7 +792,7 @@ namespace FileLocker
             try
             {
                 var fileInfo = new FileInfo(filePath);
-                byte[] contentHash = ComputeSha256ForFile(filePath);
+                byte[] contentHash = ComputeSha256ForFile(filePath, _processingCancellation?.Token ?? CancellationToken.None);
                 CompressionPlan compressionPlan = CompressionAdvisor.CreatePlan(filePath, fileInfo.Length, options.CompressFiles);
                 long originalSizeBytes = fileInfo.Length;
                 var metadata = new FilePayloadMetadata
@@ -676,7 +836,7 @@ namespace FileLocker
                     options.UseCustomEncryptOutputDirectory ? options.EncryptOutputDirectory : null,
                     sourceRootPath,
                     sourceRootIsFolder));
-                tempPath = encryptedPath + ".tmp";
+                tempPath = ResolveTemporaryOutputPath(encryptedPath);
                 long? compressedSizeBytes = null;
 
                 if (!string.IsNullOrWhiteSpace(options.BackupFolderPath))
@@ -684,7 +844,7 @@ namespace FileLocker
                     backupPath = CreateBackupCopy(filePath, options.BackupFolderPath);
                 }
 
-                using (FileStream output = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     progress?.Invoke(5, compressionPlan.ShouldCompress ? "Preparing compression" : "Preparing");
                     PayloadChunkedService.WritePayload(
@@ -760,6 +920,11 @@ namespace FileLocker
                     ElapsedMilliseconds = elapsed.ElapsedMilliseconds
                 };
             }
+            catch (OperationCanceledException)
+            {
+                CleanupTemporaryFile(tempPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 CleanupTemporaryFile(tempPath);
@@ -809,18 +974,19 @@ namespace FileLocker
                     {
                         FilePayloadMetadata metadata = JsonSerializer.Deserialize<FilePayloadMetadata>(payload.MetadataBytes, JsonOptions)
                             ?? throw new InvalidDataException("File payload metadata is invalid.");
+                        ValidateFilePayloadMetadata(metadata);
 
                         string directory = ResolveDecryptOutputDirectory(filePath, options, relativeOutputDirectory);
                         string outputFileName = ResolveDecryptedFileName(filePath, metadata.OriginalFileName, options.RestoreOriginalFilenames);
                         finalPath = ResolveAvailablePath(Path.Combine(directory, outputFileName));
-                        tempPath = finalPath + ".tmp";
+                        tempPath = ResolveTemporaryOutputPath(finalPath);
 
                         if (!string.IsNullOrWhiteSpace(options.BackupFolderPath))
                         {
                             backupPath = CreateBackupCopy(filePath, options.BackupFolderPath);
                         }
 
-                        using (FileStream output = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                         {
                             if (metadata.IsCompressed)
                             {
@@ -837,7 +1003,7 @@ namespace FileLocker
                         if (!string.IsNullOrWhiteSpace(metadata.ContentHashBase64))
                         {
                             byte[] expectedHash = Convert.FromBase64String(metadata.ContentHashBase64);
-                            byte[] actualHash = ComputeSha256ForFile(tempPath);
+                            byte[] actualHash = ComputeSha256ForFile(tempPath, _processingCancellation?.Token ?? CancellationToken.None);
                             if (!expectedHash.AsSpan().SequenceEqual(actualHash))
                             {
                                 throw new UnauthorizedAccessException("The restored file failed integrity validation.");
@@ -890,6 +1056,11 @@ namespace FileLocker
                 progress?.Invoke(100, "Completed");
                 return result;
             }
+            catch (OperationCanceledException)
+            {
+                CleanupTemporaryFile(tempPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 CleanupTemporaryFile(tempPath);
@@ -911,7 +1082,7 @@ namespace FileLocker
             {
                 FolderPackageMetadata packageMetadata = JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions)
                     ?? throw new InvalidDataException("Folder package metadata is invalid.");
-                VerifyFolderPackagePayloadV3(payload, packageMetadata, progress);
+                VerifyFolderPackagePayloadV3(payload, packageMetadata, _processingCancellation?.Token ?? CancellationToken.None, progress);
                 progress?.Invoke(100, "Verified");
                 return new FileOperationResult
                 {
@@ -925,6 +1096,7 @@ namespace FileLocker
 
             FilePayloadMetadata metadata = JsonSerializer.Deserialize<FilePayloadMetadata>(payload.MetadataBytes, JsonOptions)
                 ?? throw new InvalidDataException("File payload metadata is invalid.");
+            ValidateFilePayloadMetadata(metadata);
 
             byte[] verifiedHash;
             if (metadata.IsCompressed)
@@ -957,6 +1129,19 @@ namespace FileLocker
             };
         }
 
+        internal static void ValidateFilePayloadMetadata(FilePayloadMetadata metadata)
+        {
+            if (metadata.OriginalSize < 0)
+            {
+                throw new InvalidDataException("File payload metadata contains an invalid original size.");
+            }
+
+            if (metadata.ContentPaddingLength < 0)
+            {
+                throw new InvalidDataException("File payload metadata contains an invalid padding length.");
+            }
+        }
+
         private FileOperationResult EncryptFolderPackage(ProcessingWorkItem workItem, string password, ProcessingRunOptions options, Action<double, string>? progress = null)
         {
             var elapsed = Stopwatch.StartNew();
@@ -974,6 +1159,14 @@ namespace FileLocker
             string? backupPath = null;
             string outputPath = string.Empty;
             string tempPath = string.Empty;
+            ValidateFolderPackageSourceRoot(rootFolderPath);
+
+            if (options.RemoveOriginalsAfterSuccess &&
+                options.UseCustomEncryptOutputDirectory &&
+                IsDirectoryInsideSource(rootFolderPath, options.EncryptOutputDirectory))
+            {
+                throw new InvalidOperationException("Choose an encrypt output folder outside the source folder before removing originals.");
+            }
 
             try
             {
@@ -1001,20 +1194,20 @@ namespace FileLocker
                         LastWriteTimeUtc = File.GetLastWriteTimeUtc(queueItem.SourcePath),
                         LastAccessTimeUtc = File.GetLastAccessTimeUtc(queueItem.SourcePath),
                         OriginalAttributes = (int)File.GetAttributes(queueItem.SourcePath),
-                        ContentHashBase64 = ComputeSha256Base64ForFile(queueItem.SourcePath)
+                        ContentHashBase64 = ComputeSha256Base64ForFile(queueItem.SourcePath, _processingCancellation?.Token ?? CancellationToken.None)
                     });
                 }
 
                 byte[] metadataBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
                 outputPath = ResolveAvailablePath(BuildFolderPackageOutputPath(rootFolderPath, options.ScrambleNames, options.UseCustomEncryptOutputDirectory ? options.EncryptOutputDirectory : null));
-                tempPath = outputPath + ".tmp";
+                tempPath = ResolveTemporaryOutputPath(outputPath);
 
                 if (!string.IsNullOrWhiteSpace(options.BackupFolderPath))
                 {
                     backupPath = CreateBackupFolderCopy(rootFolderPath, options.BackupFolderPath);
                 }
 
-                using (FileStream output = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     progress?.Invoke(5, "Preparing package");
                     PayloadChunkedService.WritePayload(
@@ -1026,7 +1219,7 @@ namespace FileLocker
                             long processedBytes = 0;
                             foreach (FolderPackageEntryMetadata entry in manifest.Entries)
                             {
-                                string entrySourcePath = Path.Combine(rootFolderPath, entry.RelativePath);
+                                string entrySourcePath = ResolveFolderPackageEntryPath(rootFolderPath, entry.RelativePath);
                                 WriteInt64(payloadStream, entry.OriginalSize);
                                 using FileStream source = File.OpenRead(entrySourcePath);
                                 CopyStreamWithProgress(
@@ -1036,7 +1229,7 @@ namespace FileLocker
                                     source.Length,
                                     (percent, status) =>
                                     {
-                                        double adjustedPercent = 10 + ((processedBytes + (percent / 100.0 * entry.OriginalSize)) / totalBytes) * 70;
+                                        double adjustedPercent = CalculateFolderPackageProgress(processedBytes, entry.OriginalSize, percent, totalBytes, 10, 80);
                                         progress?.Invoke(adjustedPercent, "Encrypting package");
                                     },
                                     0,
@@ -1095,6 +1288,11 @@ namespace FileLocker
                     ElapsedMilliseconds = elapsed.ElapsedMilliseconds
                 };
             }
+            catch (OperationCanceledException)
+            {
+                CleanupTemporaryFile(tempPath);
+                throw;
+            }
             catch (Exception ex)
             {
                 CleanupTemporaryFile(tempPath);
@@ -1110,100 +1308,132 @@ namespace FileLocker
             Action<double, string>? progress = null,
             string? relativeOutputDirectory = null)
         {
+            ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
+
             var elapsed = Stopwatch.StartNew();
             string directory = ResolveDecryptOutputDirectory(filePath, options, relativeOutputDirectory);
-            string packageFolderName = options.RestoreOriginalFilenames
-                ? Path.GetFileName(packageMetadata.RootFolderName)
-                : BuildFallbackDecryptedFileName(filePath);
-            if (string.IsNullOrWhiteSpace(packageFolderName))
-            {
-                packageFolderName = "Restored";
-            }
-
+            string packageFolderName = ResolveFolderPackageRootName(
+                filePath,
+                packageMetadata.RootFolderName,
+                options.RestoreOriginalFilenames);
             string restoreRoot = ResolveAvailablePath(Path.Combine(directory, packageFolderName));
+            bool restoreEntriesCompleted = false;
 
-            Directory.CreateDirectory(restoreRoot);
-
-            long totalBytes = packageMetadata.Entries.Sum(entry => entry.OriginalSize);
-            long processedBytes = 0;
-            foreach (FolderPackageEntryMetadata entry in packageMetadata.Entries)
+            try
             {
-                string targetPath = Path.Combine(restoreRoot, entry.RelativePath);
-                string? targetDirectory = Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrWhiteSpace(targetDirectory))
+                Directory.CreateDirectory(restoreRoot);
+
+                long totalBytes = packageMetadata.Entries.Sum(entry => entry.OriginalSize);
+                long processedBytes = 0;
+                foreach (FolderPackageEntryMetadata entry in packageMetadata.Entries)
                 {
-                    Directory.CreateDirectory(targetDirectory);
+                    string targetPath = ResolveFolderPackageEntryPath(restoreRoot, entry.RelativePath);
+                    string? targetDirectory = Path.GetDirectoryName(targetPath);
+                    if (!string.IsNullOrWhiteSpace(targetDirectory))
+                    {
+                        Directory.CreateDirectory(targetDirectory);
+                    }
+
+                    long entryLength = ReadInt64(payload.PlaintextStream);
+                    ValidateFolderPackageEntryLength(entry, entryLength);
+                    string finalTargetPath = ResolveAvailablePath(targetPath);
+                    using FileStream output = CreateNewOutputFileStream(finalTargetPath);
+                    CopyFixedLengthStream(
+                        payload.PlaintextStream,
+                        output,
+                        entryLength,
+                        _processingCancellation?.Token ?? CancellationToken.None,
+                        (percent, status) =>
+                        {
+                            double adjustedPercent = CalculateFolderPackageProgress(processedBytes, entry.OriginalSize, percent, totalBytes, 10, 90);
+                            progress?.Invoke(adjustedPercent, "Decrypting package");
+                        },
+                        0,
+                        100,
+                        "Decrypting package");
+                    processedBytes += entry.OriginalSize;
+                    RestoreFileMetadata(
+                        finalTargetPath,
+                        new FileMetadata
+                        {
+                            OriginalFileName = Path.GetFileName(finalTargetPath),
+                            OriginalSize = entry.OriginalSize,
+                            CreationTime = entry.CreationTimeUtc,
+                            LastWriteTime = entry.LastWriteTimeUtc,
+                            LastAccessTime = entry.LastAccessTimeUtc,
+                            OriginalAttributes = (System.IO.FileAttributes)entry.OriginalAttributes
+                        });
                 }
 
-                long entryLength = ReadInt64(payload.PlaintextStream);
-                string finalTargetPath = ResolveAvailablePath(targetPath);
-                using FileStream output = new(finalTargetPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                CopyFixedLengthStream(
-                    payload.PlaintextStream,
-                    output,
-                    entryLength,
-                    _processingCancellation?.Token ?? CancellationToken.None,
-                    (percent, status) =>
-                    {
-                        double adjustedPercent = 10 + ((processedBytes + (percent / 100.0 * entry.OriginalSize)) / totalBytes) * 80;
-                        progress?.Invoke(adjustedPercent, "Decrypting package");
-                    },
-                    0,
-                    100,
-                    "Decrypting package");
-                processedBytes += entry.OriginalSize;
-                RestoreFileMetadata(
-                    finalTargetPath,
-                    new FileMetadata
-                    {
-                        OriginalFileName = Path.GetFileName(finalTargetPath),
-                        OriginalSize = entry.OriginalSize,
-                        CreationTime = entry.CreationTimeUtc,
-                        LastWriteTime = entry.LastWriteTimeUtc,
-                        LastAccessTime = entry.LastAccessTimeUtc,
-                        OriginalAttributes = (System.IO.FileAttributes)entry.OriginalAttributes
-                    });
-            }
-
-            bool retained = true;
-            if (options.RemoveOriginalsAfterSuccess)
+                restoreEntriesCompleted = true;
+                bool retained = true;
+                if (options.RemoveOriginalsAfterSuccess)
                 {
                     DeleteSourceFile(filePath, options.SecureDeleteOriginals);
                     retained = false;
                 }
 
-            progress?.Invoke(100, "Completed");
+                progress?.Invoke(100, "Completed");
 
-            return new FileOperationResult
+                return new FileOperationResult
+                {
+                    SourcePath = filePath,
+                    OutputPath = restoreRoot,
+                    Status = "Completed",
+                    OriginalRetained = retained,
+                    OutputVerified = true,
+                    Message = $"Restored folder package to {restoreRoot} with {packageMetadata.Entries.Count} files.",
+                    OriginalSizeBytes = new FileInfo(filePath).Length,
+                    OutputSizeBytes = totalBytes,
+                    CompressionApplied = false,
+                    CompressionReason = "Folder package payload was not compressed.",
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                };
+            }
+            catch
             {
-                SourcePath = filePath,
-                OutputPath = restoreRoot,
-                Status = "Completed",
-                OriginalRetained = retained,
-                OutputVerified = true,
-                Message = $"Restored folder package to {restoreRoot} with {packageMetadata.Entries.Count} files.",
-                OriginalSizeBytes = new FileInfo(filePath).Length,
-                OutputSizeBytes = totalBytes,
-                CompressionApplied = false,
-                CompressionReason = "Folder package payload was not compressed.",
-                ElapsedMilliseconds = elapsed.ElapsedMilliseconds
-            };
+                if (!restoreEntriesCompleted)
+                {
+                    TryCleanupPartialFolderRestore(restoreRoot);
+                }
+
+                throw;
+            }
         }
 
-        private static void VerifyFolderPackagePayloadV3(OpenPayloadResult payload, FolderPackageMetadata packageMetadata, Action<double, string>? progress = null)
+        internal static bool TryCleanupPartialFolderRestore(string restoreRoot)
+        {
+            try
+            {
+                DeleteSourceDirectory(restoreRoot, secureDelete: false);
+                return !Directory.Exists(restoreRoot);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void VerifyFolderPackagePayloadV3(
+            OpenPayloadResult payload,
+            FolderPackageMetadata packageMetadata,
+            CancellationToken cancellationToken,
+            Action<double, string>? progress = null)
         {
             long totalBytes = packageMetadata.Entries.Sum(entry => entry.OriginalSize);
             long processedBytes = 0;
             foreach (FolderPackageEntryMetadata entry in packageMetadata.Entries)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 long entryLength = ReadInt64(payload.PlaintextStream);
+                ValidateFolderPackageEntryLength(entry, entryLength);
                 byte[] hash = ComputeFixedLengthStreamHash(
                     payload.PlaintextStream,
                     entryLength,
-                    CancellationToken.None,
+                    cancellationToken,
                     (percent, status) =>
                     {
-                        double adjustedPercent = 10 + ((processedBytes + (percent / 100.0 * entry.OriginalSize)) / totalBytes) * 85;
+                        double adjustedPercent = CalculateFolderPackageProgress(processedBytes, entry.OriginalSize, percent, totalBytes, 10, 95);
                         progress?.Invoke(adjustedPercent, "Verifying package");
                     },
                     0,
@@ -1218,7 +1448,43 @@ namespace FileLocker
             }
         }
 
-        private static byte[] ComputeStreamHash(
+        internal static void ValidateFolderPackageEntryLength(FolderPackageEntryMetadata entry, long payloadLength)
+        {
+            if (entry.OriginalSize < 0)
+            {
+                throw new InvalidDataException($"Folder package entry has invalid size metadata: {entry.RelativePath}");
+            }
+
+            if (payloadLength < 0)
+            {
+                throw new InvalidDataException($"Folder package entry has invalid payload length: {entry.RelativePath}");
+            }
+
+            if (payloadLength != entry.OriginalSize)
+            {
+                throw new InvalidDataException($"Folder package entry length does not match metadata: {entry.RelativePath}");
+            }
+        }
+
+        internal static double CalculateFolderPackageProgress(
+            long processedBytes,
+            long entryBytes,
+            double entryPercent,
+            long totalBytes,
+            double startPercent,
+            double endPercent)
+        {
+            if (totalBytes <= 0)
+            {
+                return endPercent;
+            }
+
+            double currentEntryBytes = Math.Clamp(entryPercent, 0, 100) / 100.0 * Math.Max(0, entryBytes);
+            double completedRatio = Math.Clamp((processedBytes + currentEntryBytes) / totalBytes, 0, 1);
+            return startPercent + completedRatio * (endPercent - startPercent);
+        }
+
+        internal static byte[] ComputeStreamHash(
             Stream stream,
             CancellationToken cancellationToken,
             Action<double, string>? progress = null,
@@ -1228,22 +1494,34 @@ namespace FileLocker
         {
             using var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             byte[] buffer = new byte[131072];
-            long totalLength = stream.CanSeek ? Math.Max(1, stream.Length - stream.Position) : 0;
-            long processed = 0;
-            int read;
-            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                incrementalHash.AppendData(buffer, 0, read);
-                processed += read;
-                if (totalLength > 0)
+                long totalLength = stream.CanSeek ? Math.Max(1, stream.Length - stream.Position) : 0;
+                long processed = 0;
+                while (true)
                 {
-                    double percent = startPercent + ((double)processed / totalLength) * (endPercent - startPercent);
-                    progress?.Invoke(percent, status);
-                }
-            }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int read = stream.Read(buffer, 0, buffer.Length);
+                    if (read == 0)
+                    {
+                        break;
+                    }
 
-            return incrementalHash.GetHashAndReset();
+                    incrementalHash.AppendData(buffer, 0, read);
+                    processed += read;
+                    if (totalLength > 0)
+                    {
+                        double percent = startPercent + ((double)processed / totalLength) * (endPercent - startPercent);
+                        progress?.Invoke(percent, status);
+                    }
+                }
+
+                return incrementalHash.GetHashAndReset();
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
+            }
         }
 
         private static byte[] ComputeFixedLengthStreamHash(
@@ -1257,32 +1535,39 @@ namespace FileLocker
         {
             using var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             byte[] buffer = new byte[131072];
-            long remaining = length;
-            long processed = 0;
-            while (remaining > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                int toRead = (int)Math.Min(buffer.Length, remaining);
-                int read = stream.Read(buffer, 0, toRead);
-                if (read == 0)
+                long remaining = length;
+                long processed = 0;
+                while (remaining > 0)
                 {
-                    throw new EndOfStreamException();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int toRead = (int)Math.Min(buffer.Length, remaining);
+                    int read = stream.Read(buffer, 0, toRead);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException();
+                    }
+
+                    incrementalHash.AppendData(buffer, 0, read);
+                    remaining -= read;
+                    processed += read;
+                    if (length > 0)
+                    {
+                        double percent = startPercent + ((double)processed / length) * (endPercent - startPercent);
+                        progress?.Invoke(percent, status);
+                    }
                 }
 
-                incrementalHash.AppendData(buffer, 0, read);
-                remaining -= read;
-                processed += read;
-                if (length > 0)
-                {
-                    double percent = startPercent + ((double)processed / length) * (endPercent - startPercent);
-                    progress?.Invoke(percent, status);
-                }
+                return incrementalHash.GetHashAndReset();
             }
-
-            return incrementalHash.GetHashAndReset();
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
+            }
         }
 
-        private static void CopyFixedLengthStream(
+        internal static void CopyFixedLengthStream(
             Stream input,
             Stream output,
             long length,
@@ -1293,49 +1578,162 @@ namespace FileLocker
             string status = "Processing")
         {
             byte[] buffer = new byte[131072];
-            long remaining = length;
-            long processed = 0;
-            while (remaining > 0)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                int toRead = (int)Math.Min(buffer.Length, remaining);
-                int read = input.Read(buffer, 0, toRead);
-                if (read == 0)
+                long remaining = length;
+                long processed = 0;
+                while (remaining > 0)
                 {
-                    throw new EndOfStreamException();
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int toRead = (int)Math.Min(buffer.Length, remaining);
+                    int read = input.Read(buffer, 0, toRead);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException();
+                    }
 
-                output.Write(buffer, 0, read);
-                remaining -= read;
-                processed += read;
-                if (length > 0)
-                {
-                    double percent = startPercent + ((double)processed / length) * (endPercent - startPercent);
-                    progress?.Invoke(percent, status);
+                    output.Write(buffer, 0, read);
+                    remaining -= read;
+                    processed += read;
+                    if (length > 0)
+                    {
+                        double percent = startPercent + ((double)processed / length) * (endPercent - startPercent);
+                        progress?.Invoke(percent, status);
+                    }
                 }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
             }
         }
 
         private static string CreateBackupFolderCopy(string sourceFolderPath, string backupFolderPath)
         {
+            if (IsBackupFolderInsideSource(sourceFolderPath, backupFolderPath))
+            {
+                throw new InvalidOperationException("Choose a backup folder outside the source folder before removing originals.");
+            }
+
             Directory.CreateDirectory(backupFolderPath);
-            string destinationRoot = Path.Combine(
+            string destinationRoot = ResolveAvailableDirectoryPath(Path.Combine(
                 backupFolderPath,
-                $"{Path.GetFileName(sourceFolderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))}_{DateTime.Now:yyyyMMdd_HHmmss}");
+                $"{Path.GetFileName(sourceFolderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))}_{DateTime.Now:yyyyMMdd_HHmmss}"));
             CopyDirectory(sourceFolderPath, destinationRoot);
             return destinationRoot;
+        }
+
+        internal static string ResolveAvailableDirectoryPath(string directoryPath)
+        {
+            string candidate = directoryPath;
+            int counter = 1;
+            while (Directory.Exists(candidate) || File.Exists(candidate))
+            {
+                candidate = $"{directoryPath}_{counter}";
+                counter++;
+            }
+
+            return candidate;
+        }
+
+        internal static bool IsBackupFolderInsideSource(string sourceFolderPath, string backupFolderPath)
+        {
+            return IsDirectoryInsideSource(sourceFolderPath, backupFolderPath);
+        }
+
+        internal static bool IsDirectoryInsideSource(string sourceFolderPath, string candidateDirectoryPath)
+        {
+            if (string.IsNullOrWhiteSpace(sourceFolderPath) || string.IsNullOrWhiteSpace(candidateDirectoryPath))
+            {
+                return false;
+            }
+
+            string sourceFullPath = Path.GetFullPath(sourceFolderPath.Trim());
+            string candidateFullPath = Path.GetFullPath(candidateDirectoryPath.Trim());
+            if (IsSameDirectoryOrChild(candidateFullPath, sourceFullPath))
+            {
+                return true;
+            }
+
+            string? sourceResolvedPath = TryResolveDirectoryPathThroughExistingParent(sourceFullPath);
+            string? candidateResolvedPath = TryResolveDirectoryPathThroughExistingParent(candidateFullPath);
+            return sourceResolvedPath != null &&
+                candidateResolvedPath != null &&
+                IsSameDirectoryOrChild(candidateResolvedPath, sourceResolvedPath);
+        }
+
+        private static string? TryResolveDirectoryPathThroughExistingParent(string directoryPath)
+        {
+            try
+            {
+                string fullPath = Path.GetFullPath(directoryPath.Trim());
+                if (Directory.Exists(fullPath))
+                {
+                    return TryResolveExistingDirectoryTarget(fullPath);
+                }
+
+                var pendingSegments = new Stack<string>();
+                string? currentPath = fullPath;
+                while (!string.IsNullOrWhiteSpace(currentPath) && !Directory.Exists(currentPath))
+                {
+                    string trimmedPath = currentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    string segment = Path.GetFileName(trimmedPath);
+                    if (string.IsNullOrWhiteSpace(segment))
+                    {
+                        return null;
+                    }
+
+                    pendingSegments.Push(segment);
+                    currentPath = Path.GetDirectoryName(trimmedPath);
+                }
+
+                if (string.IsNullOrWhiteSpace(currentPath))
+                {
+                    return null;
+                }
+
+                string? resolvedPath = TryResolveExistingDirectoryTarget(currentPath);
+                if (resolvedPath == null)
+                {
+                    return null;
+                }
+
+                foreach (string segment in pendingSegments)
+                {
+                    resolvedPath = Path.Combine(resolvedPath, segment);
+                }
+
+                return Path.GetFullPath(resolvedPath);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string? TryResolveExistingDirectoryTarget(string directoryPath)
+        {
+            if (!Directory.Exists(directoryPath))
+            {
+                return null;
+            }
+
+            var directoryInfo = new DirectoryInfo(directoryPath);
+            FileSystemInfo? resolvedTarget = directoryInfo.ResolveLinkTarget(returnFinalTarget: true);
+            return Path.GetFullPath(resolvedTarget?.FullName ?? directoryInfo.FullName);
         }
 
         private static void CopyDirectory(string sourceFolderPath, string destinationFolderPath)
         {
             Directory.CreateDirectory(destinationFolderPath);
-            foreach (string directory in Directory.EnumerateDirectories(sourceFolderPath, "*", SearchOption.AllDirectories))
+            EnumerationOptions options = CreateUserTreeEnumerationOptions();
+            foreach (string directory in Directory.EnumerateDirectories(sourceFolderPath, "*", options))
             {
                 string relative = Path.GetRelativePath(sourceFolderPath, directory);
                 Directory.CreateDirectory(Path.Combine(destinationFolderPath, relative));
             }
 
-            foreach (string file in Directory.EnumerateFiles(sourceFolderPath, "*", SearchOption.AllDirectories))
+            foreach (string file in Directory.EnumerateFiles(sourceFolderPath, "*", options))
             {
                 string relative = Path.GetRelativePath(sourceFolderPath, file);
                 string destination = Path.Combine(destinationFolderPath, relative);
@@ -1349,14 +1747,80 @@ namespace FileLocker
             }
         }
 
-        private static void DeleteSourceDirectory(string directoryPath, bool secureDelete, int secureDeletePasses = 3)
+        internal static void DeleteSourceDirectory(string directoryPath, bool secureDelete, int secureDeletePasses = 3)
         {
-            foreach (string file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
+            if (!Directory.Exists(directoryPath))
             {
+                return;
+            }
+
+            if (IsReparsePointPath(directoryPath))
+            {
+                Directory.Delete(directoryPath, recursive: false);
+                return;
+            }
+
+            DeleteSourceDirectoryContents(directoryPath, secureDelete, secureDeletePasses);
+            FileCleanupService.ClearReadOnlyAttribute(directoryPath);
+            Directory.Delete(directoryPath, recursive: false);
+        }
+
+        internal static EnumerationOptions CreateUserTreeEnumerationOptions()
+        {
+            return new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = false,
+                ReturnSpecialDirectories = false,
+                AttributesToSkip = System.IO.FileAttributes.ReparsePoint
+            };
+        }
+
+        internal static void ValidateFolderPackageSourceRoot(string rootFolderPath)
+        {
+            if (IsReparsePointPath(rootFolderPath))
+            {
+                throw new IOException("Folder package source root cannot be a symlink or junction.");
+            }
+        }
+
+        private static void DeleteSourceDirectoryContents(string directoryPath, bool secureDelete, int secureDeletePasses)
+        {
+            foreach (string file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (IsReparsePointPath(file))
+                {
+                    File.Delete(file);
+                    continue;
+                }
+
                 DeleteSourceFile(file, secureDelete, secureDeletePasses);
             }
 
-            Directory.Delete(directoryPath, recursive: true);
+            foreach (string childDirectory in Directory.EnumerateDirectories(directoryPath, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (IsReparsePointPath(childDirectory))
+                {
+                    Directory.Delete(childDirectory, recursive: false);
+                    continue;
+                }
+
+                DeleteSourceDirectoryContents(childDirectory, secureDelete, secureDeletePasses);
+                FileCleanupService.ClearReadOnlyAttribute(childDirectory);
+                Directory.Delete(childDirectory, recursive: false);
+            }
+        }
+
+        private static bool IsReparsePointPath(string path)
+        {
+            try
+            {
+                return (File.GetAttributes(path) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private async Task<bool> ConfirmFolderPackageRestoreAsync(
@@ -1372,14 +1836,23 @@ namespace FileLocker
             }
 
             string previewDirectory = ResolveDecryptOutputDirectory(filePath, options, relativeOutputDirectory);
-            string preferredRoot = Path.Combine(previewDirectory, metadata.RootFolderName);
+            string previewRootName = ResolveFolderPackageRootName(filePath, metadata.RootFolderName, options.RestoreOriginalFilenames);
+            string preferredRoot = Path.Combine(previewDirectory, previewRootName);
             string previewRoot = ResolveAvailablePath(preferredRoot);
             bool rootWillBeRenamed = !string.Equals(preferredRoot, previewRoot, StringComparison.OrdinalIgnoreCase);
 
+            FolderPackageEntryMetadata? unsafeEntry = metadata.Entries.FirstOrDefault(entry => !IsSafeFolderPackageRelativePath(entry.RelativePath));
+            if (unsafeEntry != null)
+            {
+                throw new InvalidDataException($"Folder package contains an unsafe restore path: {unsafeEntry.RelativePath}");
+            }
+
             List<FolderPackageEntryMetadata> conflictingEntries = metadata.Entries
                 .Where(entry =>
-                    File.Exists(Path.Combine(preferredRoot, entry.RelativePath)) ||
-                    Directory.Exists(Path.Combine(preferredRoot, entry.RelativePath)))
+                {
+                    string targetPath = ResolveFolderPackageEntryPath(preferredRoot, entry.RelativePath);
+                    return File.Exists(targetPath) || Directory.Exists(targetPath);
+                })
                 .ToList();
 
             string sampleEntries = string.Join(
@@ -1422,21 +1895,29 @@ namespace FileLocker
             return JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions);
         }
 
-        private void RotatePayloadKeys(string filePath, string newPassword, string? newRecoveryKey)
+        private void RotatePayloadKeys(
+            string filePath,
+            string currentPassword,
+            string? currentRecoveryKey,
+            byte[]? keyfileBytes,
+            string newPassword,
+            string? newRecoveryKey,
+            CancellationToken cancellationToken = default)
         {
-            string tempPath = filePath + ".rotate.tmp";
+            string tempPath = ResolveTemporaryOutputPath(filePath, ".rotate.tmp");
             try
             {
                 using FileStream input = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                using FileStream output = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                using FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
                 PayloadChunkedService.RotateKeys(
                     input,
                     output,
                     new PayloadRotateInputs(
-                        new PayloadUnlockInputs(PasswordBox.Password, ReadKeyfileBytesIfConfigured(KeyfilePathBox.Text), RecoveryKeyBox.Text),
+                        new PayloadUnlockInputs(currentPassword, keyfileBytes, currentRecoveryKey),
                         newPassword,
-                        ReadKeyfileBytesIfConfigured(KeyfilePathBox.Text),
-                        newRecoveryKey));
+                        keyfileBytes,
+                        newRecoveryKey),
+                    cancellationToken);
 
                 output.Flush();
                 input.Dispose();
@@ -1455,68 +1936,148 @@ namespace FileLocker
             ProcessingRunOptions options,
             Action<double, string>? progress = null)
         {
-            byte[] encryptedBytes = TryExtractStegoPayload(filePath) ?? ReadAllBytesWithProgress(
-                filePath,
-                _processingCancellation?.Token ?? CancellationToken.None,
-                progress,
-                5,
-                35,
-                "Reading payload");
+            byte[]? encryptedBytes = null;
+            byte[]? salt = null;
+            byte[]? iv = null;
+            byte[]? tag = null;
+            byte[]? ciphertext = null;
+            byte[]? key = null;
+            byte[]? plaintext = null;
+            byte[]? metadataBytes = null;
+            byte[]? compressedFileData = null;
+            byte[]? fileData = null;
+            bool returnsFileData = false;
 
-            using var fs = new MemoryStream(encryptedBytes);
-            byte version = (byte)fs.ReadByte();
-            if (version != FORMAT_VERSION)
+            try
             {
-                throw new InvalidDataException("Unsupported file format version.");
-            }
+                encryptedBytes = TryExtractStegoPayload(filePath) ?? ReadAllBytesWithProgress(
+                    filePath,
+                    _processingCancellation?.Token ?? CancellationToken.None,
+                    progress,
+                    5,
+                    35,
+                    "Reading payload");
 
-            byte[] salt = new byte[SALT_SIZE];
-            byte[] iv = new byte[IV_SIZE];
-            byte[] tag = new byte[TAG_SIZE];
-            ReadExact(fs, salt, 0, SALT_SIZE);
-            ReadExact(fs, iv, 0, IV_SIZE);
-            ReadExact(fs, tag, 0, TAG_SIZE);
-
-            byte[] ciphertext = new byte[fs.Length - 1 - SALT_SIZE - IV_SIZE - TAG_SIZE];
-            ReadExact(fs, ciphertext, 0, ciphertext.Length);
-            byte[] key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
-            byte[] plaintext = new byte[ciphertext.Length];
-
-            progress?.Invoke(60, "Decrypting");
-            using (var aes = new AesGcm(key, TAG_SIZE))
-            {
-                try
+                using var fs = new MemoryStream(encryptedBytes);
+                byte version = (byte)fs.ReadByte();
+                if (version != FORMAT_VERSION)
                 {
-                    aes.Decrypt(iv, ciphertext, tag, plaintext);
+                    throw new InvalidDataException("Unsupported file format version.");
                 }
-                catch (CryptographicException)
+
+                salt = new byte[SALT_SIZE];
+                iv = new byte[IV_SIZE];
+                tag = new byte[TAG_SIZE];
+                ReadExact(fs, salt, 0, SALT_SIZE);
+                ReadExact(fs, iv, 0, IV_SIZE);
+                ReadExact(fs, tag, 0, TAG_SIZE);
+
+                ciphertext = new byte[fs.Length - 1 - SALT_SIZE - IV_SIZE - TAG_SIZE];
+                ReadExact(fs, ciphertext, 0, ciphertext.Length);
+                key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
+                plaintext = new byte[ciphertext.Length];
+
+                progress?.Invoke(60, "Decrypting");
+                using (var aes = new AesGcm(key, TAG_SIZE))
                 {
-                    throw new UnauthorizedAccessException("Invalid password or corrupted file.");
+                    try
+                    {
+                        aes.Decrypt(iv, ciphertext, tag, plaintext);
+                    }
+                    catch (CryptographicException)
+                    {
+                        throw new UnauthorizedAccessException("Invalid password or corrupted file.");
+                    }
+                }
+
+                var layout = ReadLegacyPayloadLayout(plaintext);
+                metadataBytes = plaintext.AsSpan(layout.MetadataOffset, layout.MetadataLength).ToArray();
+                FileMetadata metadata = DeserializeMetadata(metadataBytes);
+                fileData = plaintext.AsSpan(layout.FileDataOffset).ToArray();
+                if (metadata.IsCompressed)
+                {
+                    compressedFileData = fileData;
+                    fileData = DecompressData(compressedFileData, _processingCancellation?.Token ?? CancellationToken.None);
+                }
+
+                if (metadata.ContentHash.Length > 0)
+                {
+                    EnsureHashMatch(metadata.ContentHash, fileData);
+                }
+
+                returnsFileData = true;
+                return (metadata, fileData);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(encryptedBytes);
+                ClearSensitiveBuffer(salt);
+                ClearSensitiveBuffer(iv);
+                ClearSensitiveBuffer(tag);
+                ClearSensitiveBuffer(ciphertext);
+                ClearSensitiveBuffer(key);
+                ClearSensitiveBuffer(plaintext);
+                ClearSensitiveBuffer(metadataBytes);
+
+                if (compressedFileData is not null && !ReferenceEquals(compressedFileData, fileData))
+                {
+                    ClearSensitiveBuffer(compressedFileData);
+                }
+
+                if (!returnsFileData)
+                {
+                    ClearSensitiveBuffer(fileData);
                 }
             }
+        }
 
-            int offset = 0;
-            int metadataLength = BitConverter.ToInt32(plaintext, offset);
-            offset += 4;
-            byte[] metadataBytes = new byte[metadataLength];
-            Buffer.BlockCopy(plaintext, offset, metadataBytes, 0, metadataLength);
-            offset += metadataLength;
-            FileMetadata metadata = DeserializeMetadata(metadataBytes);
-            int paddingLength = BitConverter.ToInt32(plaintext, offset);
-            offset += 4 + paddingLength;
-            byte[] fileData = new byte[plaintext.Length - offset];
-            Buffer.BlockCopy(plaintext, offset, fileData, 0, fileData.Length);
-            if (metadata.IsCompressed)
+        internal static (int MetadataOffset, int MetadataLength, int PaddingLength, int FileDataOffset) ReadLegacyPayloadLayout(ReadOnlySpan<byte> plaintext)
+        {
+            if (plaintext.Length < sizeof(int))
             {
-                fileData = DecompressData(fileData);
+                throw new InvalidDataException("Legacy payload is missing metadata length.");
             }
 
-            if (metadata.ContentHash.Length > 0)
+            int metadataLength = BinaryPrimitives.ReadInt32LittleEndian(plaintext[..sizeof(int)]);
+            if (metadataLength <= 0)
             {
-                EnsureHashMatch(metadata.ContentHash, fileData);
+                throw new InvalidDataException("Legacy payload contains an invalid metadata length.");
             }
 
-            return (metadata, fileData);
+            int metadataOffset = sizeof(int);
+            if (metadataLength > plaintext.Length - metadataOffset)
+            {
+                throw new InvalidDataException("Legacy payload metadata length exceeds the decrypted payload.");
+            }
+
+            int paddingLengthOffset = metadataOffset + metadataLength;
+            if (plaintext.Length - paddingLengthOffset < sizeof(int))
+            {
+                throw new InvalidDataException("Legacy payload is missing padding length.");
+            }
+
+            int paddingLength = BinaryPrimitives.ReadInt32LittleEndian(plaintext.Slice(paddingLengthOffset, sizeof(int)));
+            if (paddingLength < 0)
+            {
+                throw new InvalidDataException("Legacy payload contains an invalid padding length.");
+            }
+
+            int fileDataOffset = paddingLengthOffset + sizeof(int);
+            if (paddingLength > plaintext.Length - fileDataOffset)
+            {
+                throw new InvalidDataException("Legacy payload padding length exceeds the decrypted payload.");
+            }
+
+            fileDataOffset += paddingLength;
+            return (metadataOffset, metadataLength, paddingLength, fileDataOffset);
+        }
+
+        private static void ClearSensitiveBuffer(byte[]? buffer)
+        {
+            if (buffer is { Length: > 0 })
+            {
+                CryptographicOperations.ZeroMemory(buffer);
+            }
         }
 
         private static void ReadExact(MemoryStream fs, byte[] buffer, int offset, int count)
@@ -1548,7 +2109,7 @@ namespace FileLocker
 
         private static void RestoreFileMetadata(string path, FileMetadata metadata)
         {
-            File.SetAttributes(path, System.IO.FileAttributes.Normal);
+            FileCleanupService.ClearReadOnlyAttribute(path);
 
             if (metadata.CreationTime.Kind == DateTimeKind.Utc)
             {
@@ -1605,29 +2166,30 @@ namespace FileLocker
             File.SetLastWriteTimeUtc(outputPath, utcNow);
         }
 
-        private static string CreateBackupCopy(string sourcePath, string backupFolderPath)
+        internal static string CreateBackupCopy(string sourcePath, string backupFolderPath)
         {
-            Directory.CreateDirectory(backupFolderPath);
-            string fileName = Path.GetFileNameWithoutExtension(sourcePath);
-            string extension = Path.GetExtension(sourcePath);
-            string destination = Path.Combine(
-                backupFolderPath,
-                $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}{extension}");
-
-            int counter = 1;
-            while (File.Exists(destination))
+            if (IsReparsePointPath(sourcePath))
             {
-                destination = Path.Combine(
-                    backupFolderPath,
-                    $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}_{counter}{extension}");
-                counter++;
+                throw new IOException("Backup copy does not copy file reparse points.");
             }
+
+            Directory.CreateDirectory(backupFolderPath);
+            string destination = ResolveBackupCopyPath(sourcePath, backupFolderPath, DateTime.Now);
 
             File.Copy(sourcePath, destination);
             return destination;
         }
 
-        private static void DeleteSourceFile(string sourcePath, bool secureDelete, int secureDeletePasses = 3)
+        internal static string ResolveBackupCopyPath(string sourcePath, string backupFolderPath, DateTime timestamp)
+        {
+            string fileName = Path.GetFileNameWithoutExtension(sourcePath);
+            string extension = Path.GetExtension(sourcePath);
+            return FileWriteService.ResolveAvailablePath(Path.Combine(
+                backupFolderPath,
+                $"{fileName}_{timestamp:yyyyMMdd_HHmmss}{extension}"));
+        }
+
+        internal static void DeleteSourceFile(string sourcePath, bool secureDelete, int secureDeletePasses = 3)
         {
             if (secureDelete)
             {
@@ -1635,7 +2197,21 @@ namespace FileLocker
             }
             else
             {
+                FileCleanupService.ClearReadOnlyAttribute(sourcePath);
                 File.Delete(sourcePath);
+            }
+        }
+
+        internal static void ValidateSecureDeleteSourceFile(string sourcePath, bool removeOriginalsAfterSuccess, bool secureDeleteOriginals)
+        {
+            if (!removeOriginalsAfterSuccess || !secureDeleteOriginals)
+            {
+                return;
+            }
+
+            if (IsReparsePointPath(sourcePath))
+            {
+                throw new IOException("Secure delete cannot overwrite file symlinks or junctions. Choose the target file directly or turn off best-effort overwrite.");
             }
         }
 
@@ -1715,10 +2291,25 @@ namespace FileLocker
                 try
                 {
                     Directory.CreateDirectory(options.BackupFolderPath);
+                    if (encrypt && options.PackageFolders)
+                    {
+                        foreach (string sourceRoot in allFiles
+                                     .Where(item => item.SourceRootIsFolder)
+                                     .Select(item => item.SourceRootPath)
+                                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                                     .Distinct(StringComparer.OrdinalIgnoreCase))
+                        {
+                            if (IsBackupFolderInsideSource(sourceRoot, options.BackupFolderPath))
+                            {
+                                result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, "Choose a backup folder outside the source folder before removing originals."));
+                                break;
+                            }
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Backup folder is not available: {ex.Message}"));
+                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Backup folder is not available: {GetFriendlyExceptionMessage(ex, "Backup folder check failed.")}"));
                 }
             }
 
@@ -1733,10 +2324,25 @@ namespace FileLocker
                     try
                     {
                         Directory.CreateDirectory(options.EncryptOutputDirectory);
+                        if (options.RemoveOriginalsAfterSuccess && options.PackageFolders)
+                        {
+                            foreach (string sourceRoot in allFiles
+                                         .Where(item => item.SourceRootIsFolder)
+                                         .Select(item => item.SourceRootPath)
+                                         .Where(path => !string.IsNullOrWhiteSpace(path))
+                                         .Distinct(StringComparer.OrdinalIgnoreCase))
+                            {
+                                if (IsDirectoryInsideSource(sourceRoot, options.EncryptOutputDirectory))
+                                {
+                                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, "Choose an encrypt output folder outside the source folder before removing originals."));
+                                    break;
+                                }
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
-                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Custom output folder is not available: {ex.Message}"));
+                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Custom output folder is not available: {GetFriendlyExceptionMessage(ex, "Output folder check failed.")}"));
                     }
                 }
             }
@@ -1755,7 +2361,7 @@ namespace FileLocker
                     }
                     catch (Exception ex)
                     {
-                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Decrypt output folder is not available: {ex.Message}"));
+                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Decrypt output folder is not available: {GetFriendlyExceptionMessage(ex, "Output folder check failed.")}"));
                     }
                 }
             }
@@ -1768,6 +2374,22 @@ namespace FileLocker
             if (options != null && encrypt && options.PackageFolders && options.UseSteganography)
             {
                 result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, "PNG carrier mode is not available for folder packages."));
+            }
+
+            if (options != null && encrypt && options.PackageFolders)
+            {
+                foreach (string sourceRoot in allFiles
+                             .Where(item => item.SourceRootIsFolder)
+                             .Select(item => item.SourceRootPath)
+                             .Where(path => !string.IsNullOrWhiteSpace(path))
+                             .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (IsReparsePointPath(sourceRoot))
+                    {
+                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, "Folder package source root cannot be a symlink or junction."));
+                        break;
+                    }
+                }
             }
 
             if (options != null && encrypt && !string.IsNullOrWhiteSpace(options.RecoveryKey))
@@ -1804,13 +2426,22 @@ namespace FileLocker
                     continue;
                 }
 
+                if (options != null &&
+                    options.RemoveOriginalsAfterSuccess &&
+                    options.SecureDeleteOriginals &&
+                    IsReparsePointPath(filePath))
+                {
+                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Secure delete cannot overwrite linked file: {Path.GetFileName(filePath)}."));
+                    continue;
+                }
+
                 try
                 {
                     using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 }
                 catch (Exception ex)
                 {
-                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Unable to read {Path.GetFileName(filePath)}: {ex.Message}"));
+                    result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Unable to read {Path.GetFileName(filePath)}: {GetFriendlyExceptionMessage(ex, "File read check failed.")}"));
                     continue;
                 }
 
@@ -1953,7 +2584,7 @@ namespace FileLocker
             }
             catch (Exception ex)
             {
-                DisplayPreflightIssues([new PreflightIssue(PreflightSeverity.Error, ex.Message)]);
+                DisplayPreflightIssues([new PreflightIssue(PreflightSeverity.Error, GetFriendlyExceptionMessage(ex, "Preflight check failed."))]);
                 return;
             }
 
@@ -1997,7 +2628,7 @@ namespace FileLocker
             {
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    DisplayPreflightIssues([new PreflightIssue(PreflightSeverity.Error, ex.Message)]);
+                    DisplayPreflightIssues([new PreflightIssue(PreflightSeverity.Error, GetFriendlyExceptionMessage(ex, "Preflight check failed."))]);
                 });
             }
         }
@@ -2066,18 +2697,51 @@ namespace FileLocker
             return Path.Combine(segments);
         }
 
-        private static string ResolveDecryptedFileName(string encryptedFilePath, string? originalFileName, bool restoreOriginalFilename)
+        internal static string ResolveDecryptedFileName(string encryptedFilePath, string? originalFileName, bool restoreOriginalFilename)
         {
             if (restoreOriginalFilename && !string.IsNullOrWhiteSpace(originalFileName))
             {
                 string safeOriginalName = Path.GetFileName(originalFileName.Trim());
-                if (!string.IsNullOrWhiteSpace(safeOriginalName))
+                if (IsSafeRestoredFileName(safeOriginalName))
                 {
                     return safeOriginalName;
                 }
             }
 
             return BuildFallbackDecryptedFileName(encryptedFilePath);
+        }
+
+        internal static bool IsSafeRestoredFileName(string? fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return false;
+            }
+
+            string candidate = fileName.Trim();
+            if (candidate is "." or ".." ||
+                !string.Equals(candidate, candidate.TrimEnd(' ', '.'), StringComparison.Ordinal) ||
+                candidate.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                return false;
+            }
+
+            return !WindowsFileNameRules.IsReservedDeviceName(candidate);
+        }
+
+        internal static string ResolveFolderPackageRootName(string encryptedFilePath, string? rootFolderName, bool restoreOriginalFilename)
+        {
+            if (restoreOriginalFilename && !string.IsNullOrWhiteSpace(rootFolderName))
+            {
+                string safeRootName = Path.GetFileName(rootFolderName.Trim());
+                if (IsSafeRestoredFileName(safeRootName))
+                {
+                    return safeRootName;
+                }
+            }
+
+            string fallback = BuildFallbackDecryptedFileName(encryptedFilePath);
+            return string.IsNullOrWhiteSpace(fallback) ? "Restored" : fallback;
         }
 
         private static string BuildFallbackDecryptedFileName(string encryptedFilePath)
@@ -2142,6 +2806,20 @@ namespace FileLocker
             }
         }
 
+        internal static FileStream CreateNewOutputFileStream(string path)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            return new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        }
+
+        internal static string ResolveTemporaryOutputPath(string finalPath, string suffix = ".tmp")
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(suffix);
+
+            return ResolveAvailablePath(finalPath + suffix);
+        }
+
         private static string GenerateRandomString(int length)
         {
             const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -2151,23 +2829,43 @@ namespace FileLocker
         private static byte[] CompressData(byte[] data, out bool compressed)
         {
             using var output = new MemoryStream();
-            using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+            try
             {
-                gzip.Write(data, 0, data.Length);
-            }
+                using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+                {
+                    gzip.Write(data, 0, data.Length);
+                }
 
-            byte[] compressedBytes = output.ToArray();
-            compressed = CompressionAdvisor.HasUsefulSavings(data.LongLength, compressedBytes.LongLength);
-            return compressed ? compressedBytes : data;
+                byte[] compressedBytes = output.ToArray();
+                compressed = CompressionAdvisor.HasUsefulSavings(data.LongLength, compressedBytes.LongLength);
+                if (compressed)
+                {
+                    return compressedBytes;
+                }
+
+                ClearSensitiveBuffer(compressedBytes);
+                return data;
+            }
+            finally
+            {
+                ClearMemoryStreamBuffer(output);
+            }
         }
 
-        private static byte[] DecompressData(byte[] compressedData)
+        internal static byte[] DecompressData(byte[] compressedData, CancellationToken cancellationToken = default)
         {
             using var input = new MemoryStream(compressedData);
             using var gzip = new GZipStream(input, CompressionMode.Decompress);
             using var output = new MemoryStream();
-            gzip.CopyTo(output);
-            return output.ToArray();
+            try
+            {
+                CopyStreamWithProgress(gzip, output, cancellationToken, totalLength: 0, progress: null, startPercent: 0, endPercent: 100, status: "Decompressing");
+                return output.ToArray();
+            }
+            finally
+            {
+                ClearMemoryStreamBuffer(output);
+            }
         }
 
         private static byte[] BuildEncryptedPayload(byte[] salt, byte[] iv, byte[] tag, byte[] ciphertext)
@@ -2218,19 +2916,27 @@ namespace FileLocker
                 throw new InvalidDataException("Invalid PNG carrier for steganography mode.");
             }
 
-            byte[] chunk = BuildCustomPngChunk(STEGO_CHUNK_TYPE, payload);
-            byte[] result = new byte[StegoCarrierPng.Length + chunk.Length];
-            Buffer.BlockCopy(StegoCarrierPng, 0, result, 0, iendIndex);
-            Buffer.BlockCopy(chunk, 0, result, iendIndex, chunk.Length);
-            Buffer.BlockCopy(StegoCarrierPng, iendIndex, result, iendIndex + chunk.Length, StegoCarrierPng.Length - iendIndex);
-            return result;
+            byte[]? chunk = null;
+            try
+            {
+                chunk = BuildCustomPngChunk(STEGO_CHUNK_TYPE, payload);
+                byte[] result = new byte[StegoCarrierPng.Length + chunk.Length];
+                Buffer.BlockCopy(StegoCarrierPng, 0, result, 0, iendIndex);
+                Buffer.BlockCopy(chunk, 0, result, iendIndex, chunk.Length);
+                Buffer.BlockCopy(StegoCarrierPng, iendIndex, result, iendIndex + chunk.Length, StegoCarrierPng.Length - iendIndex);
+                return result;
+            }
+            finally
+            {
+                ClearSensitiveBuffer(chunk);
+            }
         }
 
-        private static byte[]? TryExtractStegoPayload(string filePath)
+        internal static byte[]? TryExtractStegoPayload(string filePath)
         {
             using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            byte[] signature = new byte[8];
-            if (stream.Length < signature.Length || stream.Read(signature, 0, signature.Length) != signature.Length)
+            Span<byte> signature = stackalloc byte[8];
+            if (stream.Length < signature.Length || !TryReadExact(stream, signature))
             {
                 return null;
             }
@@ -2240,33 +2946,64 @@ namespace FileLocker
                 return null;
             }
 
-            int index = 8; // skip signature
-            byte[] fileBytes = File.ReadAllBytes(filePath);
-            while (index + 8 <= fileBytes.Length)
+            Span<byte> chunkHeader = stackalloc byte[8];
+            while (stream.Length - stream.Position >= chunkHeader.Length)
             {
-                int length = BinaryPrimitives.ReadInt32BigEndian(fileBytes.AsSpan(index, 4));
-                string type = Encoding.ASCII.GetString(fileBytes, index + 4, 4);
-                int dataStart = index + 8;
-                if (length < 0 || dataStart + length + 4 > fileBytes.Length)
+                if (!TryReadExact(stream, chunkHeader))
                 {
                     break;
                 }
-                if (type == STEGO_CHUNK_TYPE)
+
+                int length = BinaryPrimitives.ReadInt32BigEndian(chunkHeader[..4]);
+                long bytesRemaining = stream.Length - stream.Position;
+                if (length < 0 || bytesRemaining < 4 || length > bytesRemaining - 4)
+                {
+                    break;
+                }
+
+                if (IsChunkType(chunkHeader.Slice(4, 4), STEGO_CHUNK_TYPE))
                 {
                     byte[] payload = new byte[length];
-                    Buffer.BlockCopy(fileBytes, dataStart, payload, 0, length);
-                    return payload;
+                    return TryReadExact(stream, payload) ? payload : null;
                 }
-                index = dataStart + length + 4; // move past data and CRC
+
+                stream.Seek(length + 4L, SeekOrigin.Current);
             }
 
             return null;
+        }
+
+        private static bool TryReadExact(Stream stream, Span<byte> buffer)
+        {
+            int totalRead = 0;
+            while (totalRead < buffer.Length)
+            {
+                int read = stream.Read(buffer[totalRead..]);
+                if (read == 0)
+                {
+                    return false;
+                }
+
+                totalRead += read;
+            }
+
+            return true;
         }
 
         private static bool IsPng(ReadOnlySpan<byte> data)
         {
             byte[] signature = [137, 80, 78, 71, 13, 10, 26, 10];
             return data.Length >= signature.Length && data[..signature.Length].SequenceEqual(signature);
+        }
+
+        private static bool IsChunkType(ReadOnlySpan<byte> actual, string expected)
+        {
+            return actual.Length == 4 &&
+                expected.Length == 4 &&
+                actual[0] == (byte)expected[0] &&
+                actual[1] == (byte)expected[1] &&
+                actual[2] == (byte)expected[2] &&
+                actual[3] == (byte)expected[3];
         }
 
         private static int FindIendChunkIndex(byte[] png)
@@ -2289,40 +3026,67 @@ namespace FileLocker
 
         private static byte[] BuildCustomPngChunk(string type, byte[] data)
         {
-            byte[] typeBytes = Encoding.ASCII.GetBytes(type);
-            byte[] chunk = new byte[4 + 4 + data.Length + 4];
-            BinaryPrimitives.WriteInt32BigEndian(chunk.AsSpan(0, 4), data.Length);
-            Buffer.BlockCopy(typeBytes, 0, chunk, 4, 4);
-            Buffer.BlockCopy(data, 0, chunk, 8, data.Length);
+            byte[]? typeBytes = null;
+            byte[]? chunk = null;
+            byte[]? crcInput = null;
+            byte[]? crcBytes = null;
+            bool returnsChunk = false;
 
-            byte[] crcInput = [.. typeBytes, .. data];
-            uint crcValue = ComputeCrc32(crcInput);
-            byte[] crcBytes = BitConverter.GetBytes(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(crcValue));
-            Buffer.BlockCopy(crcBytes, 0, chunk, 8 + data.Length, 4);
+            try
+            {
+                typeBytes = Encoding.ASCII.GetBytes(type);
+                chunk = new byte[4 + 4 + data.Length + 4];
+                BinaryPrimitives.WriteInt32BigEndian(chunk.AsSpan(0, 4), data.Length);
+                Buffer.BlockCopy(typeBytes, 0, chunk, 4, 4);
+                Buffer.BlockCopy(data, 0, chunk, 8, data.Length);
 
-            return chunk;
+                crcInput = [.. typeBytes, .. data];
+                uint crcValue = ComputeCrc32(crcInput);
+                crcBytes = BitConverter.GetBytes(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(crcValue));
+                Buffer.BlockCopy(crcBytes, 0, chunk, 8 + data.Length, 4);
+
+                returnsChunk = true;
+                return chunk;
+            }
+            finally
+            {
+                ClearSensitiveBuffer(typeBytes);
+                ClearSensitiveBuffer(crcInput);
+                ClearSensitiveBuffer(crcBytes);
+                if (!returnsChunk)
+                {
+                    ClearSensitiveBuffer(chunk);
+                }
+            }
         }
 
         private static byte[] SerializeMetadata(FileMetadata metadata)
         {
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
-            writer.Write(metadata.OriginalFileName);
-            writer.Write(metadata.OriginalSize);
-            writer.Write(metadata.CreationTime.ToBinary());
-            writer.Write(metadata.LastWriteTime.ToBinary());
-            writer.Write(metadata.IsCompressed);
-            writer.Write(metadata.IsSteganographyContainer);
-            writer.Write(metadata.ContentHash.Length);
-            writer.Write(metadata.ContentHash);
-            writer.Write(metadata.Algorithm ?? string.Empty);
-            writer.Write(metadata.Mode ?? string.Empty);
-            writer.Write(metadata.KeySizeBits);
-            writer.Write(metadata.CustomNote ?? string.Empty);
-            writer.Write(metadata.MetadataLabel ?? string.Empty);
-            writer.Write(metadata.LastAccessTime.ToBinary());
-            writer.Write((int)metadata.OriginalAttributes);
-            return stream.ToArray();
+            try
+            {
+                writer.Write(metadata.OriginalFileName);
+                writer.Write(metadata.OriginalSize);
+                writer.Write(metadata.CreationTime.ToBinary());
+                writer.Write(metadata.LastWriteTime.ToBinary());
+                writer.Write(metadata.IsCompressed);
+                writer.Write(metadata.IsSteganographyContainer);
+                writer.Write(metadata.ContentHash.Length);
+                writer.Write(metadata.ContentHash);
+                writer.Write(metadata.Algorithm ?? string.Empty);
+                writer.Write(metadata.Mode ?? string.Empty);
+                writer.Write(metadata.KeySizeBits);
+                writer.Write(metadata.CustomNote ?? string.Empty);
+                writer.Write(metadata.MetadataLabel ?? string.Empty);
+                writer.Write(metadata.LastAccessTime.ToBinary());
+                writer.Write((int)metadata.OriginalAttributes);
+                return stream.ToArray();
+            }
+            finally
+            {
+                ClearMemoryStreamBuffer(stream);
+            }
         }
 
         private static FileMetadata DeserializeMetadata(byte[] data)
@@ -2493,46 +3257,93 @@ namespace FileLocker
             }
         }
 
-        private static void SecureDelete(string filePath, int passes = 3)
+        internal static void SecureDelete(string filePath, int passes = 3)
         {
+            if (!File.Exists(filePath))
+            {
+                throw new FileNotFoundException("File could not be found for secure delete.", filePath);
+            }
+
+            Exception? overwriteFailure = null;
+            System.IO.FileAttributes? originalAttributes = null;
             try
             {
                 passes = Math.Clamp(passes, 1, 35);
+                originalAttributes = File.GetAttributes(filePath);
+                if ((originalAttributes.Value & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint)
+                {
+                    throw new IOException("Secure delete does not overwrite file reparse points.");
+                }
+
+                FileCleanupService.ClearReadOnlyAttribute(filePath);
                 var fileInfo = new FileInfo(filePath);
                 long fileSize = fileInfo.Length;
                 using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Write))
                 {
-                    byte[] randomData = GenerateRandomBytes(4096);
-                    for (int pass = 0; pass < passes; pass++)
+                    byte[] randomData = new byte[4096];
+                    try
                     {
-                        fs.Seek(0, SeekOrigin.Begin);
-                        long written = 0;
-                        while (written < fileSize)
+                        for (int pass = 0; pass < passes; pass++)
                         {
-                            int toWrite = (int)Math.Min(randomData.Length, fileSize - written);
-                            fs.Write(randomData, 0, toWrite);
-                            written += toWrite;
+                            fs.Seek(0, SeekOrigin.Begin);
+                            long written = 0;
+                            while (written < fileSize)
+                            {
+                                int toWrite = (int)Math.Min(randomData.Length, fileSize - written);
+                                RandomNumberGenerator.Fill(randomData.AsSpan(0, toWrite));
+                                fs.Write(randomData, 0, toWrite);
+                                written += toWrite;
+                            }
+                            fs.Flush(flushToDisk: true);
                         }
-                        fs.Flush();
-                        randomData = GenerateRandomBytes(4096);
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(randomData);
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                overwriteFailure = ex;
+            }
+
+            if (overwriteFailure != null)
+            {
+                RestoreFileAttributesBestEffort(filePath, originalAttributes);
+                throw new IOException("Secure delete could not overwrite the file before removal.", overwriteFailure);
+            }
+
+            try
+            {
                 File.Delete(filePath);
             }
-            catch
+            catch (Exception ex)
             {
-                try { File.Delete(filePath); } catch { }
+                RestoreFileAttributesBestEffort(filePath, originalAttributes);
+                if (overwriteFailure == null)
+                {
+                    throw new IOException("Secure delete could not remove the file after overwriting it.", ex);
+                }
+
+                throw new IOException("Secure delete could not overwrite or remove the file.", new AggregateException(overwriteFailure, ex));
             }
         }
 
-        private static void ReadExact(FileStream fs, byte[] buffer, int offset, int count)
+        private static void RestoreFileAttributesBestEffort(string path, System.IO.FileAttributes? attributes)
         {
-            int readTotal = 0;
-            while (readTotal < count)
+            if (attributes is null || !File.Exists(path))
             {
-                int read = fs.Read(buffer, offset + readTotal, count - readTotal);
-                if (read == 0) throw new EndOfStreamException();
-                readTotal += read;
+                return;
+            }
+
+            try
+            {
+                File.SetAttributes(path, attributes.Value);
+            }
+            catch
+            {
+                // Preserve the original secure-delete failure for the caller.
             }
         }
 

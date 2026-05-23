@@ -33,6 +33,7 @@ import { ProgressBar } from "@/components/common/ProgressBar"
 import { ResultList } from "@/components/common/ResultList"
 import { cn } from "@/lib/utils"
 import { fileName, mergeUniquePaths } from "@/lib/format"
+import { getLatestProgressForOperation } from "@/lib/progress"
 import type { DashboardState, FileOperationRequest, FileOperationResult, ProgressEvent } from "@/types/bridge"
 
 type OperationResultPayload = {
@@ -150,6 +151,8 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const [options, setOptions] = useState(defaultOptions)
   const [isRunning, setIsRunning] = useState(false)
   const [results, setResults] = useState<FileOperationResult[]>([])
+  const [operationError, setOperationError] = useState("")
+  const [activeOperationId, setActiveOperationId] = useState("")
   const [submitAttempted, setSubmitAttempted] = useState(false)
   const [encryptOutputSuggestion, setEncryptOutputSuggestion] = useState<EncryptOutputSuggestion | null>(null)
   const [pathDetails, setPathDetails] = useState<SelectedPathDescriptor[]>([])
@@ -157,13 +160,17 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const [totalSizeDisplay, setTotalSizeDisplay] = useState("Calculated at run start")
   const [isDescribingPaths, setIsDescribingPaths] = useState(false)
 
-  const latestProgress = progressEvents.at(-1)
+  const latestProgress = useMemo(
+    () => getLatestProgressForOperation(progressEvents, activeOperationId),
+    [activeOperationId, progressEvents]
+  )
   const isEncrypt = kind === "encrypt"
   const isDecrypt = kind === "decrypt"
   const title = isEncrypt ? "Encrypt Files" : isDecrypt ? "Decrypt Files" : "Verify Payloads"
   const description = isEncrypt ? "Create encrypted FileLocker files on this device." : isDecrypt ? "Restore files from FileLocker .locked payloads." : "Check encrypted files without writing output."
   const Icon = isEncrypt ? Lock : isDecrypt ? Unlock : ShieldCheck
   const destructiveOptionsEnabled = options.removeOriginalsAfterSuccess || options.secureDeleteOriginals
+  const hasOperationError = Boolean(operationError)
   const savesNextToSource = encryptOutputDirectory.trim().length === 0
   const encryptHistory = useMemo(
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Encrypt").slice(0, 6),
@@ -176,7 +183,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const passwordStrength = calculatePasswordStrength(password)
   const passwordsMatch = password.length > 0 && password === confirmPassword
   const encryptCanStart = paths.length > 0 && password.length > 0 && passwordsMatch && passwordStrength.score >= 70
-  const encryptStatusText = paths.length === 0
+  const encryptStatusText = hasOperationError
+    ? "Failed"
+    : paths.length === 0
     ? "Add files or folders"
     : !password
       ? "Password required"
@@ -193,7 +202,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     ? "Next to encrypted files"
     : decryptOutputDirectory.trim()
   const decryptCanStart = paths.length > 0 && password.length > 0
-  const decryptStatusText = paths.length === 0
+  const decryptStatusText = hasOperationError
+    ? "Failed"
+    : paths.length === 0
     ? "Add encrypted files"
     : !password
       ? "Waiting for password"
@@ -204,9 +215,15 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
       return
     }
 
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      onDroppedPathsHandled?.()
+      return
+    }
+
     setPaths((current) => mergeUniquePaths(current, droppedPaths))
     onDroppedPathsHandled?.()
-  }, [droppedPaths, onDroppedPathsHandled])
+  }, [droppedPaths, isRunning, onDroppedPathsHandled])
 
   useEffect(() => {
     if (!isEncrypt) {
@@ -271,10 +288,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
         setPathWarnings(response.warnings)
         setTotalSizeDisplay(response.totalSizeDisplay)
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setPathDetails([])
-          setPathWarnings([])
+          setPathWarnings([getPathDetailsWarning(error)])
           setTotalSizeDisplay("Calculated at run start")
         }
       })
@@ -289,36 +306,146 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     }
   }, [invoke, isDecrypt, isEncrypt, paths])
 
-  async function pickFiles() {
-    const result = await invoke<{ paths: string[] }>("files.pickFiles")
-    setPaths((current) => mergeUniquePaths(current, result.paths))
-  }
+  useEffect(() => {
+    setResults((current) => current.length > 0 ? [] : current)
+    setOperationError("")
+    setActiveOperationId("")
+  }, [
+    paths,
+    password,
+    confirmPassword,
+    keyfilePath,
+    recoveryKey,
+    encryptOutputDirectory,
+    decryptOutputDirectory,
+    backupFolderPath,
+    metadataNotes,
+    deleteConfirmation,
+    options.compressFiles,
+    options.scrambleNames,
+    options.useSteganography,
+    options.packageFolders,
+    options.removeOriginalsAfterSuccess,
+    options.secureDeleteOriginals,
+    options.verifyAfterWrite,
+    options.restoreOriginalFilenames,
+    options.preserveFolderStructure,
+    options.outputTimestampPolicy,
+  ])
 
-  async function pickFolder() {
-    const result = await invoke<{ path: string }>("files.pickFolder")
-    if (result.path) {
-      setPaths((current) => mergeUniquePaths(current, [result.path]))
+  async function pickFiles() {
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ paths: string[] }>("files.pickFiles")
+      setPaths((current) => mergeUniquePaths(current, result.paths))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick files.")
     }
   }
 
+  async function pickFolder() {
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ path: string }>("files.pickFolder")
+      if (result.path) {
+        setPaths((current) => mergeUniquePaths(current, [result.path]))
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a folder.")
+    }
+  }
+
+  function handleTargetDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = isRunning ? "none" : "copy"
+  }
+
+  function handleTargetDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      return
+    }
+
+    const droppedPaths = Array.from(event.dataTransfer.files)
+      .map((file) => (file as File & { path?: string }).path)
+      .filter((path): path is string => Boolean(path))
+    if (droppedPaths.length > 0) {
+      setPaths((current) => mergeUniquePaths(current, droppedPaths))
+    }
+  }
+
+function removeTarget(path: string) {
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      return
+    }
+
+    setPaths((current) => current.filter((item) => !areSameLocalPath(item, path)))
+  }
+
+  function clearTargets() {
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing the selected targets.")
+      return
+    }
+
+    setPaths([])
+  }
+
   async function pickEncryptOutputFolder() {
-    const result = await invoke<{ path: string }>("files.pickFolder")
-    if (result.path) {
-      setEncryptOutputDirectory(result.path)
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing run options.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ path: string }>("files.pickFolder")
+      if (result.path) {
+        setEncryptOutputDirectory(result.path)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick an encrypt output folder.")
     }
   }
 
   async function pickDecryptOutputFolder() {
-    const result = await invoke<{ path: string }>("files.pickFolder")
-    if (result.path) {
-      setDecryptOutputDirectory(result.path)
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing run options.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ path: string }>("files.pickFolder")
+      if (result.path) {
+        setDecryptOutputDirectory(result.path)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a decrypt output folder.")
     }
   }
 
   async function pickBackupFolder() {
-    const result = await invoke<{ path: string }>("files.pickFolder")
-    if (result.path) {
-      setBackupFolderPath(result.path)
+    if (isRunning) {
+      toast.error("Wait for the current file operation to finish before changing run options.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ path: string }>("files.pickFolder")
+      if (result.path) {
+        setBackupFolderPath(result.path)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a backup folder.")
     }
   }
 
@@ -343,6 +470,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   }
 
   async function run() {
+    if (isRunning) {
+      return
+    }
+
     setSubmitAttempted(true)
     if (paths.length === 0) {
       toast.error("Select at least one file or folder.")
@@ -361,13 +492,16 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
 
     setIsRunning(true)
     setResults([])
+    setOperationError("")
+    const operationId = crypto.randomUUID()
+    setActiveOperationId(operationId)
     try {
       const normalizedEncryptOutputDirectory = encryptOutputDirectory.trim()
       const normalizedDecryptOutputDirectory = decryptOutputDirectory.trim()
       const normalizedBackupFolderPath = backupFolderPath.trim()
 
       const payload: FileOperationRequest = {
-        operationId: crypto.randomUUID(),
+        operationId,
         paths,
         password,
         keyfilePath,
@@ -390,7 +524,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
       toast.success(`${title} finished: ${result.completed} completed, ${result.failed} failed.`)
       setSubmitAttempted(false)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Operation failed.")
+      const message = error instanceof Error && error.message ? error.message : "Operation failed."
+      setOperationError(message)
+      toast.error(message)
     } finally {
       setIsRunning(false)
     }
@@ -476,31 +612,30 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
                 <SectionBody className="px-4 py-3">
                   <div
-                    className="flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70"
-                    onDragOver={(event: DragEvent<HTMLDivElement>) => event.preventDefault()}
-                    onDrop={(event: DragEvent<HTMLDivElement>) => {
-                      event.preventDefault()
-                      const droppedPaths = Array.from(event.dataTransfer.files)
-                        .map((file) => (file as File & { path?: string }).path)
-                        .filter((path): path is string => Boolean(path))
-                      if (droppedPaths.length > 0) {
-                        setPaths((current) => mergeUniquePaths(current, droppedPaths))
-                      }
-                    }}
+                    className={cn(
+                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      isRunning && "cursor-not-allowed opacity-70"
+                    )}
+                    role="group"
+                    aria-label="Encrypt file drop zone"
+                    aria-describedby="encrypt-drop-zone-description"
+                    aria-disabled={isRunning}
+                    onDragOver={handleTargetDragOver}
+                    onDrop={handleTargetDrop}
                   >
                     <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
                       <UploadCloud className="size-5" aria-hidden />
                     </div>
                     <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop files or folders to encrypt</h3>
-                    <p className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
+                    <p id="encrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
                       Choose files manually or bring in whole folders, then decide whether locked output stays beside the source or goes to a separate destination.
                     </p>
                     <div className="mt-4 flex flex-wrap justify-center gap-2">
-                      <Button variant="default" onClick={() => void pickFiles()}>
+                      <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
                       </Button>
-                      <Button variant="secondary" onClick={() => void pickFolder()}>
+                      <Button variant="secondary" onClick={() => void pickFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Folder
                       </Button>
@@ -582,9 +717,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                             <div className="flex items-center">
                               <button
                                 type="button"
-                                className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary"
+                                className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
                                 aria-label={`Remove ${item.displayName}`}
-                                onClick={() => setPaths((current) => current.filter((path) => path !== item.fullPath))}
+                                disabled={isRunning}
+                                onClick={() => removeTarget(item.fullPath)}
                               >
                                 <Trash2 className="size-4" aria-hidden />
                               </button>
@@ -605,10 +741,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <div className="grid gap-3">
                     <Field label="Password">
-                      <PasswordInput value={password} onChange={setPassword} placeholder="Enter a strong password" label="Password" />
+                      <PasswordInput value={password} onChange={setPassword} placeholder="Enter a strong password" label="Password" disabled={isRunning} />
                     </Field>
                     <Field label="Confirm Password">
-                      <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Confirm password" label="Confirm Password" />
+                      <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Confirm password" label="Confirm Password" disabled={isRunning} />
                     </Field>
                   </div>
 
@@ -647,15 +783,16 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionBody>
               </Section>
 
-              {(results.length > 0 || latestProgress) ? (
+              {(results.length > 0 || latestProgress || operationError) ? (
                 <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
                   <SectionHeader className="border-b border-border/80 px-4 py-3">
                     <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Run Progress</SectionTitle>
                   </SectionHeader>
-                  <SectionBody className="px-4 py-3">
+                  <SectionBody className="flex flex-col gap-3 px-4 py-3">
                     {latestProgress ? (
                       <ProgressBar value={latestProgress.percent} label={`${latestProgress.fileName} / ${latestProgress.status}`} />
                     ) : null}
+                    {operationError ? <OperationErrorNotice message={operationError} /> : null}
                     {results.length > 0 ? <ResultList results={results} onReveal={onReveal} /> : null}
                   </SectionBody>
                 </Section>
@@ -669,7 +806,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Algorithm">
-                    <Select value="AES-256-GCM" onValueChange={() => undefined}>
+                    <Select value="AES-256-GCM" onValueChange={() => undefined} disabled={isRunning}>
                       <SelectTrigger>
                         <SelectValue placeholder="Algorithm" />
                       </SelectTrigger>
@@ -683,8 +820,8 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
 
                   <Field label="Output Location">
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save next to source files" />
-                      <Button type="button" variant="secondary" onClick={() => void pickEncryptOutputFolder()}>
+                      <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save next to source files" disabled={isRunning} />
+                      <Button type="button" variant="secondary" onClick={() => void pickEncryptOutputFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse
                       </Button>
@@ -698,10 +835,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                   ) : null}
 
                   <div className="flex flex-col gap-3">
-                    <Toggle label="Save output next to source files" checked={savesNextToSource} onChange={handleSaveNextToSourceChange} />
-                    <Toggle label="Compress before encryption" checked={options.compressFiles} onChange={(value) => setOptions({ ...options, compressFiles: value })} />
-                    <Toggle label="Delete originals after successful encryption" checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} />
-                    <Toggle label="Package folders into one locked file" checked={options.packageFolders} onChange={(value) => setOptions({ ...options, packageFolders: value })} />
+                    <Toggle label="Save output next to source files" checked={savesNextToSource} onChange={handleSaveNextToSourceChange} disabled={isRunning} />
+                    <Toggle label="Compress before encryption" checked={options.compressFiles} onChange={(value) => setOptions({ ...options, compressFiles: value })} disabled={isRunning} />
+                    <Toggle label="Delete originals after successful encryption" checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} disabled={isRunning} />
+                    <Toggle label="Package folders into one locked file" checked={options.packageFolders} onChange={(value) => setOptions({ ...options, packageFolders: value })} disabled={isRunning} />
                   </div>
                 </SectionBody>
               </Section>
@@ -712,25 +849,25 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Keyfile Path">
-                    <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" />
+                    <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" disabled={isRunning} />
                   </Field>
                   <Field label="Recovery Key">
-                    <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" />
+                    <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" disabled={isRunning} />
                   </Field>
                   <Field label="Backup Folder">
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" />
-                      <Button type="button" variant="secondary" onClick={() => void pickBackupFolder()}>
+                      <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" disabled={isRunning} />
+                      <Button type="button" variant="secondary" onClick={() => void pickBackupFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse
                       </Button>
                     </div>
                   </Field>
                   <Field label="Metadata Note">
-                    <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" />
+                    <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" disabled={isRunning} />
                   </Field>
                   <Field label="Timestamp Policy">
-                    <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })}>
+                    <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
                       <SelectTrigger>
                         <SelectValue placeholder="Timestamp policy" />
                       </SelectTrigger>
@@ -744,10 +881,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                     </Select>
                   </Field>
                   <div className="flex flex-col gap-3">
-                    <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} />
-                    <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} />
-                    <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} />
-                    <Toggle label="Use secure delete for removals" checked={options.secureDeleteOriginals} onChange={(value) => setOptions({ ...options, secureDeleteOriginals: value })} />
+                    <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} disabled={isRunning} />
+                    <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} disabled={isRunning} />
+                    <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning} />
+                    <Toggle label="Use secure delete for removals" checked={options.secureDeleteOriginals} onChange={(value) => setOptions({ ...options, secureDeleteOriginals: value })} disabled={isRunning} />
                   </div>
                 </SectionBody>
               </Section>
@@ -761,7 +898,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                   <SummaryRow icon={HardDrive} label="Total size" value={paths.length > 0 ? totalSizeDisplay : "Calculated at run start"} />
                   <SummaryRow icon={FolderOpen} label="Output" value={encryptOutputSummary} />
                   <SummaryRow icon={Lock} label="Mode" value="AES-256-GCM" />
-                  <SummaryRow icon={encryptCanStart ? CheckCircle2 : Clock3} label="Status" value={encryptStatusText} good={encryptCanStart} />
+                  <SummaryRow icon={hasOperationError ? AlertTriangle : encryptCanStart ? CheckCircle2 : Clock3} label="Status" value={encryptStatusText} good={encryptCanStart && !hasOperationError} />
                 </SectionBody>
                 <SectionFooter className="flex flex-col gap-2 border-t border-border bg-transparent px-4 py-3">
                   {destructiveOptionsEnabled ? (
@@ -779,10 +916,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                             Selected options can remove original source files after the run succeeds. Type DELETE to continue.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
-                        <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" />
+                        <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" disabled={isRunning} />
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction disabled={deleteConfirmation !== "DELETE"} onClick={run}>Continue</AlertDialogAction>
+                          <AlertDialogAction disabled={deleteConfirmation !== "DELETE" || isRunning} onClick={run}>Continue</AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
@@ -792,7 +929,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                       {isRunning ? "Encrypting" : "Start Encryption"}
                     </Button>
                   )}
-                  <Button className="w-full" variant="outline" onClick={() => setPaths([])} disabled={paths.length === 0}>
+                  <Button className="w-full" variant="outline" onClick={clearTargets} disabled={paths.length === 0 || isRunning}>
                     <Trash2 data-icon="inline-start" />
                     Clear Selection
                   </Button>
@@ -896,31 +1033,30 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
                 <SectionBody className="px-4 py-3">
                   <div
-                    className="flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70"
-                    onDragOver={(event: DragEvent<HTMLDivElement>) => event.preventDefault()}
-                    onDrop={(event: DragEvent<HTMLDivElement>) => {
-                      event.preventDefault()
-                      const droppedPaths = Array.from(event.dataTransfer.files)
-                        .map((file) => (file as File & { path?: string }).path)
-                        .filter((path): path is string => Boolean(path))
-                      if (droppedPaths.length > 0) {
-                        setPaths((current) => mergeUniquePaths(current, droppedPaths))
-                      }
-                    }}
+                    className={cn(
+                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      isRunning && "cursor-not-allowed opacity-70"
+                    )}
+                    role="group"
+                    aria-label="Decrypt file drop zone"
+                    aria-describedby="decrypt-drop-zone-description"
+                    aria-disabled={isRunning}
+                    onDragOver={handleTargetDragOver}
+                    onDrop={handleTargetDrop}
                   >
                     <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
                       <UploadCloud className="size-5" aria-hidden />
                     </div>
                     <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop encrypted files to decrypt</h3>
-                    <p className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
+                    <p id="decrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
                       Choose locked files manually or bring in a folder, then restore original contents with the password or recovery material you already trust.
                     </p>
                     <div className="mt-4 flex flex-wrap justify-center gap-2">
-                      <Button variant="default" onClick={() => void pickFiles()}>
+                      <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
                       </Button>
-                      <Button variant="secondary" onClick={() => void pickFolder()}>
+                      <Button variant="secondary" onClick={() => void pickFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Folder
                       </Button>
@@ -1004,9 +1140,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                               <div className="flex items-center">
                                 <button
                                   type="button"
-                                  className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary"
+                                  className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
                                   aria-label={`Remove ${item.displayName}`}
-                                  onClick={() => setPaths((current) => current.filter((path) => path !== item.fullPath))}
+                                  disabled={isRunning}
+                                  onClick={() => removeTarget(item.fullPath)}
                                 >
                                   <Trash2 className="size-4" aria-hidden />
                                 </button>
@@ -1026,7 +1163,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Password">
-                    <PasswordInput value={password} onChange={setPassword} placeholder="Enter the password used for these files" label="Password" />
+                    <PasswordInput value={password} onChange={setPassword} placeholder="Enter the password used for these files" label="Password" disabled={isRunning} />
                   </Field>
 
                   <p className="text-sm leading-snug text-secondary">
@@ -1047,15 +1184,16 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionBody>
               </Section>
 
-              {(results.length > 0 || latestProgress) ? (
+              {(results.length > 0 || latestProgress || operationError) ? (
                 <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
                   <SectionHeader className="border-b border-border/80 px-4 py-3">
                     <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Run Progress</SectionTitle>
                   </SectionHeader>
-                  <SectionBody className="px-4 py-3">
+                  <SectionBody className="flex flex-col gap-3 px-4 py-3">
                     {latestProgress ? (
                       <ProgressBar value={latestProgress.percent} label={`${latestProgress.fileName} / ${latestProgress.status}`} />
                     ) : null}
+                    {operationError ? <OperationErrorNotice message={operationError} /> : null}
                     {results.length > 0 ? <ResultList results={results} onReveal={onReveal} /> : null}
                   </SectionBody>
                 </Section>
@@ -1070,8 +1208,8 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Output Location">
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input value={decryptOutputDirectory} onChange={(event) => setDecryptOutputDirectory(event.target.value)} placeholder="Leave blank to save next to encrypted files" />
-                      <Button type="button" variant="secondary" onClick={() => void pickDecryptOutputFolder()}>
+                      <Input value={decryptOutputDirectory} onChange={(event) => setDecryptOutputDirectory(event.target.value)} placeholder="Leave blank to save next to encrypted files" disabled={isRunning} />
+                      <Button type="button" variant="secondary" onClick={() => void pickDecryptOutputFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse
                       </Button>
@@ -1079,10 +1217,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                   </Field>
 
                   <div className="flex flex-col gap-3">
-                    <Toggle label="Save output next to encrypted files" checked={decryptSavesNextToEncrypted} onChange={handleSaveNextToEncryptedChange} />
-                    <Toggle label="Restore original filenames" checked={options.restoreOriginalFilenames} onChange={(value) => setOptions({ ...options, restoreOriginalFilenames: value })} />
-                    <Toggle label="Preserve folder structure" checked={options.preserveFolderStructure} onChange={(value) => setOptions({ ...options, preserveFolderStructure: value })} />
-                    <Toggle label="Delete encrypted files after successful decryption" checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} />
+                    <Toggle label="Save output next to encrypted files" checked={decryptSavesNextToEncrypted} onChange={handleSaveNextToEncryptedChange} disabled={isRunning} />
+                    <Toggle label="Restore original filenames" checked={options.restoreOriginalFilenames} onChange={(value) => setOptions({ ...options, restoreOriginalFilenames: value })} disabled={isRunning} />
+                    <Toggle label="Preserve folder structure" checked={options.preserveFolderStructure} onChange={(value) => setOptions({ ...options, preserveFolderStructure: value })} disabled={isRunning} />
+                    <Toggle label="Delete encrypted files after successful decryption" checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} disabled={isRunning} />
                   </div>
                 </SectionBody>
               </Section>
@@ -1093,15 +1231,15 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Keyfile Path">
-                    <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" />
+                    <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" disabled={isRunning} />
                   </Field>
                   <Field label="Recovery Key">
-                    <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" />
+                    <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" disabled={isRunning} />
                   </Field>
                   <Field label="Backup Folder">
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" />
-                      <Button type="button" variant="secondary" onClick={() => void pickBackupFolder()}>
+                      <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" disabled={isRunning} />
+                      <Button type="button" variant="secondary" onClick={() => void pickBackupFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse
                       </Button>
@@ -1119,7 +1257,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                   <SummaryRow icon={HardDrive} label="Total size" value={paths.length > 0 ? totalSizeDisplay : "Calculated at run start"} />
                   <SummaryRow icon={FolderOpen} label="Output" value={decryptOutputSummary} />
                   <SummaryRow icon={Unlock} label="Mode" value="AES-256-GCM" />
-                  <SummaryRow icon={decryptCanStart ? CheckCircle2 : Clock3} label="Status" value={decryptStatusText} good={decryptCanStart} />
+                  <SummaryRow icon={hasOperationError ? AlertTriangle : decryptCanStart ? CheckCircle2 : Clock3} label="Status" value={decryptStatusText} good={decryptCanStart && !hasOperationError} />
                 </SectionBody>
                 <SectionFooter className="flex flex-col gap-2 border-t border-border bg-transparent px-4 py-3">
                   {destructiveOptionsEnabled ? (
@@ -1137,10 +1275,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                             Selected options can remove encrypted source files after the run succeeds. Type DELETE to continue.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
-                        <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" />
+                        <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" disabled={isRunning} />
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction disabled={deleteConfirmation !== "DELETE"} onClick={run}>Continue</AlertDialogAction>
+                          <AlertDialogAction disabled={deleteConfirmation !== "DELETE" || isRunning} onClick={run}>Continue</AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
@@ -1150,7 +1288,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                       {isRunning ? "Decrypting" : "Start Decryption"}
                     </Button>
                   )}
-                  <Button className="w-full" variant="outline" onClick={() => setPaths([])} disabled={paths.length === 0}>
+                  <Button className="w-full" variant="outline" onClick={clearTargets} disabled={paths.length === 0 || isRunning}>
                     <Trash2 data-icon="inline-start" />
                     Clear Selection
                   </Button>
@@ -1191,6 +1329,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
           onPickFolder={pickFolder}
           title={isEncrypt ? "Source Files" : "Encrypted Payloads"}
           description={isEncrypt ? "Pick files or folders to protect." : "Pick .locked files or PNG carriers."}
+          disabled={isRunning}
         />
         {submitAttempted && paths.length === 0 ? <p className="mt-3 text-sm text-accent-red">Select at least one file or folder.</p> : null}
       </section>
@@ -1202,20 +1341,20 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <Field label={isEncrypt ? "Password" : "Unlock Password"}>
-            <PasswordInput value={password} onChange={setPassword} placeholder={isEncrypt ? "Password" : "Unlock password"} label={isEncrypt ? "Password" : "Unlock Password"} />
+            <PasswordInput value={password} onChange={setPassword} placeholder={isEncrypt ? "Password" : "Unlock password"} label={isEncrypt ? "Password" : "Unlock Password"} disabled={isRunning} />
             {submitAttempted && !password ? <p className="mt-2 text-sm text-accent-red">{isEncrypt ? "Password is required." : "Unlock password is required."}</p> : null}
           </Field>
           {isEncrypt ? (
             <Field label="Confirm Password">
-              <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Confirm password" label="Confirm Password" />
+              <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Confirm password" label="Confirm Password" disabled={isRunning} />
               {password && confirmPassword && password !== confirmPassword ? <p className="mt-2 text-sm text-accent-red">Passwords do not match.</p> : null}
             </Field>
           ) : null}
           <Field label="Keyfile Path">
-            <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" />
+            <Input value={keyfilePath} onChange={(event) => setKeyfilePath(event.target.value)} placeholder="Optional keyfile path" disabled={isRunning} />
           </Field>
           <Field label="Recovery Key">
-            <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" />
+            <Input value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} placeholder="Optional recovery key" disabled={isRunning} />
           </Field>
         </div>
       </section>
@@ -1226,15 +1365,15 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
           <p className="security-description">FileLocker checks every option before touching your files.</p>
         </div>
         <div className="grid border-t border-border md:grid-cols-2 md:[&>*:nth-child(odd)]:border-r">
-          {isEncrypt ? <Toggle label="Compress before encryption" checked={options.compressFiles} onChange={(value) => setOptions({ ...options, compressFiles: value })} /> : null}
-          {isEncrypt ? <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} /> : null}
-          {isEncrypt ? <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} /> : null}
-          {isEncrypt ? <Toggle label="Package folders" checked={options.packageFolders} onChange={(value) => setOptions({ ...options, packageFolders: value })} /> : null}
-          <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} />
-          <Toggle label={isEncrypt ? "Delete originals after success" : "Delete encrypted files after success"} checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} />
-          <Toggle label="Use secure delete for removals" checked={options.secureDeleteOriginals} onChange={(value) => setOptions({ ...options, secureDeleteOriginals: value })} />
-          {isDecrypt ? <Toggle label="Restore original filenames" checked={options.restoreOriginalFilenames} onChange={(value) => setOptions({ ...options, restoreOriginalFilenames: value })} /> : null}
-          {isDecrypt ? <Toggle label="Preserve folder structure" checked={options.preserveFolderStructure} onChange={(value) => setOptions({ ...options, preserveFolderStructure: value })} /> : null}
+          {isEncrypt ? <Toggle label="Compress before encryption" checked={options.compressFiles} onChange={(value) => setOptions({ ...options, compressFiles: value })} disabled={isRunning} /> : null}
+          {isEncrypt ? <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} disabled={isRunning} /> : null}
+          {isEncrypt ? <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning} /> : null}
+          {isEncrypt ? <Toggle label="Package folders" checked={options.packageFolders} onChange={(value) => setOptions({ ...options, packageFolders: value })} disabled={isRunning} /> : null}
+          <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} disabled={isRunning} />
+          <Toggle label={isEncrypt ? "Delete originals after success" : "Delete encrypted files after success"} checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} disabled={isRunning} />
+          <Toggle label="Use secure delete for removals" checked={options.secureDeleteOriginals} onChange={(value) => setOptions({ ...options, secureDeleteOriginals: value })} disabled={isRunning} />
+          {isDecrypt ? <Toggle label="Restore original filenames" checked={options.restoreOriginalFilenames} onChange={(value) => setOptions({ ...options, restoreOriginalFilenames: value })} disabled={isRunning} /> : null}
+          {isDecrypt ? <Toggle label="Preserve folder structure" checked={options.preserveFolderStructure} onChange={(value) => setOptions({ ...options, preserveFolderStructure: value })} disabled={isRunning} /> : null}
         </div>
       </section>
 
@@ -1250,19 +1389,19 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
             <Field label="Encrypt Output Folder">
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save beside the source file" />
-                  <Button type="button" variant="secondary" onClick={pickEncryptOutputFolder}>
+                  <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save beside the source file" disabled={isRunning} />
+                  <Button type="button" variant="secondary" onClick={pickEncryptOutputFolder} disabled={isRunning}>
                     <FolderOpen data-icon="inline-start" />
                     Browse...
                   </Button>
                 </div>
                 {encryptOutputSuggestion?.suggestedPath ? (
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" onClick={() => setEncryptOutputDirectory(encryptOutputSuggestion.suggestedPath ?? "")}>
+                    <Button type="button" variant="outline" onClick={() => setEncryptOutputDirectory(encryptOutputSuggestion.suggestedPath ?? "")} disabled={isRunning}>
                       Use Suggested Folder
                     </Button>
                     {encryptOutputDirectory ? (
-                      <Button type="button" variant="ghost" onClick={() => setEncryptOutputDirectory("")}>
+                      <Button type="button" variant="ghost" onClick={() => setEncryptOutputDirectory("")} disabled={isRunning}>
                         Use Source Folders Instead
                       </Button>
                     ) : null}
@@ -1279,8 +1418,8 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
           {isDecrypt || kind === "verify" ? (
             <Field label="Decrypt Output Folder">
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Input value={decryptOutputDirectory} onChange={(event) => setDecryptOutputDirectory(event.target.value)} placeholder="Leave blank to save beside the encrypted file" />
-                <Button type="button" variant="secondary" onClick={pickDecryptOutputFolder}>
+                <Input value={decryptOutputDirectory} onChange={(event) => setDecryptOutputDirectory(event.target.value)} placeholder="Leave blank to save beside the encrypted file" disabled={isRunning} />
+                <Button type="button" variant="secondary" onClick={pickDecryptOutputFolder} disabled={isRunning}>
                   <FolderOpen data-icon="inline-start" />
                   Browse...
                 </Button>
@@ -1289,18 +1428,18 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
           ) : null}
           <Field label="Backup Folder">
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" />
-              <Button type="button" variant="secondary" onClick={pickBackupFolder}>
+              <Input value={backupFolderPath} onChange={(event) => setBackupFolderPath(event.target.value)} placeholder="Optional backup folder" disabled={isRunning} />
+              <Button type="button" variant="secondary" onClick={pickBackupFolder} disabled={isRunning}>
                 <FolderOpen data-icon="inline-start" />
                 Browse...
               </Button>
             </div>
           </Field>
           <Field label="Metadata Note">
-            <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" />
+            <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" disabled={isRunning} />
           </Field>
           <Field label="Timestamp Policy">
-            <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })}>
+            <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
               <SelectTrigger>
                 <SelectValue placeholder="Timestamp policy" />
               </SelectTrigger>
@@ -1318,6 +1457,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
 
       <section className="security-section">
         {latestProgress ? <ProgressBar value={latestProgress.percent} label={`${latestProgress.fileName} / ${latestProgress.status}`} /> : null}
+        {operationError ? <OperationErrorNotice message={operationError} /> : null}
         {destructiveOptionsEnabled ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
@@ -1331,10 +1471,10 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 <AlertDialogTitle>Confirm destructive options</AlertDialogTitle>
                 <AlertDialogDescription>Selected options can remove original or encrypted source files after the run succeeds. Type DELETE to continue.</AlertDialogDescription>
               </AlertDialogHeader>
-              <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" />
+              <Input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder="DELETE" disabled={isRunning} />
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction disabled={deleteConfirmation !== "DELETE"} onClick={run}>Continue</AlertDialogAction>
+                <AlertDialogAction disabled={deleteConfirmation !== "DELETE" || isRunning} onClick={run}>Continue</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -1362,6 +1502,7 @@ export function SecureDeletePage({
   const [paths, setPaths] = useState<string[]>([])
   const [confirmed, setConfirmed] = useState(false)
   const [results, setResults] = useState<FileOperationResult[]>([])
+  const [actionError, setActionError] = useState("")
   const [isRunning, setIsRunning] = useState(false)
   const [pathDetails, setPathDetails] = useState<SelectedPathDescriptor[]>([])
   const [pathWarnings, setPathWarnings] = useState<string[]>([])
@@ -1374,9 +1515,15 @@ export function SecureDeletePage({
       return
     }
 
+    if (isRunning) {
+      toast.error("Wait for secure delete to finish before changing the selected targets.")
+      onDroppedPathsHandled?.()
+      return
+    }
+
     setPaths((current) => mergeUniquePaths(current, droppedPaths))
     onDroppedPathsHandled?.()
-  }, [droppedPaths, onDroppedPathsHandled])
+  }, [droppedPaths, isRunning, onDroppedPathsHandled])
 
   useEffect(() => {
     if (paths.length === 0) {
@@ -1399,10 +1546,10 @@ export function SecureDeletePage({
         setPathWarnings(response.warnings)
         setTotalSizeDisplay(response.totalSizeDisplay)
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setPathDetails([])
-          setPathWarnings([])
+          setPathWarnings([getPathDetailsWarning(error)])
           setTotalSizeDisplay("Calculated at run start")
         }
       })
@@ -1416,6 +1563,12 @@ export function SecureDeletePage({
       cancelled = true
     }
   }, [invoke, paths])
+
+  useEffect(() => {
+    setConfirmed(false)
+    setResults((current) => current.length > 0 ? [] : current)
+    setActionError("")
+  }, [paths, deleteMethodId])
 
   const recentDeletes = useMemo(
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Secure Delete").slice(0, 6),
@@ -1438,6 +1591,7 @@ export function SecureDeletePage({
   const failedCount = results.filter((item) => item.status !== "Completed").length
   const canStart = paths.length > 0 && confirmed
   const hasResults = results.length > 0
+  const hasActionError = Boolean(actionError)
   const statusText = paths.length === 0
     ? "Add files or folders"
     : isRunning
@@ -1446,37 +1600,76 @@ export function SecureDeletePage({
         ? failedCount > 0
           ? "Completed with issues"
           : "Completed"
+        : hasActionError
+          ? "Failed"
         : confirmed
           ? "Ready"
           : "Confirmation required"
-  const statusGood = (confirmed && !isRunning && paths.length > 0) || (hasResults && failedCount === 0)
-  const stateProgress = hasResults ? 100 : isRunning ? 58 : confirmed ? 18 : 0
+  const statusGood = !hasActionError && ((confirmed && !isRunning && paths.length > 0) || (hasResults && failedCount === 0))
+  const stateProgress = hasResults || hasActionError ? 100 : isRunning ? 58 : confirmed ? 18 : 0
   const progressMessage = isRunning
     ? "Secure delete is processing the selected targets."
+    : hasActionError
+      ? "Secure delete did not start."
     : hasResults
       ? `${completedCount} item${completedCount === 1 ? "" : "s"} completed${failedCount > 0 ? `, ${failedCount} failed` : ""}.`
       : "Ready to start secure deletion."
   const selectedMethod = secureDeleteMethods.find((method) => method.id === deleteMethodId) ?? secureDeleteMethods[1]
 
   async function pickFiles() {
-    const result = await invoke<{ paths: string[] }>("files.pickFiles")
-    setPaths((current) => mergeUniquePaths(current, result.paths))
+    if (isRunning) {
+      toast.error("Wait for secure delete to finish before changing the selected targets.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ paths: string[] }>("files.pickFiles")
+      setPaths((current) => mergeUniquePaths(current, result.paths))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick files.")
+    }
   }
 
   async function pickFolder() {
-    const result = await invoke<{ path: string }>("files.pickFolder")
-    if (result.path) {
-      setPaths((current) => mergeUniquePaths(current, [result.path]))
+    if (isRunning) {
+      toast.error("Wait for secure delete to finish before changing the selected targets.")
+      return
+    }
+
+    try {
+      const result = await invoke<{ path: string }>("files.pickFolder")
+      if (result.path) {
+        setPaths((current) => mergeUniquePaths(current, [result.path]))
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a folder.")
     }
   }
 
   async function run() {
+    if (isRunning) {
+      return
+    }
+
+    if (paths.length === 0) {
+      toast.error("Select at least one file or folder.")
+      return
+    }
+
+    if (!confirmed) {
+      toast.error("Confirm secure delete before deleting selected files or folders.")
+      return
+    }
+
     setIsRunning(true)
+    setActionError("")
+    setResults([])
     try {
       const result = await invoke<{ results: FileOperationResult[]; dashboard?: unknown }>("secureDelete.delete", {
         paths,
         method: selectedMethod.id,
         overwritePasses: selectedMethod.passes,
+        confirmation: "DELETE",
       })
       setResults(result.results)
       if (result.dashboard) {
@@ -1484,15 +1677,22 @@ export function SecureDeletePage({
       }
       toast.success("Secure delete completed.")
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Secure delete failed.")
+      const message = error instanceof Error && error.message ? error.message : "Secure delete failed."
+      setActionError(message)
+      toast.error(message)
     } finally {
       setIsRunning(false)
     }
   }
 
   function clearSelection() {
+    if (isRunning) {
+      return
+    }
+
     setPaths([])
     setResults([])
+    setActionError("")
     setConfirmed(false)
   }
 
@@ -1580,7 +1780,7 @@ export function SecureDeletePage({
                   </div>
                   <div>
                     <div className="font-display text-base font-semibold tracking-tight text-primary">This action cannot be undone.</div>
-                    <p className="mt-1 max-w-3xl text-sm leading-snug text-secondary">
+                    <p id="secure-delete-drop-zone-description" className="mt-1 max-w-3xl text-sm leading-snug text-secondary">
                       Selected files and folders are removed permanently after FileLocker attempts a local overwrite pass. Review the selected paths carefully before you start.
                     </p>
                   </div>
@@ -1591,10 +1791,25 @@ export function SecureDeletePage({
             <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
               <SectionBody className="px-4 py-3">
                 <div
-                  className="flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-destructive/60 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-destructive/75"
-                  onDragOver={(event: DragEvent<HTMLDivElement>) => event.preventDefault()}
+                  className={cn(
+                    "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-destructive/60 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-destructive/75",
+                    isRunning && "cursor-not-allowed opacity-70"
+                  )}
+                  role="group"
+                  aria-label="Secure delete target drop zone"
+                  aria-describedby="secure-delete-drop-zone-description"
+                  aria-disabled={isRunning}
+                  onDragOver={(event: DragEvent<HTMLDivElement>) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = isRunning ? "none" : "copy"
+                  }}
                   onDrop={(event: DragEvent<HTMLDivElement>) => {
                     event.preventDefault()
+                    if (isRunning) {
+                      toast.error("Wait for secure delete to finish before changing the selected targets.")
+                      return
+                    }
+
                     const droppedPaths = Array.from(event.dataTransfer.files)
                       .map((file) => (file as File & { path?: string }).path)
                       .filter((path): path is string => Boolean(path))
@@ -1608,11 +1823,11 @@ export function SecureDeletePage({
                   </div>
                   <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop files or folders to securely delete</h3>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
-                    <Button variant="violet" onClick={() => void pickFiles()}>
+                    <Button variant="violet" onClick={() => void pickFiles()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse Files
                     </Button>
-                    <Button variant="secondary" onClick={() => void pickFolder()}>
+                    <Button variant="secondary" onClick={() => void pickFolder()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse Folder
                     </Button>
@@ -1688,7 +1903,8 @@ export function SecureDeletePage({
                                   type="button"
                                   className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary"
                                   aria-label={`Remove ${item.displayName}`}
-                                  onClick={() => setPaths((current) => current.filter((path) => path !== item.fullPath))}
+                                  disabled={isRunning}
+                                  onClick={() => setPaths((current) => current.filter((path) => !areSameLocalPath(path, item.fullPath)))}
                                 >
                                   <Trash2 className="size-4" aria-hidden />
                                 </button>
@@ -1710,7 +1926,7 @@ export function SecureDeletePage({
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm leading-snug text-secondary">{progressMessage}</div>
-                  <Badge variant={hasResults ? "secondary" : "outline"}>{statusText}</Badge>
+                  <Badge variant={hasActionError ? "destructive" : hasResults ? "secondary" : "outline"}>{statusText}</Badge>
                 </div>
 
                 <div className="flex flex-col gap-3">
@@ -1718,7 +1934,7 @@ export function SecureDeletePage({
                     <div
                       className={cn(
                         "h-full transition-[width] duration-300",
-                        hasResults ? "bg-accent-green" : isRunning ? "bg-accent-blue" : "bg-border"
+                        hasActionError ? "bg-destructive" : hasResults ? "bg-accent-green" : isRunning ? "bg-accent-blue" : "bg-border"
                       )}
                       style={{ width: `${stateProgress}%` }}
                     />
@@ -1729,6 +1945,15 @@ export function SecureDeletePage({
                     <span className={cn(hasResults && "text-primary")}>Completed</span>
                   </div>
                 </div>
+
+                {actionError ? (
+                  <div className="rounded-md border border-destructive/35 bg-destructive/10 px-4 py-3 text-sm leading-snug text-red-100" role="status" aria-live="polite">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+                      <span>{actionError}</span>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="rounded-md border border-accent/20 bg-accent/6 px-4 py-3 text-sm leading-[1.6] text-secondary">
                   <div className="flex items-start gap-3">
@@ -1761,8 +1986,10 @@ export function SecureDeletePage({
                       type="button"
                       className={cn(
                         "flex w-full items-start gap-2.5 rounded-md border border-border/80 bg-background/35 px-3 py-2 text-left transition-colors hover:border-accent/60 hover:bg-background/55",
-                        isSelected && "border-accent/70 bg-accent/10"
+                        isSelected && "border-accent/70 bg-accent/10",
+                        isRunning && "cursor-not-allowed opacity-60"
                       )}
+                      disabled={isRunning}
                       onClick={() => setDeleteMethodId(method.id)}
                     >
                       <span className={cn("mt-0.5 flex size-5 items-center justify-center rounded-md border border-border text-transparent", isSelected && "border-accent bg-accent text-white")}>
@@ -1802,7 +2029,7 @@ export function SecureDeletePage({
                   }
                 />
                 <SummaryRow icon={ShieldCheck} label="Method" value={`${selectedMethod.label} (${selectedMethod.passes} pass${selectedMethod.passes === 1 ? "" : "es"})`} />
-                <SummaryRow icon={statusGood ? CheckCircle2 : Clock3} label="Status" value={statusText} good={statusGood} />
+                <SummaryRow icon={hasActionError ? AlertTriangle : statusGood ? CheckCircle2 : Clock3} label="Status" value={statusText} good={statusGood} />
               </SectionBody>
             </Section>
 
@@ -1823,7 +2050,7 @@ export function SecureDeletePage({
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="rounded-md border border-border/80 bg-background/35">
-                  <Toggle label="I understand these selected items will be removed" checked={confirmed} onChange={setConfirmed} />
+                  <Toggle label="I understand these selected items will be removed" checked={confirmed} onChange={setConfirmed} disabled={isRunning} />
                 </div>
                 <p className="text-sm leading-snug text-secondary">
                   Review the selected paths and confirm before starting. Once the run completes, those targets are intended to be permanently removed.
@@ -1850,7 +2077,7 @@ export function SecureDeletePage({
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
-                <Button className="w-full" variant="outline" onClick={clearSelection} disabled={paths.length === 0 && results.length === 0}>
+                <Button className="w-full" variant="outline" onClick={clearSelection} disabled={(paths.length === 0 && results.length === 0) || isRunning}>
                   <Trash2 data-icon="inline-start" />
                   Clear Selection
                 </Button>
@@ -1870,6 +2097,29 @@ type SummaryRowProps = {
   good?: boolean
 }
 
+function OperationErrorNotice({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-destructive/35 bg-destructive/10 px-4 py-3 text-sm leading-snug text-red-100" role="status" aria-live="polite">
+      <div className="flex items-start gap-2.5">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+        <span>{message}</span>
+      </div>
+    </div>
+  )
+}
+
+function areSameLocalPath(left: string, right: string) {
+  return normalizeComparablePath(left) === normalizeComparablePath(right)
+}
+
+function normalizeComparablePath(path: string) {
+  return path
+    .trim()
+    .replaceAll("/", "\\")
+    .replace(/[\\]+$/, "")
+    .toLowerCase()
+}
+
 function SummaryRow({ icon: Icon, label, value, good = false }: SummaryRowProps) {
   return (
     <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/80 bg-background/35 px-3 py-2">
@@ -1882,6 +2132,12 @@ function SummaryRow({ icon: Icon, label, value, good = false }: SummaryRowProps)
       <span className={cn("text-right font-display text-sm font-semibold tracking-tight", good ? "text-accent-green" : "text-primary")}>{value}</span>
     </div>
   )
+}
+
+function getPathDetailsWarning(error: unknown) {
+  return error instanceof Error && error.message
+    ? `Unable to read selected item details. ${error.message}`
+    : "Unable to read selected item details."
 }
 
 type PasswordStrengthState = {

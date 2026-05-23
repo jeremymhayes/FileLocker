@@ -84,9 +84,12 @@ internal sealed record OperationMetricsSummary(
 
 internal static class OperationHistoryMetrics
 {
-    internal static OperationMetricsSummary Calculate(IEnumerable<FileOperationResult> results)
+    internal static OperationMetricsSummary Calculate(IEnumerable<FileOperationResult>? results)
     {
-        FileOperationResult[] resultArray = results.ToArray();
+        FileOperationResult[] resultArray = (results ?? [])
+            .Where(result => result is not null)
+            .ToArray();
+
         long? totalOriginal = SumNullable(resultArray.Select(result => result.OriginalSizeBytes));
         long? totalOutput = SumNullable(resultArray.Select(result => result.OutputSizeBytes));
         long? elapsed = SumNullable(resultArray.Select(result => result.ElapsedMilliseconds));

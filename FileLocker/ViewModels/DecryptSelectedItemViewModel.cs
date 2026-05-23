@@ -122,7 +122,8 @@ public sealed class DecryptSelectedItemViewModel : INotifyPropertyChanged
             }
 
             if (string.Equals(Status, "Waiting", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(Status, "Password required", StringComparison.OrdinalIgnoreCase))
+                string.Equals(Status, "Password required", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
             {
                 return new SolidColorBrush(Colors.Orange);
             }
@@ -171,6 +172,18 @@ public sealed class DecryptSelectedItemViewModel : INotifyPropertyChanged
         Status = "Failed";
         Detail = detail;
         ProgressStatus = "Issue";
+    }
+
+    public void SetCancelled(string detail)
+    {
+        Status = "Cancelled";
+        Detail = detail;
+        if (!IsProgressVisible)
+        {
+            ProgressPercent = 0;
+        }
+
+        ProgressStatus = "Cancelled";
     }
 
     public void UpdateProgress(double percent, string? status = null)

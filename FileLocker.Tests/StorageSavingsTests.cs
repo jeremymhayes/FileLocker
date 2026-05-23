@@ -36,6 +36,34 @@ public sealed class StorageSavingsTests
     }
 
     [Fact]
+    public void OperationHistoryMetrics_IgnoresNullResultRows()
+    {
+        FileOperationResult result = CreateCompletedResult(
+            originalSizeBytes: 250_000,
+            outputSizeBytes: 260_000,
+            compressedSizeBytes: 20_000);
+
+        OperationMetricsSummary summary = OperationHistoryMetrics.Calculate([null!, result]);
+
+        Assert.Equal(250_000, summary.TotalOriginalSizeBytes);
+        Assert.Equal(1, summary.CompressionRequestedCount);
+    }
+
+    [Fact]
+    public void OperationHistoryMetrics_TreatsNullResultSequenceAsEmpty()
+    {
+        OperationMetricsSummary summary = OperationHistoryMetrics.Calculate(null!);
+
+        Assert.Null(summary.TotalOriginalSizeBytes);
+        Assert.Null(summary.TotalOutputSizeBytes);
+        Assert.Null(summary.TotalStorageSavedBytes);
+        Assert.Equal(0, summary.CompressionRequestedCount);
+        Assert.Equal(0, summary.CompressionAppliedCount);
+        Assert.Equal(0, summary.CompressionSkippedCount);
+        Assert.Null(summary.FailureCategorySummary);
+    }
+
+    [Fact]
     public void TryGetTrackedStorageDeltaBytes_UsesStoredCompressedSizeWithRedactedPaths()
     {
         FileOperationResult result = CreateCompletedResult(

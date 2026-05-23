@@ -219,7 +219,7 @@ namespace FileLocker
 
         private async void StartEncryptionButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!ValidateEncryptFilesForm(showDialog: true))
+            if (!await ValidateEncryptFilesFormAsync(showDialog: true))
             {
                 RefreshEncryptFilesState();
                 return;
@@ -256,7 +256,7 @@ namespace FileLocker
             RefreshEncryptFilesState();
         }
 
-        private bool ValidateEncryptFilesForm(bool showDialog)
+        private async Task<bool> ValidateEncryptFilesFormAsync(bool showDialog)
         {
             string? message = null;
             if (FileList.Count == 0)
@@ -287,7 +287,7 @@ namespace FileLocker
 
             if (showDialog)
             {
-                _ = ShowErrorDialogAsync(message);
+                await ShowErrorDialogAsync(message);
             }
 
             return false;
@@ -308,7 +308,7 @@ namespace FileLocker
             UpdateEncryptPasswordFeedback();
         }
 
-        private async void EncryptDropPanel_DragOver(object sender, DragEventArgs e)
+        private void EncryptDropPanel_DragOver(object sender, DragEventArgs e)
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
@@ -316,20 +316,9 @@ namespace FileLocker
             }
 
             e.AcceptedOperation = DataPackageOperation.Copy;
-            var deferral = e.GetDeferral();
-            try
-            {
-                var items = await e.DataView.GetStorageItemsAsync();
-                EncryptDropLabel.Text = items.Count > 0
-                    ? $"Release {items.Count} item(s) to add them"
-                    : "Release to add files";
-                EncryptDropHintText.Text = "Dropped items will be added to the local encryption queue.";
-                SetEncryptDropVisual(true);
-            }
-            finally
-            {
-                deferral.Complete();
-            }
+            EncryptDropLabel.Text = "Release to add files";
+            EncryptDropHintText.Text = "Dropped items will be added to the local encryption queue.";
+            SetEncryptDropVisual(true);
         }
 
         private async void EncryptDropPanel_Drop(object sender, DragEventArgs e)
@@ -339,8 +328,16 @@ namespace FileLocker
 
             if (e.DataView.Contains(StandardDataFormats.StorageItems))
             {
-                await ProcessDroppedFilesAsync(e.DataView);
-                RefreshEncryptFilesState();
+                var deferral = e.GetDeferral();
+                try
+                {
+                    await ProcessDroppedFilesAsync(e.DataView);
+                    RefreshEncryptFilesState();
+                }
+                finally
+                {
+                    deferral.Complete();
+                }
             }
         }
 
@@ -379,31 +376,38 @@ namespace FileLocker
 
         private async void EncryptOutputBrowseButton_Click(object sender, RoutedEventArgs e)
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder == null)
-            {
-                return;
-            }
-
-            _isSyncingEncryptFilesUi = true;
             try
             {
-                EncryptSaveNextToSourceToggle.IsOn = false;
-                EncryptOutputLocationBox.Text = folder.Path;
-                OutputCustomLocationRadio.IsChecked = true;
-                OutputSameLocationRadio.IsChecked = false;
-                EncryptOutputFolderBox.Text = folder.Path;
-            }
-            finally
-            {
-                _isSyncingEncryptFilesUi = false;
-            }
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
 
-            UpdateEncryptDestinationUi();
-            RefreshEncryptFilesState();
-            SetStatus($"Encrypt output folder selected: {folder.Name}");
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder == null)
+                {
+                    return;
+                }
+
+                _isSyncingEncryptFilesUi = true;
+                try
+                {
+                    EncryptSaveNextToSourceToggle.IsOn = false;
+                    EncryptOutputLocationBox.Text = folder.Path;
+                    OutputCustomLocationRadio.IsChecked = true;
+                    OutputSameLocationRadio.IsChecked = false;
+                    EncryptOutputFolderBox.Text = folder.Path;
+                }
+                finally
+                {
+                    _isSyncingEncryptFilesUi = false;
+                }
+
+                UpdateEncryptDestinationUi();
+                RefreshEncryptFilesState();
+                SetStatus($"Encrypt output folder selected: {folder.Name}");
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse encrypt output folder: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
+            }
         }
 
         private void EncryptOutputLocationBox_TextChanged(object sender, TextChangedEventArgs e)

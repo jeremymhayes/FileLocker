@@ -33,11 +33,38 @@ namespace FileLocker
             "partition-cleaner",
             "drive-optimizer",
             "custom-clean",
-            "registry-fixer"
+            "registry-fixer",
+            "startup-manager",
+            "app-manager"
         };
 
         private IReadOnlyList<string> _launchPaths = [];
         private string? _launchAction;
+
+#if DEBUG
+        private const bool IsDebugBuild = true;
+#else
+        private const bool IsDebugBuild = false;
+#endif
+
+        private async Task InitializeWebViewSafelyAsync(IReadOnlyList<string>? launchPaths, string? launchAction)
+        {
+            try
+            {
+                await InitializeWebViewAsync(launchPaths, launchAction);
+            }
+            catch (Exception ex)
+            {
+                if (_isWindowClosed)
+                {
+                    return;
+                }
+
+                string message = GetFriendlyExceptionMessage(ex, "The FileLocker interface could not be loaded.");
+                SetStatus($"Interface startup failed: {message}");
+                await ShowErrorDialogAsync($"Unable to start the FileLocker interface:\n{message}");
+            }
+        }
 
         private async Task InitializeWebViewAsync(IReadOnlyList<string>? launchPaths, string? launchAction)
         {
@@ -63,6 +90,16 @@ namespace FileLocker
             AppWebView.Source = source;
         }
 
+        private void DetachWebViewHandlers()
+        {
+            AppWebView.DragOver -= AppWebView_DragOver;
+            AppWebView.Drop -= AppWebView_Drop;
+            if (AppWebView.CoreWebView2 != null)
+            {
+                AppWebView.CoreWebView2.WebMessageReceived -= CoreWebView2_WebMessageReceived;
+            }
+        }
+
         private static string GetWebViewUserDataDirectory()
         {
             string path = Path.Combine(GetAppDataDirectory(), "WebView2");
@@ -74,6 +111,8 @@ namespace FileLocker
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
+                e.AcceptedOperation = DataPackageOperation.None;
+                e.Handled = true;
                 return;
             }
 
@@ -85,17 +124,37 @@ namespace FileLocker
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
+                e.AcceptedOperation = DataPackageOperation.None;
+                e.Handled = true;
                 return;
             }
 
             e.AcceptedOperation = DataPackageOperation.Copy;
             e.Handled = true;
 
-            IReadOnlyList<Windows.Storage.IStorageItem> items = await e.DataView.GetStorageItemsAsync();
-            string[] paths = items
-                .Select(item => item.Path)
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .ToArray();
+            string[] paths;
+            var deferral = e.GetDeferral();
+            try
+            {
+                IReadOnlyList<Windows.Storage.IStorageItem> items = await e.DataView.GetStorageItemsAsync();
+                paths = items
+                    .Select(item => item.Path)
+                    .Where(path => !string.IsNullOrWhiteSpace(path))
+                    .ToArray();
+            }
+            catch (Exception ex)
+            {
+                PostBridgeEvent(new
+                {
+                    type = "dropError",
+                    message = SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Drag and drop failed."))
+                });
+                return;
+            }
+            finally
+            {
+                deferral.Complete();
+            }
 
             if (paths.Length > 0)
             {
@@ -186,7 +245,7 @@ namespace FileLocker
                 "app.restartAsAdministrator" => RestartAsAdministratorFromBridgeAsync(ReadPayload<RestartAsAdministratorRequest>(request.Payload)),
                 "files.pickFiles" => PickFilesAsync(),
                 "files.pickFolder" => PickFolderAsync(),
-                "files.describePaths" => Task.FromResult<object?>(DescribePathsFromBridge(ReadPayload<PathListRequest>(request.Payload))),
+                "files.describePaths" => RunBridgeWorkerAsync(() => DescribePathsFromBridge(ReadPayload<PathListRequest>(request.Payload))),
                 "files.suggestEncryptOutput" => Task.FromResult<object?>(SuggestEncryptOutputFromBridge(ReadPayload<PathListRequest>(request.Payload))),
                 "files.revealPath" => RevealPathAsync(ReadPayload<RevealPathRequest>(request.Payload)),
                 "links.openExternal" => OpenExternalLinkAsync(ReadPayload<OpenExternalRequest>(request.Payload)),
@@ -197,16 +256,22 @@ namespace FileLocker
                 "hash.verify" => Task.FromResult<object?>(VerifyHashFromBridge(ReadPayload<HashVerifyRequest>(request.Payload))),
                 "hash.manifestCreate" => CreateHashManifestFromBridgeAsync(ReadPayload<HashManifestCreateRequest>(request.Payload)),
                 "hash.manifestVerify" => VerifyHashManifestFromBridgeAsync(ReadPayload<HashManifestVerifyRequest>(request.Payload)),
-                "text.convert" => Task.FromResult<object?>(ConvertTextFromBridge(ReadPayload<TextConvertRequest>(request.Payload))),
-                "metadata.inspect" => Task.FromResult<object?>(InspectMetadataFromBridge(ReadPayload<MetadataInspectRequest>(request.Payload))),
+                "text.convert" => RunBridgeWorkerAsync(() => ConvertTextFromBridge(ReadPayload<TextConvertRequest>(request.Payload))),
+                "metadata.inspect" => InspectMetadataFromBridgeAsync(ReadPayload<MetadataInspectRequest>(request.Payload)),
                 "secureDelete.delete" => SecureDeleteFromBridgeAsync(ReadPayload<SecureDeleteRequest>(request.Payload)),
-                "maintenance.getDrives" => Task.FromResult<object?>(SystemMaintenanceService.GetDrives()),
-                "maintenance.scanCleanup" => Task.FromResult<object?>(SystemMaintenanceService.ScanCleanup(ReadPayload<MaintenanceCleanupRequest>(request.Payload).CategoryIds)),
-                "maintenance.runCleanup" => Task.FromResult<object?>(SystemMaintenanceService.RunCleanup(ReadPayload<MaintenanceCleanupRequest>(request.Payload).CategoryIds)),
+                "maintenance.getDrives" => RunBridgeWorkerAsync(() => SystemMaintenanceService.GetDrives()),
+                "maintenance.scanCleanup" => RunBridgeWorkerAsync(() => SystemMaintenanceService.ScanCleanup(ReadPayload<MaintenanceCleanupRequest>(request.Payload).CategoryIds)),
+                "maintenance.runCleanup" => RunBridgeWorkerAsync(() => RunCleanupFromBridge(ReadPayload<MaintenanceCleanupRequest>(request.Payload))),
                 "maintenance.optimizeDrive" => OptimizeDriveFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
                 "maintenance.wipeFreeSpace" => WipeFreeSpaceFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
-                "maintenance.scanRegistry" => Task.FromResult<object?>(SystemMaintenanceService.ScanRegistry()),
-                "maintenance.cleanRegistry" => Task.FromResult<object?>(CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
+                "maintenance.scanRegistry" => RunBridgeWorkerAsync(() => SystemMaintenanceService.ScanRegistry()),
+                "maintenance.cleanRegistry" => RunBridgeWorkerAsync(() => CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
+                "maintenance.scanStartup" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanStartup()),
+                "maintenance.setStartupEnabled" => RunBridgeWorkerAsync(() => SetStartupEnabledFromBridge(ReadPayload<StartupToggleRequest>(request.Payload))),
+                "maintenance.scanInstalledApps" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanInstalledApps()),
+                "maintenance.launchUninstaller" => RunBridgeWorkerAsync(() => LaunchUninstallerFromBridge(ReadPayload<UninstallerLaunchRequest>(request.Payload))),
+                "maintenance.scanAppLeftovers" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanAppLeftovers(ReadPayload<AppLeftoverRequest>(request.Payload).AppIds)),
+                "maintenance.cleanAppLeftovers" => RunBridgeWorkerAsync(() => CleanAppLeftoversFromBridge(ReadPayload<AppLeftoverRequest>(request.Payload))),
                 "settings.get" => Task.FromResult<object?>(BuildSettingsPayload()),
                 "settings.save" => SaveSettingsFromBridgeAsync(ReadPayload<SettingsSaveRequest>(request.Payload)),
                 "settings.reset" => ResetSettingsFromBridgeAsync(),
@@ -216,6 +281,11 @@ namespace FileLocker
                 "updates.install" => InstallUpdateFromBridgeAsync(),
                 "updates.skip" => Task.FromResult<object?>(SkipUpdateFromBridge(ReadPayload<UpdateSkipRequest>(request.Payload))),
                 "updates.clearSkip" => Task.FromResult<object?>(ClearSkippedUpdateFromBridge()),
+#if DEBUG
+                "updates.testDialog" => TestUpdateDialogAsync(),
+                "updates.testStartupCheck" => TestUpdateStartupCheckAsync(),
+                "updates.testInstallerCleanup" => TestInstallerCleanupAsync(),
+#endif
                 "history.clear" => ClearHistoryFromBridgeAsync(),
                 "history.export" => ExportHistoryFromBridgeAsync(ReadPayload<HistoryExportRequest>(request.Payload)),
                 _ => throw new InvalidOperationException($"Unknown bridge action '{request.Action}'.")
@@ -224,8 +294,31 @@ namespace FileLocker
 
         private static T ReadPayload<T>(JsonElement payload)
         {
-            T? value = JsonSerializer.Deserialize<T>(payload.GetRawText(), BridgeJsonOptions);
+            if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            {
+                throw new InvalidOperationException("Bridge payload was empty or invalid.");
+            }
+
+            T? value;
+            try
+            {
+                value = JsonSerializer.Deserialize<T>(payload.GetRawText(), BridgeJsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException("Bridge payload was empty or invalid.", ex);
+            }
+            catch (NotSupportedException ex)
+            {
+                throw new InvalidOperationException("Bridge payload was empty or invalid.", ex);
+            }
+
             return value ?? throw new InvalidOperationException("Bridge payload was empty or invalid.");
+        }
+
+        private static Task<object?> RunBridgeWorkerAsync(Func<object?> action)
+        {
+            return Task.Run(action);
         }
 
         private void PostBridgeResponse(string requestId, object? result)
@@ -251,18 +344,32 @@ namespace FileLocker
 
         private void PostBridgeMessage(object payload)
         {
-            if (AppWebView?.CoreWebView2 == null)
+            try
             {
-                return;
-            }
+                if (!DispatcherQueue.HasThreadAccess)
+                {
+                    DispatcherQueue.TryEnqueue(() => PostBridgeMessage(payload));
+                    return;
+                }
 
-            string json = JsonSerializer.Serialize(payload, BridgeJsonOptions);
-            AppWebView.CoreWebView2.PostWebMessageAsJson(json);
+                if (AppWebView?.CoreWebView2 == null)
+                {
+                    return;
+                }
+
+                string json = JsonSerializer.Serialize(payload, BridgeJsonOptions);
+                AppWebView.CoreWebView2.PostWebMessageAsJson(json);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Bridge post failed: {SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Bridge post failed."))}");
+            }
         }
 
         private async Task<object?> GetInitialStateAsync()
         {
             await LoadBridgeHistoryAsync();
+
             return new
             {
                 app = new
@@ -273,7 +380,8 @@ namespace FileLocker
                     launchPaths = _launchPaths,
                     launchAction = _launchAction,
                     isAdministrator = IsRunningAsAdministrator(),
-                    canRestartAsAdministrator = !IsRunningAsAdministrator()
+                    canRestartAsAdministrator = !IsRunningAsAdministrator(),
+                    isDebug = IsDebugBuild
                 },
                 dashboard = BuildDashboardPayload(),
                 settings = BuildSettingsPayload()
@@ -307,7 +415,12 @@ namespace FileLocker
                 Arguments = string.IsNullOrWhiteSpace(targetPage) ? string.Empty : $"--page={targetPage}"
             };
 
-            Process.Start(startInfo);
+            using Process? process = Process.Start(startInfo);
+            if (process == null)
+            {
+                throw new InvalidOperationException("Windows did not start the elevated FileLocker process.");
+            }
+
             DispatcherQueue.TryEnqueue(() => Close());
 
             return Task.FromResult<object?>(new
@@ -320,18 +433,53 @@ namespace FileLocker
 
         private object SetTitlePageFromBridge(TitlePageRequest request)
         {
-            string pageName = string.IsNullOrWhiteSpace(request.PageName)
-                ? "Dashboard"
-                : request.PageName.Trim();
-
-            if (pageName.Length > 80)
-            {
-                pageName = pageName[..80];
-            }
+            string pageName = NormalizeTitlePageName(request.PageName);
 
             string title = $"FileLocker — {pageName}";
             NativeTitleText.Text = title;
             return new { title };
+        }
+
+        internal static string NormalizeTitlePageName(string? pageName)
+        {
+            if (string.IsNullOrWhiteSpace(pageName))
+            {
+                return "Dashboard";
+            }
+
+            string trimmed = pageName.Trim();
+            var builder = new StringBuilder(trimmed.Length);
+            bool pendingControlSpace = false;
+            foreach (char character in trimmed)
+            {
+                if (char.IsControl(character))
+                {
+                    pendingControlSpace = true;
+                    continue;
+                }
+
+                if (pendingControlSpace)
+                {
+                    if (builder.Length > 0 &&
+                        !char.IsWhiteSpace(builder[^1]) &&
+                        !char.IsWhiteSpace(character))
+                    {
+                        builder.Append(' ');
+                    }
+
+                    pendingControlSpace = false;
+                }
+
+                builder.Append(character);
+            }
+
+            string normalized = builder.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return "Dashboard";
+            }
+
+            return normalized.Length > 80 ? normalized[..80] : normalized;
         }
 
         private static string NormalizeRestartTargetPage(string? targetPage)
@@ -348,6 +496,21 @@ namespace FileLocker
         private static bool IsRunningAsAdministrator()
         {
             return SystemMaintenanceService.IsRunningAsAdministrator();
+        }
+
+        private static StartupToggleResult SetStartupEnabledFromBridge(StartupToggleRequest request)
+        {
+            return StartupAppMaintenanceService.SetStartupEnabled(request.ItemId, request.Enabled);
+        }
+
+        private static UninstallerLaunchResult LaunchUninstallerFromBridge(UninstallerLaunchRequest request)
+        {
+            return StartupAppMaintenanceService.LaunchUninstaller(request.AppId, request.Confirmation);
+        }
+
+        private static AppLeftoverCleanResult CleanAppLeftoversFromBridge(AppLeftoverRequest request)
+        {
+            return StartupAppMaintenanceService.CleanAppLeftovers(request.AppIds, request.CategoryIds, request.Confirmation);
         }
 
         private async Task<object?> PickFilesAsync()
@@ -392,14 +555,25 @@ namespace FileLocker
 
         private Task<object?> OpenExternalLinkAsync(OpenExternalRequest request)
         {
-            if (!Uri.TryCreate(request.Url, UriKind.Absolute, out Uri? uri) ||
-                uri.Scheme is not ("https" or "http"))
+            string url = RequireExternalHttpsUrl(request.Url);
+            OpenWithShell(url);
+            return Task.FromResult<object?>(new { opened = true, url });
+        }
+
+        internal static string RequireExternalHttpsUrl(string? url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) ||
+                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException("Only HTTP or HTTPS links can be opened.");
+                throw new InvalidOperationException("Only HTTPS links can be opened.");
             }
 
-            OpenWithShell(uri.ToString());
-            return Task.FromResult<object?>(new { opened = true, url = uri.ToString() });
+            if (!string.IsNullOrEmpty(uri.UserInfo))
+            {
+                throw new InvalidOperationException("HTTPS links with embedded credentials cannot be opened.");
+            }
+
+            return uri.ToString();
         }
 
         private async Task<object?> EncryptFilesFromBridgeAsync(FileOperationRequest request)
@@ -420,9 +594,11 @@ namespace FileLocker
         private async Task<object?> RunFileOperationFromBridgeAsync(string operationName, ProcessingIntent intent, FileOperationRequest request)
         {
             string operationId = string.IsNullOrWhiteSpace(request.OperationId) ? Guid.NewGuid().ToString("N") : request.OperationId;
-            if (request.Paths.Length == 0)
+            string[] paths = ValidateFileOperationBridgePaths(request.Paths);
+
+            if (_processingCancellation is not null)
             {
-                throw new InvalidOperationException("Select at least one file or folder.");
+                throw new InvalidOperationException("A file operation is already running. Wait for it to finish before starting another.");
             }
 
             if (string.IsNullOrWhiteSpace(request.Password))
@@ -432,22 +608,24 @@ namespace FileLocker
                     : "Enter the unlock password.");
             }
 
-            ProcessingRunOptions runOptions = CreateRunOptionsFromBridge(request);
-            if (runOptions.RemoveOriginalsAfterSuccess &&
-                request.Paths.Any(path => Directory.Exists(path)) &&
-                !string.Equals(request.DeleteConfirmation, "DELETE", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Folder-wide source removal requires typing DELETE before the run starts.");
-            }
-
+            var processingCancellation = new CancellationTokenSource();
+            _processingCancellation = processingCancellation;
+            ProcessingRunOptions? runOptions = null;
+            byte[]? loadedKeyfileBytes = null;
             var results = new List<FileOperationResult>();
             var failedPaths = new List<string>();
             bool cancelled = false;
 
             try
             {
-                _processingCancellation = new CancellationTokenSource();
-                QueueExpandResult expansion = ExpandQueuePaths(request.Paths);
+                ValidateFolderSourceRemovalConfirmation(request.RemoveOriginalsAfterSuccess, paths, request.DeleteConfirmation);
+
+                string keyfilePath = request.KeyfilePath?.Trim() ?? string.Empty;
+                loadedKeyfileBytes = await Task.Run(() => ReadKeyfileBytesIfConfigured(keyfilePath));
+                runOptions = CreateRunOptionsFromBridge(request, keyfilePath, loadedKeyfileBytes);
+                loadedKeyfileBytes = null;
+
+                QueueExpandResult expansion = await Task.Run(() => ExpandQueuePaths(paths));
                 List<QueuedFileItem> queueItems = expansion.Files
                     .Select(file => new QueuedFileItem(file.Path, file.RootPath, file.RootIsFolder, file.SizeBytes))
                     .ToList();
@@ -468,7 +646,7 @@ namespace FileLocker
                 for (int index = 0; index < workItems.Count; index++)
                 {
                     ProcessingWorkItem workItem = workItems[index];
-                    if (_processingCancellation.IsCancellationRequested)
+                    if (processingCancellation.IsCancellationRequested)
                     {
                         cancelled = true;
                         break;
@@ -537,20 +715,47 @@ namespace FileLocker
             }
             finally
             {
-                if (runOptions.KeyfileBytes is { Length: > 0 } keyfileBytes)
+                if (runOptions?.KeyfileBytes is { Length: > 0 } keyfileBytes)
                 {
                     CryptographicOperations.ZeroMemory(keyfileBytes);
                 }
+                else if (loadedKeyfileBytes is { Length: > 0 } orphanedKeyfileBytes)
+                {
+                    CryptographicOperations.ZeroMemory(orphanedKeyfileBytes);
+                }
 
-                _processingCancellation?.Dispose();
-                _processingCancellation = null;
+                if (ReferenceEquals(_processingCancellation, processingCancellation))
+                {
+                    _processingCancellation = null;
+                }
+
+                processingCancellation.Dispose();
             }
         }
 
-        private ProcessingRunOptions CreateRunOptionsFromBridge(FileOperationRequest request)
+        internal static string[] ValidateFileOperationBridgePaths(string[]? paths)
         {
-            string keyfilePath = request.KeyfilePath?.Trim() ?? string.Empty;
-            byte[]? keyfileBytes = ReadKeyfileBytesIfConfigured(keyfilePath);
+            return NormalizeRequiredBridgePathList(paths, "Select at least one file or folder.");
+        }
+
+        internal static void ValidateFolderSourceRemovalConfirmation(
+            bool removeOriginalsAfterSuccess,
+            IEnumerable<string> paths,
+            string? deleteConfirmation)
+        {
+            if (removeOriginalsAfterSuccess &&
+                paths.Any(path => Directory.Exists(path)) &&
+                !string.Equals(deleteConfirmation, "DELETE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Folder-wide source removal requires typing DELETE before the run starts.");
+            }
+        }
+
+        private ProcessingRunOptions CreateRunOptionsFromBridge(
+            FileOperationRequest request,
+            string keyfilePath,
+            byte[]? keyfileBytes)
+        {
             string encryptOutputDirectory = request.EncryptOutputDirectory?.Trim() ?? string.Empty;
             string decryptOutputDirectory = request.DecryptOutputDirectory?.Trim() ?? string.Empty;
             bool useCustomEncryptOutput = !request.SaveNextToSource && !string.IsNullOrWhiteSpace(encryptOutputDirectory);
@@ -678,11 +883,19 @@ namespace FileLocker
 
         private static object VerifyHashFromBridge(HashVerifyRequest request)
         {
-            string generated = NormalizeHashInput(request.GeneratedHash);
-            string expected = NormalizeHashInput(request.ExpectedHash);
-            if (string.IsNullOrWhiteSpace(generated) || string.IsNullOrWhiteSpace(expected))
+            if (string.IsNullOrWhiteSpace(request.GeneratedHash) || string.IsNullOrWhiteSpace(request.ExpectedHash))
             {
                 throw new InvalidOperationException("Both generated and expected hashes are required.");
+            }
+
+            if (!HashInputNormalizer.TryNormalizeSupportedHash(request.GeneratedHash, out string generated))
+            {
+                throw new InvalidOperationException("The generated hash is not a supported SHA-256 or SHA-512 value.");
+            }
+
+            if (!HashInputNormalizer.TryNormalizeSupportedHash(request.ExpectedHash, out string expected))
+            {
+                throw new InvalidOperationException("Paste a SHA-256 or SHA-512 hash before verifying.");
             }
 
             bool match = string.Equals(generated, expected, StringComparison.OrdinalIgnoreCase);
@@ -695,14 +908,11 @@ namespace FileLocker
 
         private async Task<object?> CreateHashManifestFromBridgeAsync(HashManifestCreateRequest request)
         {
-            if (request.Paths.Length == 0)
-            {
-                throw new InvalidOperationException("Select at least one file or folder for the hash manifest.");
-            }
+            string[] paths = ValidateHashManifestBridgePaths(request.Paths);
 
             string outputDirectory = Path.Combine(GetAppDataDirectory(), "Manifests");
             HashManifestResult manifest = await HashManifestService.CreateManifestAsync(
-                request.Paths,
+                paths,
                 NormalizeBridgeHashAlgorithm(request.Algorithm),
                 outputDirectory);
 
@@ -725,6 +935,11 @@ namespace FileLocker
                 manifest.FileCount,
                 dashboard = BuildDashboardPayload()
             };
+        }
+
+        internal static string[] ValidateHashManifestBridgePaths(string[]? paths)
+        {
+            return NormalizeRequiredBridgePathList(paths, "Select at least one file or folder for the hash manifest.");
         }
 
         private async Task<object?> VerifyHashManifestFromBridgeAsync(HashManifestVerifyRequest request)
@@ -762,17 +977,27 @@ namespace FileLocker
             };
         }
 
-        private object InspectMetadataFromBridge(MetadataInspectRequest request)
+        private Task<object?> InspectMetadataFromBridgeAsync(MetadataInspectRequest request)
         {
             if (MetadataCategories.Count == 0)
             {
                 InitializeMetadataCategories();
             }
 
-            string[] requestedPaths = request.Paths
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Select(path => path.Trim())
+            MetadataCategorySnapshot[] categorySnapshots = MetadataCategories
+                .Select(category => new MetadataCategorySnapshot(
+                    category.Name,
+                    category.Description,
+                    category.IsSelected,
+                    category.IsSupported))
                 .ToArray();
+
+            return RunBridgeWorkerAsync(() => InspectMetadataFromBridge(request, categorySnapshots));
+        }
+
+        private static object InspectMetadataFromBridge(MetadataInspectRequest request, IReadOnlyCollection<MetadataCategorySnapshot> categorySnapshots)
+        {
+            string[] requestedPaths = NormalizeBridgePathList(request.Paths);
 
             if (requestedPaths.Length == 0 && !string.IsNullOrWhiteSpace(request.Path))
             {
@@ -801,9 +1026,9 @@ namespace FileLocker
 
             var fileInfo = new FileInfo(activeFile.FullPath);
             string mode = string.IsNullOrWhiteSpace(request.Mode) ? "Remove metadata" : request.Mode;
-            HashSet<string> selectedCategoryNames = BuildSelectedMetadataCategorySet(request.SelectedCategories);
+            HashSet<string> selectedCategoryNames = BuildSelectedMetadataCategorySet(request.SelectedCategories, categorySnapshots);
 
-            MetadataCategoryDto[] categories = MetadataCategories
+            MetadataCategoryDto[] categories = categorySnapshots
                 .Select(category => new MetadataCategoryDto(
                     category.Name,
                     category.Description,
@@ -874,23 +1099,24 @@ namespace FileLocker
             return builder.ToString();
         }
 
-        private HashSet<string> BuildSelectedMetadataCategorySet(string[] selectedCategories)
+        private static HashSet<string> BuildSelectedMetadataCategorySet(string[]? selectedCategories, IReadOnlyCollection<MetadataCategorySnapshot> categorySnapshots)
         {
-            if (selectedCategories.Length > 0)
+            string[] selectedCategoryNames = NormalizeBridgeStringList(selectedCategories);
+            if (selectedCategoryNames.Length > 0)
             {
                 return new HashSet<string>(
-                    selectedCategories.Where(category => !string.IsNullOrWhiteSpace(category)),
+                    selectedCategoryNames,
                     StringComparer.OrdinalIgnoreCase);
             }
 
             return new HashSet<string>(
-                MetadataCategories
+                categorySnapshots
                     .Where(category => category.IsSelected)
                     .Select(category => category.Name),
                 StringComparer.OrdinalIgnoreCase);
         }
 
-        private MetadataPreviewDto[] BuildMetadataPreviewDtos(FileInfo fileInfo, string mode, HashSet<string> selectedCategoryNames)
+        private static MetadataPreviewDto[] BuildMetadataPreviewDtos(FileInfo fileInfo, string mode, HashSet<string> selectedCategoryNames)
         {
             var preview = new List<MetadataPreviewDto>();
             string extension = fileInfo.Extension.ToLowerInvariant();
@@ -991,63 +1217,116 @@ namespace FileLocker
 
         private async Task<object?> SecureDeleteFromBridgeAsync(SecureDeleteRequest request)
         {
-            if (request.Paths.Length == 0)
+            ValidateSecureDeleteConfirmation(request.Confirmation);
+
+            if (_processingCancellation is not null)
             {
-                throw new InvalidOperationException("Select at least one file or folder to delete.");
+                throw new InvalidOperationException("A file operation is already running. Wait for it to finish before starting another.");
             }
 
-            int overwritePasses = NormalizeSecureDeletePasses(request.OverwritePasses, request.Method);
-            string methodLabel = GetSecureDeleteMethodLabel(request.Method, overwritePasses);
-            var results = new List<FileOperationResult>();
-            foreach (string rawPath in request.Paths)
-            {
-                string path = RequireExistingPath(rawPath);
-                var elapsed = Stopwatch.StartNew();
-                try
-                {
-                    await Task.Run(() =>
-                    {
-                        if (Directory.Exists(path))
-                        {
-                            DeleteSourceDirectory(path, secureDelete: true, secureDeletePasses: overwritePasses);
-                        }
-                        else
-                        {
-                            SecureDelete(path, overwritePasses);
-                        }
-                    });
+            var processingCancellation = new CancellationTokenSource();
+            _processingCancellation = processingCancellation;
 
-                    results.Add(new FileOperationResult
-                    {
-                        SourcePath = path,
-                        Status = "Completed",
-                        Message = $"Secure delete completed using {methodLabel}.",
-                        OriginalRetained = false,
-                        OutputVerified = false,
-                        ElapsedMilliseconds = elapsed.ElapsedMilliseconds
-                    });
-                }
-                catch (Exception ex)
+            try
+            {
+                string[] paths = ValidateSecureDeleteBridgePaths(request.Paths);
+                int overwritePasses = NormalizeSecureDeletePasses(request.OverwritePasses, request.Method);
+                string methodLabel = GetSecureDeleteMethodLabel(request.Method, overwritePasses);
+                var results = new List<FileOperationResult>();
+                foreach (string rawPath in paths)
                 {
-                    results.Add(new FileOperationResult
+                    string resultPath = string.IsNullOrWhiteSpace(rawPath) ? "(blank path)" : rawPath;
+                    var elapsed = Stopwatch.StartNew();
+                    try
                     {
-                        SourcePath = path,
-                        Status = "Failed",
-                        Message = GetFriendlyExceptionMessage(ex, "Secure delete failed."),
-                        OriginalRetained = true,
-                        OutputVerified = false,
-                        FailureCategory = OperationFailureClassifier.Classify(ex),
-                        ElapsedMilliseconds = elapsed.ElapsedMilliseconds
-                    });
+                        string path = RequireExistingPath(rawPath);
+                        resultPath = path;
+                        await Task.Run(() =>
+                        {
+                            if (Directory.Exists(path))
+                            {
+                                DeleteSourceDirectory(path, secureDelete: true, secureDeletePasses: overwritePasses);
+                            }
+                            else
+                            {
+                                SecureDelete(path, overwritePasses);
+                            }
+                        });
+
+                        results.Add(new FileOperationResult
+                        {
+                            SourcePath = resultPath,
+                            Status = "Completed",
+                            Message = $"Secure delete completed using {methodLabel}.",
+                            OriginalRetained = false,
+                            OutputVerified = false,
+                            ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        results.Add(new FileOperationResult
+                        {
+                            SourcePath = resultPath,
+                            Status = "Failed",
+                            Message = GetFriendlyExceptionMessage(ex, "Secure delete failed."),
+                            OriginalRetained = true,
+                            OutputVerified = false,
+                            FailureCategory = OperationFailureClassifier.Classify(ex),
+                            ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                        });
+                    }
                 }
+
+                await AppendBridgeHistoryAsync("Secure Delete", CreateHistoryOnlyRunOptions("Secure Delete", methodLabel), results, cancelled: false);
+                return new
+                {
+                    results = results.Select(ToResultDto).ToArray(),
+                    dashboard = BuildDashboardPayload()
+                };
+            }
+            finally
+            {
+                if (ReferenceEquals(_processingCancellation, processingCancellation))
+                {
+                    _processingCancellation = null;
+                }
+
+                processingCancellation.Dispose();
+            }
+        }
+
+        internal static void ValidateSecureDeleteConfirmation(string? confirmation)
+        {
+            if (!string.Equals(confirmation, "DELETE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Confirm secure delete before deleting selected files or folders.");
+            }
+        }
+
+        internal static string[] ValidateSecureDeleteBridgePaths(string[]? paths)
+        {
+            return NormalizeRequiredBridgePathList(paths, "Select at least one file or folder to delete.");
+        }
+
+        private static string[] NormalizeRequiredBridgePathList(string[]? paths, string emptyMessage)
+        {
+            string[] normalizedPaths;
+            try
+            {
+                normalizedPaths = NormalizeBridgePathList(paths, fullPaths: true);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new InvalidOperationException("One or more selected paths are invalid.", ex);
             }
 
-            await AppendBridgeHistoryAsync("Secure Delete", CreateHistoryOnlyRunOptions("Secure Delete", methodLabel), results, cancelled: false);
-            return new
+            if (normalizedPaths.Length == 0)
             {
-                results = results.Select(ToResultDto).ToArray(),
-                dashboard = BuildDashboardPayload()
-            };
+                throw new InvalidOperationException(emptyMessage);
+            }
+
+            return normalizedPaths;
         }
 
         private static int NormalizeSecureDeletePasses(int requestedPasses, string? method)
@@ -1093,6 +1372,11 @@ namespace FileLocker
         private async Task<object?> WipeFreeSpaceFromBridgeAsync(MaintenanceDriveActionRequest request)
         {
             return await SystemMaintenanceService.WipeFreeSpaceAsync(request.DriveRoot, request.Confirmation);
+        }
+
+        private static object RunCleanupFromBridge(MaintenanceCleanupRequest request)
+        {
+            return SystemMaintenanceService.RunCleanup(request.CategoryIds, request.Confirmation);
         }
 
         private static object CleanRegistryFromBridge(RegistryCleanRequest request)
@@ -1220,6 +1504,8 @@ namespace FileLocker
             }
 
             string installerPath = await UpdateService.DownloadInstallerAsync(result.Release, CancellationToken.None);
+            _updateSettings.SkippedVersion = null;
+            UpdateService.SaveSettings(_updateSettings);
             return new DownloadedUpdateDto(
                 installerPath,
                 Path.GetFileName(installerPath),
@@ -1229,7 +1515,9 @@ namespace FileLocker
         private async Task<object?> InstallUpdateFromBridgeAsync()
         {
             DownloadedUpdateDto downloadedUpdate = await DownloadUpdateInstallerAsync();
-            OpenWithShell(downloadedUpdate.InstallerPath);
+            SetAboutUpdateStatusText("Updates: launching installer");
+            SetStatus("Launching FileLocker update installer...");
+            LaunchInstallerAndExit(downloadedUpdate.InstallerPath);
             return downloadedUpdate;
         }
 
@@ -1251,6 +1539,66 @@ namespace FileLocker
             UpdateService.SaveSettings(_updateSettings);
             return BuildSettingsPayload();
         }
+
+#if DEBUG
+        private async Task<object?> TestUpdateDialogAsync()
+        {
+            var mockRelease = new UpdateReleaseInfo(
+                new Version(99, 99, 99, 0),
+                "99.99.99",
+                "v99.99.99",
+                UpdateService.GitHubRepositoryUrl,
+                "## Test Release\n\nThis is a **mock** update dialog for testing the updater UI.\n\n**New in this build:**\n- Auto-check on startup\n- Installer auto-delete after install\n- Dev testing hooks\n\nClicking Install will attempt a download from a fake URL and fail — that is expected.",
+                "FileLocker-test-setup.exe",
+                "https://example.invalid/test-installer.exe",
+                null,
+                null);
+
+            await PromptToInstallUpdateAsync(mockRelease, isManualCheck: true);
+            return new { tested = true };
+        }
+
+        private async Task<object?> TestUpdateStartupCheckAsync()
+        {
+            return await CheckForUpdatesFromBridgeAsync();
+        }
+
+        private async Task<object?> TestInstallerCleanupAsync()
+        {
+            string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(testDirectory);
+
+            string sourceExecutablePath = Path.Combine(Environment.SystemDirectory, "whoami.exe");
+            string installerPath = Path.Combine(testDirectory, "FileLocker Fake Installer.exe");
+            File.Copy(sourceExecutablePath, installerPath);
+
+            using Process process = UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.Zero);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await process.WaitForExitAsync(timeout.Token);
+
+            bool installerRan = process.ExitCode == 0;
+            bool installerDeleted = !File.Exists(installerPath);
+            if (installerRan && installerDeleted)
+            {
+                try
+                {
+                    Directory.Delete(testDirectory, recursive: true);
+                }
+                catch
+                {
+                    // Best-effort cleanup only.
+                }
+            }
+
+            return new
+            {
+                installerRan,
+                installerDeleted,
+                process.ExitCode,
+                testDirectory
+            };
+        }
+#endif
 
         private static object ToUpdateCheckDto(UpdateCheckResult result)
         {
@@ -1282,13 +1630,14 @@ namespace FileLocker
             Directory.CreateDirectory(exportsDirectory);
 
             string fileName = $"FileLocker-history-{DateTime.UtcNow:yyyyMMdd-HHmmss}.{format}";
-            string exportPath = Path.Combine(exportsDirectory, fileName);
+            string exportPath = FileWriteService.ResolveAvailablePath(Path.Combine(exportsDirectory, fileName));
+            fileName = Path.GetFileName(exportPath);
             bool includeFullPaths = _preferences.IncludeFullPathsInExports;
             string content = format == "csv"
                 ? OperationHistoryExporter.ExportCsv(_operationHistory, includeFullPaths)
                 : OperationHistoryExporter.ExportJson(_operationHistory, includeFullPaths);
 
-            await File.WriteAllTextAsync(exportPath, content, Encoding.UTF8);
+            await FileWriteService.WriteAllTextAtomicallyAsync(exportPath, content, Encoding.UTF8);
             return new
             {
                 exportPath,
@@ -1448,6 +1797,29 @@ namespace FileLocker
                 storageSavedDisplay = stats.StorageSavedDisplay,
                 storageSavedDeltaText = stats.StorageSavedDeltaText,
                 storageSavedSubtitle = stats.StorageSavedSubtitle,
+                storageSavedBytes = stats.StorageSavedBytes,
+                storageAddedBytes = stats.StorageAddedBytes,
+                storageTrackedFiles = stats.StorageTrackedFiles,
+                compressionRequestedCount = stats.CompressionRequestedCount,
+                compressionAppliedCount = stats.CompressionAppliedCount,
+                storageBreakdown = stats.StorageBreakdown.Select(item => new
+                {
+                    label = item.Label,
+                    bytes = item.Bytes,
+                    display = item.Display,
+                    percent = item.Percent,
+                    tone = item.Tone
+                }).ToArray(),
+                operationsThisWeekCount = stats.OperationsThisWeekCount,
+                successfulOperationsThisWeekCount = stats.SuccessfulOperationsThisWeekCount,
+                failedOperationsThisWeekCount = stats.FailedOperationsThisWeekCount,
+                operationsThisWeek = stats.OperationsThisWeek.Select(bucket => new
+                {
+                    date = bucket.Date,
+                    label = bucket.Label,
+                    count = bucket.Count,
+                    failedCount = bucket.FailedCount
+                }).ToArray(),
                 lastOperationName = stats.LastOperationName,
                 lastOperationFileName = stats.LastOperationFileName,
                 lastOperationTimeDisplay = stats.LastOperationTimeDisplay,
@@ -1537,7 +1909,7 @@ namespace FileLocker
             return Enum.TryParse(value, ignoreCase: true, out TEnum parsed) ? parsed : fallback;
         }
 
-        private static string RequireExistingFile(string? path)
+        internal static string RequireExistingFile(string? path)
         {
             string safePath = RequireExistingPath(path);
             if (!File.Exists(safePath))
@@ -1548,14 +1920,23 @@ namespace FileLocker
             return safePath;
         }
 
-        private static string RequireExistingPath(string? path)
+        internal static string RequireExistingPath(string? path)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
                 throw new InvalidOperationException("A file or folder path is required.");
             }
 
-            string fullPath = Path.GetFullPath(path.Trim());
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(path.Trim());
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new InvalidOperationException("The selected path is not valid.", ex);
+            }
+
             if (!File.Exists(fullPath) && !Directory.Exists(fullPath))
             {
                 throw new FileNotFoundException("The selected path could not be found.", fullPath);
@@ -1586,10 +1967,7 @@ namespace FileLocker
 
         private static object SuggestEncryptOutputFromBridge(PathListRequest request)
         {
-            string[] selectedPaths = request.Paths
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Select(path => path.Trim())
-                .ToArray();
+            string[] selectedPaths = NormalizeBridgePathList(request.Paths);
 
             string? suggestedPath = EncryptOutputPathAdvisor.SuggestForSelectedPaths(selectedPaths);
             int folderCount = selectedPaths.Count(Directory.Exists);
@@ -1604,11 +1982,7 @@ namespace FileLocker
 
         private object DescribePathsFromBridge(PathListRequest request)
         {
-            string[] selectedPaths = request.Paths
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Select(path => Path.GetFullPath(path.Trim()))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            string[] selectedPaths = NormalizeBridgePathList(request.Paths, fullPaths: true);
 
             if (selectedPaths.Length == 0)
             {
@@ -1680,6 +2054,38 @@ namespace FileLocker
             };
         }
 
+        internal static string[] NormalizeBridgePathList(string[]? paths, bool fullPaths = false)
+        {
+            string[] normalizedPaths = NormalizeBridgeStringList(paths);
+            if (normalizedPaths.Length == 0)
+            {
+                return [];
+            }
+
+            if (fullPaths)
+            {
+                return normalizedPaths
+                    .Select(Path.GetFullPath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+
+            return normalizedPaths;
+        }
+
+        internal static string[] NormalizeBridgeStringList(string[]? values)
+        {
+            if (values is not { Length: > 0 })
+            {
+                return [];
+            }
+
+            return values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .ToArray();
+        }
+
         private static string GetBridgePathTypeDisplay(string path, bool isDirectory)
         {
             if (isDirectory)
@@ -1717,6 +2123,12 @@ namespace FileLocker
         private sealed record BridgeError(string Code, string Message);
 
         private sealed record MetadataPreviewDto(string Label, string BeforeValue, string AfterValue);
+
+        private sealed record MetadataCategorySnapshot(
+            string Name,
+            string Description,
+            bool IsSelected,
+            bool IsSupported);
 
         private sealed record MetadataCategoryDto(
             string Name,
@@ -1817,6 +2229,7 @@ namespace FileLocker
             public string[] Paths { get; set; } = [];
             public string Method { get; set; } = "dod";
             public int OverwritePasses { get; set; } = 3;
+            public string Confirmation { get; set; } = string.Empty;
         }
 
         private sealed class TitlePageRequest
@@ -1832,6 +2245,7 @@ namespace FileLocker
         private sealed class MaintenanceCleanupRequest
         {
             public string[] CategoryIds { get; set; } = [];
+            public string Confirmation { get; set; } = string.Empty;
         }
 
         private sealed class MaintenanceDriveActionRequest
@@ -1844,6 +2258,25 @@ namespace FileLocker
         private sealed class RegistryCleanRequest
         {
             public string[] IssueIds { get; set; } = [];
+            public string Confirmation { get; set; } = string.Empty;
+        }
+
+        private sealed class StartupToggleRequest
+        {
+            public string ItemId { get; set; } = string.Empty;
+            public bool Enabled { get; set; }
+        }
+
+        private sealed class UninstallerLaunchRequest
+        {
+            public string AppId { get; set; } = string.Empty;
+            public string Confirmation { get; set; } = string.Empty;
+        }
+
+        private sealed class AppLeftoverRequest
+        {
+            public string[] AppIds { get; set; } = [];
+            public string[] CategoryIds { get; set; } = [];
             public string Confirmation { get; set; } = string.Empty;
         }
 

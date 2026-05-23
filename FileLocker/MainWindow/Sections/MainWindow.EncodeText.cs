@@ -29,6 +29,7 @@ namespace FileLocker
         private string _encodeTextFormat = DefaultEncodeTextFormat;
         private string _encodeTextStatus = "Waiting for input";
         private bool _isUpdatingEncodeTextUi;
+        private bool _isEncodingText;
 
         public ObservableCollection<EncodeRecentConversionItem> RecentEncodeTextItems { get; } = [];
 
@@ -120,14 +121,14 @@ namespace FileLocker
             SetStatus("Encode Text cleared.");
         }
 
-        private void RunEncodeTextButton_Click(object sender, RoutedEventArgs e)
+        private async void RunEncodeTextButton_Click(object sender, RoutedEventArgs e)
         {
-            RunEncodeTextConversionFromUi();
+            await RunEncodeTextConversionFromUiAsync();
         }
 
-        private async void EncodeCopyOutputButton_Click(object sender, RoutedEventArgs e)
+        private void EncodeCopyOutputButton_Click(object sender, RoutedEventArgs e)
         {
-            await CopyEncodeTextOutputAsync();
+            CopyEncodeTextOutput();
         }
 
         private async void EncodeSaveTextButton_Click(object sender, RoutedEventArgs e)
@@ -151,7 +152,7 @@ namespace FileLocker
                     return;
                 }
 
-                await File.WriteAllTextAsync(file.Path, EncodeOutputTextBox.Text, Encoding.UTF8);
+                await FileWriteService.WriteAllTextAtomicallyAsync(file.Path, EncodeOutputTextBox.Text, Encoding.UTF8);
                 SetStatus($"Encode Text output saved to {file.Name}.");
             }
             catch (Exception ex)
@@ -248,8 +249,13 @@ namespace FileLocker
             RefreshEncodeTextState();
         }
 
-        private async void RunEncodeTextConversionFromUi()
+        private async Task RunEncodeTextConversionFromUiAsync()
         {
+            if (_isEncodingText)
+            {
+                return;
+            }
+
             string input = EncodeInputTextBox.Text;
             if (string.IsNullOrEmpty(input))
             {
@@ -262,9 +268,20 @@ namespace FileLocker
             EncodeTextMode mode = _encodeTextMode;
             bool preserveLineBreaks = EncodePreserveLineBreaksToggle.IsOn;
 
+            _isEncodingText = true;
+            SetEncodeTextStatus(mode == EncodeTextMode.Decode ? "Decoding" : "Encoding", updateGlobalStatus: false);
+            RefreshEncodeTextState();
+
             try
             {
                 string output = await Task.Run(() => ConvertEncodeText(input, mode, format, preserveLineBreaks));
+                if (!IsCurrentEncodeTextRequest(input, mode, format, preserveLineBreaks))
+                {
+                    SetEncodeTextStatus(string.IsNullOrEmpty(EncodeInputTextBox.Text) ? "Waiting for input" : "Ready", updateGlobalStatus: false);
+                    SetStatus("Encode Text settings changed before the conversion finished. Run it again.");
+                    return;
+                }
+
                 EncodeOutputTextBox.Text = output;
                 SetEncodeTextStatus(mode == EncodeTextMode.Decode ? "Decoded" : "Encoded", updateGlobalStatus: false);
                 AddEncodeRecentConversion(mode, format, input.Length, output.Length);
@@ -284,11 +301,20 @@ namespace FileLocker
             }
             finally
             {
+                _isEncodingText = false;
                 RefreshEncodeTextState();
             }
         }
 
-        private async Task CopyEncodeTextOutputAsync()
+        private bool IsCurrentEncodeTextRequest(string input, EncodeTextMode mode, string format, bool preserveLineBreaks)
+        {
+            return string.Equals(EncodeInputTextBox.Text, input, StringComparison.Ordinal) &&
+                _encodeTextMode == mode &&
+                string.Equals(_encodeTextFormat, format, StringComparison.Ordinal) &&
+                EncodePreserveLineBreaksToggle.IsOn == preserveLineBreaks;
+        }
+
+        private void CopyEncodeTextOutput()
         {
             if (string.IsNullOrEmpty(EncodeOutputTextBox.Text))
             {
@@ -309,8 +335,6 @@ namespace FileLocker
                 SetEncodeTextStatus("Error");
                 SetStatus($"Unable to copy output: {GetFriendlyExceptionMessage(ex, "Clipboard is unavailable.")}");
             }
-
-            await Task.CompletedTask;
         }
 
         private void ClearEncodeTextState()
@@ -395,12 +419,14 @@ namespace FileLocker
             EncodeSummaryStatusText.Text = _encodeTextStatus;
             EncodeStatusBadgeText.Text = GetEncodeTextStatusBadgeText();
 
-            RunEncodeTextButton.IsEnabled = hasInput;
-            RunEncodeTextButtonText.Text = _encodeTextMode == EncodeTextMode.Decode ? "Decode Text" : "Encode Text";
-            EncodeCopyOutputButton.IsEnabled = hasOutput;
-            EncodeInlineCopyButton.IsEnabled = hasOutput;
-            EncodeSaveTextButton.IsEnabled = hasOutput;
-            EncodeCopyOutputHeaderButton.IsEnabled = hasOutput;
+            RunEncodeTextButton.IsEnabled = hasInput && !_isEncodingText;
+            RunEncodeTextButtonText.Text = _isEncodingText
+                ? (_encodeTextMode == EncodeTextMode.Decode ? "Decoding" : "Encoding")
+                : (_encodeTextMode == EncodeTextMode.Decode ? "Decode Text" : "Encode Text");
+            EncodeCopyOutputButton.IsEnabled = hasOutput && !_isEncodingText;
+            EncodeInlineCopyButton.IsEnabled = hasOutput && !_isEncodingText;
+            EncodeSaveTextButton.IsEnabled = hasOutput && !_isEncodingText;
+            EncodeCopyOutputHeaderButton.IsEnabled = hasOutput && !_isEncodingText;
 
             EncodeOutputTextBox.TextWrapping = EncodeWrapLongLinesToggle.IsOn ? TextWrapping.Wrap : TextWrapping.NoWrap;
             UpdateEncodeTextModeButtons();
@@ -428,7 +454,7 @@ namespace FileLocker
             {
                 "Encoded" or "Decoded" => GetBrushResource("SuccessBrush"),
                 "Error" => GetBrushResource("DangerBrush"),
-                "Ready" => GetBrushResource("BrightBlueBrush"),
+                "Ready" or "Encoding" or "Decoding" => GetBrushResource("BrightBlueBrush"),
                 _ => GetBrushResource("TextSecondaryBrush")
             };
 
@@ -476,6 +502,8 @@ namespace FileLocker
                 "Decoded" => "Decoded successfully",
                 "Error" => "Error",
                 "Ready" => "Ready",
+                "Encoding" => "Encoding",
+                "Decoding" => "Decoding",
                 _ => "Waiting for input"
             };
         }

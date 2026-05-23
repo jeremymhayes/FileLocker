@@ -1,6 +1,8 @@
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Generic;
@@ -34,7 +36,17 @@ namespace FileLocker
             public string ProtectedFilesSubtitle { get; init; } = "Files are encrypted";
             public string StorageSavedDisplay { get; init; } = "—";
             public string StorageSavedDeltaText { get; init; } = "Tracking starts now";
-            public string StorageSavedSubtitle { get; init; } = "Storage tracking not available yet";
+            public string StorageSavedSubtitle { get; init; } = "Run compression-enabled encryption to track impact";
+            public long StorageSavedBytes { get; init; }
+            public long StorageAddedBytes { get; init; }
+            public int StorageTrackedFiles { get; init; }
+            public int CompressionRequestedCount { get; init; }
+            public int CompressionAppliedCount { get; init; }
+            public int OperationsThisWeekCount { get; init; }
+            public int SuccessfulOperationsThisWeekCount { get; init; }
+            public int FailedOperationsThisWeekCount { get; init; }
+            public IReadOnlyList<DashboardStorageBreakdownItem> StorageBreakdown { get; init; } = [];
+            public IReadOnlyList<DashboardWeekBucket> OperationsThisWeek { get; init; } = [];
             public Brush StorageSavedAccentBrush { get; init; } = new SolidColorBrush(Colors.MediumAquamarine);
             public string LastOperationName { get; init; } = "No recent activity";
             public string LastOperationFileName { get; init; } = "Run an action to populate this summary";
@@ -46,6 +58,10 @@ namespace FileLocker
             public Brush SecurityBackgroundBrush { get; init; } = new SolidColorBrush(Color.FromArgb(255, 19, 53, 59));
             public Brush LastOperationAccentBrush { get; init; } = new SolidColorBrush(Colors.DeepSkyBlue);
         }
+
+        private sealed record DashboardStorageBreakdownItem(string Label, long Bytes, string Display, int Percent, string Tone);
+
+        private sealed record DashboardWeekBucket(string Date, string Label, int Count, int FailedCount);
 
         public sealed class DashboardRecentFileItem
         {
@@ -69,6 +85,7 @@ namespace FileLocker
             InitializeDecryptFilesView();
             InitializeEncodeTextView();
             InitializeMetadataScramblerView();
+            InitializeNavigationAccessibility();
             ApplyDashboardActionLayout(DashboardActionGrid.ActualWidth);
             NavigateToSection(AppSection.Dashboard, announce: false);
         }
@@ -242,7 +259,7 @@ namespace FileLocker
                 : "—";
             string storageSubtitle = storage.HasTrackedStorage
                 ? "Compression payload savings before encryption"
-                : "Storage tracking not available yet";
+                : "Run compression-enabled encryption to track impact";
             string storageDelta = storage.HasTrackedStorage
                 ? storage.ThisWeekSavedBytes > 0
                     ? $"Saved {FormatDashboardFileSize(storage.ThisWeekSavedBytes)} this week"
@@ -255,6 +272,11 @@ namespace FileLocker
                 : storage.TotalAddedBytes > 0
                     ? Colors.Goldenrod
                     : Colors.DeepSkyBlue);
+            IReadOnlyList<DashboardStorageBreakdownItem> storageBreakdown = BuildStorageBreakdown(storage);
+            IReadOnlyList<DashboardWeekBucket> weeklyOperations = BuildWeeklyOperationBuckets();
+            int operationsThisWeek = _operationHistory.Count(entry => IsThisWeek(entry.TimestampUtc));
+            int successfulOperationsThisWeek = _operationHistory.Count(entry => IsThisWeek(entry.TimestampUtc) && IsSuccessfulDashboardHistoryEntry(entry));
+            int failedOperationsThisWeek = _operationHistory.Count(entry => IsThisWeek(entry.TimestampUtc) && !IsSuccessfulDashboardHistoryEntry(entry));
 
             OperationHistoryEntry? latestEntry = _operationHistory.FirstOrDefault();
             FileOperationResult? latestResult = latestEntry?.Results.FirstOrDefault();
@@ -284,6 +306,16 @@ namespace FileLocker
                 StorageSavedDisplay = storageValue,
                 StorageSavedDeltaText = storageDelta,
                 StorageSavedSubtitle = storageSubtitle,
+                StorageSavedBytes = storage.TotalSavedBytes,
+                StorageAddedBytes = storage.TotalAddedBytes,
+                StorageTrackedFiles = storage.TrackedFiles,
+                CompressionRequestedCount = storage.CompressionRequested,
+                CompressionAppliedCount = storage.CompressionApplied,
+                StorageBreakdown = storageBreakdown,
+                OperationsThisWeekCount = operationsThisWeek,
+                SuccessfulOperationsThisWeekCount = successfulOperationsThisWeek,
+                FailedOperationsThisWeekCount = failedOperationsThisWeek,
+                OperationsThisWeek = weeklyOperations,
                 StorageSavedAccentBrush = storageAccent,
                 LastOperationName = lastOperationName,
                 LastOperationFileName = lastOperationFileName,
@@ -370,6 +402,90 @@ namespace FileLocker
             }
 
             return (totalSaved, totalAdded, savedThisWeek, addedThisWeek, hasTrackedStorage, trackedFiles, compressionRequested, compressionApplied);
+        }
+
+        private IReadOnlyList<DashboardStorageBreakdownItem> BuildStorageBreakdown((
+            long TotalSavedBytes,
+            long TotalAddedBytes,
+            long ThisWeekSavedBytes,
+            long ThisWeekAddedBytes,
+            bool HasTrackedStorage,
+            int TrackedFiles,
+            int CompressionRequested,
+            int CompressionApplied) storage)
+        {
+            var items = new List<DashboardStorageBreakdownItem>();
+            long totalTrackedBytes = storage.TotalSavedBytes + storage.TotalAddedBytes;
+
+            if (storage.TotalSavedBytes > 0)
+            {
+                items.Add(new DashboardStorageBreakdownItem(
+                    "Compression savings",
+                    storage.TotalSavedBytes,
+                    FormatDashboardFileSize(storage.TotalSavedBytes),
+                    CalculateDashboardPercent(storage.TotalSavedBytes, totalTrackedBytes),
+                    "teal"));
+            }
+
+            if (storage.TotalAddedBytes > 0)
+            {
+                items.Add(new DashboardStorageBreakdownItem(
+                    "Encryption overhead",
+                    storage.TotalAddedBytes,
+                    FormatDashboardFileSize(storage.TotalAddedBytes),
+                    CalculateDashboardPercent(storage.TotalAddedBytes, totalTrackedBytes),
+                    "orange"));
+            }
+
+            if (storage.HasTrackedStorage && items.Count == 0)
+            {
+                items.Add(new DashboardStorageBreakdownItem(
+                    "No net change",
+                    0,
+                    "0 B",
+                    100,
+                    "blue"));
+            }
+
+            return items;
+        }
+
+        private IReadOnlyList<DashboardWeekBucket> BuildWeeklyOperationBuckets()
+        {
+            DateTime today = DateTime.Now.Date;
+            var buckets = new List<DashboardWeekBucket>(7);
+
+            for (int offset = 6; offset >= 0; offset--)
+            {
+                DateTime day = today.AddDays(-offset);
+                int count = _operationHistory.Count(entry => entry.TimestampUtc.ToLocalTime().Date == day);
+                int failedCount = _operationHistory.Count(entry =>
+                    entry.TimestampUtc.ToLocalTime().Date == day &&
+                    !IsSuccessfulDashboardHistoryEntry(entry));
+
+                buckets.Add(new DashboardWeekBucket(
+                    day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    day.ToString("ddd", CultureInfo.CurrentCulture),
+                    count,
+                    failedCount));
+            }
+
+            return buckets;
+        }
+
+        private static int CalculateDashboardPercent(long value, long total)
+        {
+            if (value <= 0 || total <= 0)
+            {
+                return 0;
+            }
+
+            return Math.Clamp((int)Math.Round((double)value / total * 100), 1, 100);
+        }
+
+        private static bool IsSuccessfulDashboardHistoryEntry(OperationHistoryEntry entry)
+        {
+            return !entry.Cancelled && entry.FailureCount == 0;
         }
 
         private async void StorageSavedDetailsButton_Click(object sender, RoutedEventArgs e)
@@ -608,69 +724,99 @@ namespace FileLocker
             {
                 case AppSection.EncryptFiles:
                     PrepareEncryptFilesSection();
-                    if (announce)
-                    {
-                        SetStatus("Review queued items, then encrypt, decrypt, verify, or rotate access.");
-                    }
                     break;
                 case AppSection.DecryptFiles:
                     PrepareDecryptFilesSection();
-                    if (announce)
-                    {
-                        SetStatus("Add FileLocker encrypted files and enter the original password.");
-                    }
                     break;
                 case AppSection.HashFiles:
                     PrepareHashFilesSection();
-                    if (announce)
-                    {
-                        SetStatus("Select a file to generate or verify a hash.");
-                    }
                     break;
                 case AppSection.EncodeText:
                     PrepareEncodeTextSection();
-                    if (announce)
-                    {
-                        SetStatus("Text encoding helper ready.");
-                    }
                     break;
                 case AppSection.MetadataScrambler:
                     PrepareMetadataScramblerSection();
-                    if (announce)
-                    {
-                        SetStatus("Metadata Scrambler preview is ready.");
-                    }
                     break;
                 case AppSection.SecureDelete:
                     PrepareEncryptFilesSection();
-                    if (announce)
-                    {
-                        SetStatus("Secure delete controls are available in the setup panel.");
-                    }
                     break;
                 case AppSection.Settings:
                     PrepareSettingsSection();
-                    if (announce)
-                    {
-                        SetStatus("Settings are ready.");
-                    }
                     break;
                 case AppSection.About:
                     UpdateAboutMenuInfo();
-                    if (announce)
-                    {
-                        SetStatus("About FileLocker.");
-                    }
                     break;
                 default:
-                    if (announce)
-                    {
-                        SetStatus("Dashboard ready.");
-                    }
                     break;
             }
 
             ContentScrollViewer.ChangeView(null, 0, null, true);
+            if (announce)
+            {
+                SetStatus(GetSectionAnnouncement(section));
+                FocusSectionControl(section);
+            }
+        }
+
+        private string GetSectionAnnouncement(AppSection section)
+        {
+            return section switch
+            {
+                AppSection.EncryptFiles => "Review queued items, then encrypt, decrypt, verify, or rotate access.",
+                AppSection.DecryptFiles => "Add FileLocker encrypted files and enter the original password.",
+                AppSection.HashFiles => "Select a file to generate or verify a hash.",
+                AppSection.EncodeText => "Text encoding helper ready.",
+                AppSection.MetadataScrambler => "Metadata Scrambler preview is ready.",
+                AppSection.SecureDelete => "Secure delete controls are available in the setup panel.",
+                AppSection.Settings => "Settings are ready.",
+                AppSection.About => "About FileLocker.",
+                _ => "Dashboard ready."
+            };
+        }
+
+        private void InitializeNavigationAccessibility()
+        {
+            ConfigureNavigationButtonAccessibility(DashboardNavButton, "Dashboard", "Open the dashboard overview and recent activity.");
+            ConfigureNavigationButtonAccessibility(EncryptFilesNavButton, "Encrypt Files", "Open the file encryption workflow.");
+            ConfigureNavigationButtonAccessibility(DecryptFilesNavButton, "Decrypt Files", "Open the file decryption workflow.");
+            ConfigureNavigationButtonAccessibility(HashFilesNavButton, "Hash Files", "Open checksum and hash verification tools.");
+            ConfigureNavigationButtonAccessibility(EncodeTextNavButton, "Encode Text", "Open text encoding and decoding helpers.");
+            ConfigureNavigationButtonAccessibility(MetadataScramblerNavButton, "Metadata Scrambler", "Open local metadata preview and scrub workflow.");
+            ConfigureNavigationButtonAccessibility(SecureDeleteNavButton, "Secure Delete", "Review secure-delete setup controls.");
+            ConfigureNavigationButtonAccessibility(SettingsButton, "Settings", "Open app preferences and update settings.");
+            ConfigureNavigationButtonAccessibility(AboutNavButton, "About", "View app and update information.");
+        }
+
+        private static void ConfigureNavigationButtonAccessibility(Button button, string name, string helpText)
+        {
+            AutomationProperties.SetName(button, name);
+            AutomationProperties.SetHelpText(button, helpText);
+            ToolTipService.SetToolTip(button, helpText);
+        }
+
+        private void FocusSectionControl(AppSection section)
+        {
+            Microsoft.UI.Xaml.Controls.Control? primaryControl = section switch
+            {
+                AppSection.Dashboard => DashboardActivityHeaderButton,
+                AppSection.EncryptFiles => EncryptBrowseFilesButton,
+                AppSection.DecryptFiles => DecryptBrowseFilesButton,
+                AppSection.HashFiles => HashBrowseFileButton,
+                AppSection.EncodeText => EncodeInputTextBox,
+                AppSection.MetadataScrambler => MetadataBrowseFilesButton,
+                AppSection.SecureDelete => EncryptBrowseFilesButton,
+                AppSection.Settings => ThemePreferenceCombo,
+                _ => AboutNavButton
+            };
+
+            if (primaryControl == null ||
+                primaryControl.Visibility != Visibility.Visible ||
+                !primaryControl.IsEnabled)
+            {
+                return;
+            }
+
+            DispatcherQueue.TryEnqueue(() => _ = primaryControl.Focus(FocusState.Programmatic));
         }
 
         private void DashboardActionGrid_SizeChanged(object sender, SizeChangedEventArgs e)

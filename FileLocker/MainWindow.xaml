@@ -8,7 +8,7 @@
     Title="FileLocker"
     mc:Ignorable="d">
 
-    <Grid Background="#0f1623">
+    <Grid Background="{ThemeResource MainWindowBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="38" />
             <RowDefinition Height="*" />
@@ -18,8 +18,8 @@
             x:Name="NativeTitleBar"
             Grid.Row="0"
             Padding="16,0,140,0"
-            Background="#141c2e"
-            BorderBrush="#0b1320"
+            Background="{ThemeResource HeaderSurfaceBrush}"
+            BorderBrush="{ThemeResource AppBorderBrush}"
             BorderThickness="0,0,0,1">
             <Grid>
                 <TextBlock
@@ -28,7 +28,7 @@
                     FontFamily="Segoe UI"
                     FontSize="13"
                     FontWeight="SemiBold"
-                    Foreground="#f1f5f9"
+                    Foreground="{ThemeResource TextPrimaryBrush}"
                     Text="FileLocker — Dashboard"
                     TextTrimming="CharacterEllipsis" />
             </Grid>

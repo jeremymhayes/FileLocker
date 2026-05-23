@@ -13,16 +13,16 @@ internal static class OperationHistoryExporter
         WriteIndented = true
     };
 
-    internal static string ExportJson(IEnumerable<OperationHistoryEntry> entries, bool includeFullPaths)
+    internal static string ExportJson(IEnumerable<OperationHistoryEntry>? entries, bool includeFullPaths)
     {
         List<OperationHistoryEntry> exportEntries = PrepareEntries(entries, includeFullPaths);
         return JsonSerializer.Serialize(exportEntries, JsonOptions);
     }
 
-    internal static string ExportCsv(IEnumerable<OperationHistoryEntry> entries, bool includeFullPaths)
+    internal static string ExportCsv(IEnumerable<OperationHistoryEntry>? entries, bool includeFullPaths)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("timestampUtc,operation,profileName,status,successCount,failureCount,sourcePath,outputPath,verificationStatus,failureCategory,elapsedMilliseconds");
+        builder.AppendLine("timestampUtc,operation,profileName,status,message,successCount,failureCount,sourcePath,outputPath,verificationStatus,failureCategory,elapsedMilliseconds");
 
         foreach (OperationHistoryEntry entry in PrepareEntries(entries, includeFullPaths))
         {
@@ -41,6 +41,8 @@ internal static class OperationHistoryExporter
                 builder.AppendCsv(entry.ProfileName);
                 builder.Append(',');
                 builder.AppendCsv(result.Status);
+                builder.Append(',');
+                builder.AppendCsv(result.Message ?? string.Empty);
                 builder.Append(',');
                 builder.Append(entry.SuccessCount);
                 builder.Append(',');
@@ -62,9 +64,10 @@ internal static class OperationHistoryExporter
         return builder.ToString();
     }
 
-    private static List<OperationHistoryEntry> PrepareEntries(IEnumerable<OperationHistoryEntry> entries, bool includeFullPaths)
+    private static List<OperationHistoryEntry> PrepareEntries(IEnumerable<OperationHistoryEntry>? entries, bool includeFullPaths)
     {
-        return entries
+        return (entries ?? [])
+            .Where(entry => entry is not null)
             .OrderByDescending(entry => entry.TimestampUtc)
             .Select(entry => CloneEntry(entry, includeFullPaths))
             .ToList();
@@ -98,7 +101,10 @@ internal static class OperationHistoryExporter
             CompressionAppliedCount = entry.CompressionAppliedCount,
             CompressionSkippedCount = entry.CompressionSkippedCount,
             FailureCategorySummary = entry.FailureCategorySummary,
-            Results = entry.Results.Select(result => CloneResult(result, includeFullPaths)).ToList()
+            Results = (entry.Results ?? [])
+                .Where(result => result is not null)
+                .Select(result => CloneResult(result, includeFullPaths))
+                .ToList()
         };
     }
 
@@ -110,14 +116,14 @@ internal static class OperationHistoryExporter
             OutputPath = includeFullPaths ? result.OutputPath : SensitiveDataRedactor.RedactPath(result.OutputPath),
             BackupPath = includeFullPaths ? result.BackupPath : SensitiveDataRedactor.RedactPath(result.BackupPath),
             Status = result.Status,
-            Message = SensitiveDataRedactor.RedactMessage(result.Message),
+            Message = FormatExportMessage(result.Message, includeFullPaths),
             OriginalRetained = result.OriginalRetained,
             OutputVerified = result.OutputVerified,
             OriginalSizeBytes = result.OriginalSizeBytes,
             OutputSizeBytes = result.OutputSizeBytes,
             CompressionRequested = result.CompressionRequested,
             CompressionApplied = result.CompressionApplied,
-            CompressionReason = result.CompressionReason,
+            CompressionReason = FormatExportMessage(result.CompressionReason, includeFullPaths),
             EstimatedCompressedSizeBytes = result.EstimatedCompressedSizeBytes,
             CompressedSizeBytes = result.CompressedSizeBytes,
             ElapsedMilliseconds = result.ElapsedMilliseconds,
@@ -126,11 +132,11 @@ internal static class OperationHistoryExporter
         };
     }
 
+    private static string FormatExportMessage(string? message, bool includeFullPaths) =>
+        includeFullPaths ? message ?? string.Empty : SensitiveDataRedactor.RedactMessage(message);
+
     private static void AppendCsv(this StringBuilder builder, string value)
     {
-        string escaped = value.Replace("\"", "\"\"", StringComparison.Ordinal);
-        builder.Append('"');
-        builder.Append(escaped);
-        builder.Append('"');
+        builder.Append(CsvCellFormatter.Format(value, alwaysQuote: true));
     }
 }

@@ -73,6 +73,7 @@ function DialogContent({
               size="icon-sm"
             >
               <XIcon
+                aria-hidden="true"
               />
               <span className="sr-only">Close</span>
             </Button>

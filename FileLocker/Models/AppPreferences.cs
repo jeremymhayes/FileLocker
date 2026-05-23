@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -63,14 +64,26 @@ public sealed class AppPreferences
 
 internal static class AppPreferencesStore
 {
+    private static readonly string[] ValidOutputTimestampPolicies =
+    [
+        "Current time",
+        "Preserve source timestamps",
+        "Randomize"
+    ];
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        WriteIndented = true
+        WriteIndented = true,
+        Converters =
+        {
+            new JsonStringEnumConverter<ThemePreference>()
+        }
     };
 
     internal static async Task<AppPreferences> LoadAsync(string appDataDirectory)
     {
-        string path = GetPreferencesPath(appDataDirectory);
+        string directory = NormalizeAppDataDirectory(appDataDirectory);
+        string path = GetPreferencesPath(directory);
         if (!File.Exists(path))
         {
             return new AppPreferences();
@@ -80,7 +93,7 @@ internal static class AppPreferencesStore
         {
             string json = await File.ReadAllTextAsync(path, Encoding.UTF8);
             AppPreferences preferences = JsonSerializer.Deserialize<AppPreferences>(json, JsonOptions) ?? new AppPreferences();
-            return ApplyLegacyMigration(preferences, json);
+            return NormalizePreferences(ApplyLegacyMigration(preferences, json));
         }
         catch
         {
@@ -90,9 +103,12 @@ internal static class AppPreferencesStore
 
     internal static async Task SaveAsync(string appDataDirectory, AppPreferences preferences)
     {
-        Directory.CreateDirectory(appDataDirectory);
-        string json = JsonSerializer.Serialize(preferences, JsonOptions);
-        await File.WriteAllTextAsync(GetPreferencesPath(appDataDirectory), json, Encoding.UTF8);
+        ArgumentNullException.ThrowIfNull(preferences);
+
+        string directory = NormalizeAppDataDirectory(appDataDirectory);
+        Directory.CreateDirectory(directory);
+        string json = JsonSerializer.Serialize(NormalizePreferences(preferences), JsonOptions);
+        await WriteAllTextAtomicallyAsync(GetPreferencesPath(directory), json, Encoding.UTF8);
     }
 
     internal static byte[] ProtectForCurrentUser(byte[] bytes)
@@ -105,9 +121,47 @@ internal static class AppPreferencesStore
         return ProtectedData.Unprotect(bytes, null, DataProtectionScope.CurrentUser);
     }
 
-    private static string GetPreferencesPath(string appDataDirectory)
+    internal static async Task WriteAllTextAtomicallyAsync(string path, string contents, Encoding encoding)
     {
-        return Path.Combine(appDataDirectory, "preferences.json");
+        await FileWriteService.WriteAllTextAtomicallyAsync(path, contents, encoding);
+    }
+
+    internal static async Task WriteAllBytesAtomicallyAsync(string path, byte[] bytes)
+    {
+        await FileWriteService.WriteAllBytesAtomicallyAsync(path, bytes);
+    }
+
+    private static string GetPreferencesPath(string appDataDirectory) => Path.Combine(appDataDirectory, "preferences.json");
+
+    private static string NormalizeAppDataDirectory(string appDataDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(appDataDirectory);
+        return Path.GetFullPath(appDataDirectory.Trim());
+    }
+
+    internal static AppPreferences NormalizePreferences(AppPreferences preferences)
+    {
+        ArgumentNullException.ThrowIfNull(preferences);
+
+        if (!ValidOutputTimestampPolicies.Contains(preferences.OutputTimestampPolicy, StringComparer.OrdinalIgnoreCase))
+        {
+            preferences.OutputTimestampPolicy = "Current time";
+        }
+        else
+        {
+            preferences.OutputTimestampPolicy = ValidOutputTimestampPolicies
+                .First(policy => string.Equals(policy, preferences.OutputTimestampPolicy, StringComparison.OrdinalIgnoreCase));
+        }
+
+        preferences.CustomEncryptOutputDirectory ??= string.Empty;
+        preferences.CustomDecryptOutputDirectory ??= string.Empty;
+
+        if (!Enum.IsDefined(preferences.ThemePreference))
+        {
+            preferences.ThemePreference = ThemePreference.Dark;
+        }
+
+        return preferences;
     }
 
     private static AppPreferences ApplyLegacyMigration(AppPreferences preferences, string json)

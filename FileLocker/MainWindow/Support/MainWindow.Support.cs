@@ -139,11 +139,16 @@ namespace FileLocker
             }
             catch (COMException ex)
             {
-                Debug.WriteLine($"ContentDialog failed to open: {ex.Message}");
+                Debug.WriteLine($"ContentDialog failed to open: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
                 return ContentDialogResult.None;
             }
             catch (OperationCanceledException)
             {
+                return ContentDialogResult.None;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"ContentDialog failed: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
                 return ContentDialogResult.None;
             }
             finally
@@ -164,35 +169,22 @@ namespace FileLocker
             return xamlRoot != null;
         }
 
-        private async Task StartAutomaticUpdateCheckAsync()
-        {
-            if (_hasStartedAutomaticUpdateCheck)
-            {
-                return;
-            }
-
-            _hasStartedAutomaticUpdateCheck = true;
-
-            if (!UpdateService.ShouldPerformAutomaticCheck(_updateSettings, DateTimeOffset.UtcNow))
-            {
-                SetAboutUpdateStatusText("Updates: automatic checks enabled");
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(2));
-            await CheckForUpdatesAsync(isManualCheck: false);
-        }
-
         private async Task CheckForUpdatesAsync(bool isManualCheck)
         {
             if (_isCheckingForUpdates || _isDownloadingUpdate)
             {
+                if (isManualCheck)
+                {
+                    SetAboutUpdateStatusText("An update check is already in progress.");
+                }
+
                 return;
             }
 
             try
             {
                 _isCheckingForUpdates = true;
+                SetUpdateControlsEnabled(false);
                 SetAboutUpdateStatusText("Updates: checking...");
 
                 UpdateCheckResult result = await UpdateService.CheckForUpdatesAsync(CancellationToken.None);
@@ -233,12 +225,21 @@ namespace FileLocker
                 SetAboutUpdateStatusText("Updates: check failed");
                 if (isManualCheck)
                 {
-                    await ShowErrorDialogAsync($"Unable to check for updates:\n{ex.Message}");
+                    await ShowErrorDialogAsync($"Unable to check for updates:\n{GetFriendlyExceptionMessage(ex, "Update check failed.")}");
                 }
             }
             finally
             {
+                SetUpdateControlsEnabled(true);
                 _isCheckingForUpdates = false;
+            }
+        }
+
+        private void SetUpdateControlsEnabled(bool isEnabled)
+        {
+            if (CheckNowButton != null)
+            {
+                CheckNowButton.IsEnabled = isEnabled;
             }
         }
 
@@ -295,7 +296,16 @@ namespace FileLocker
 
             if (result == ContentDialogResult.Secondary)
             {
-                OpenWithShell(release.HtmlUrl);
+                try
+                {
+                    OpenWithShell(release.HtmlUrl);
+                }
+                catch (Exception ex)
+                {
+                    SetAboutUpdateStatusText($"Update available: {release.DisplayVersion}");
+                    await ShowErrorDialogAsync($"Unable to open the release page: {GetFriendlyExceptionMessage(ex, "Open failed.")}");
+                }
+
                 return;
             }
 
@@ -327,7 +337,7 @@ namespace FileLocker
             catch (Exception ex)
             {
                 SetAboutUpdateStatusText("Updates: download failed");
-                await ShowErrorDialogAsync($"Unable to download the update:\n{ex.Message}");
+                await ShowErrorDialogAsync($"Unable to download the update:\n{GetFriendlyExceptionMessage(ex, "Update download failed.")}");
             }
             finally
             {
@@ -337,27 +347,33 @@ namespace FileLocker
 
         private void LaunchInstallerAndExit(string installerPath)
         {
-            string escapedInstallerPath = installerPath.Replace("\"", "\"\"", StringComparison.Ordinal);
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = $"/c timeout /t 2 /nobreak >nul & start \"\" \"{escapedInstallerPath}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false
-            });
-
+            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(2));
             Close();
         }
 
         private void SetAboutUpdateStatusText(string text)
         {
-            _aboutUpdateStatusText = text;
-            AboutUpdateStatusMenuItem.Text = text;
+            _aboutUpdateStatusText = NormalizeAboutUpdateStatusText(text);
+            AboutUpdateStatusMenuItem.Text = _aboutUpdateStatusText;
             if (UpdateStatusText != null)
             {
                 UpdateSettingsUpdateStatusText();
             }
+        }
+
+        private static string NormalizeAboutUpdateStatusText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "Update status unavailable.";
+            }
+
+            if (text.StartsWith("Up to date", StringComparison.OrdinalIgnoreCase))
+            {
+                return "You are using the latest version.";
+            }
+
+            return text.Trim();
         }
 
         private FileOpenPicker CreateOpenFilePicker(PickerLocationId startLocation, params string[] filters)
@@ -403,25 +419,39 @@ namespace FileLocker
 
         private async void BrowseKeyfileButton_Click(object sender, RoutedEventArgs e)
         {
-            FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
-
-            StorageFile? file = await picker.PickSingleFileAsync();
-            if (file != null)
+            try
             {
-                KeyfilePathBox.Text = file.Path;
-                SetStatus($"Keyfile selected: {Path.GetFileName(file.Path)}");
+                FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
+
+                StorageFile? file = await picker.PickSingleFileAsync();
+                if (file != null)
+                {
+                    KeyfilePathBox.Text = file.Path;
+                    SetStatus($"Keyfile selected: {Path.GetFileName(file.Path)}");
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse keyfile: {GetFriendlyExceptionMessage(ex, "File picker failed.")}");
             }
         }
 
         private async void BrowseBackupFolderButton_Click(object sender, RoutedEventArgs e)
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            try
             {
-                BackupFolderBox.Text = folder.Path;
-                SetStatus($"Backup folder selected: {folder.Name}");
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
+
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder != null)
+                {
+                    BackupFolderBox.Text = folder.Path;
+                    SetStatus($"Backup folder selected: {folder.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse backup folder: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
             }
         }
 
@@ -437,17 +467,25 @@ namespace FileLocker
                 return true;
             }
 
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder == null)
+            try
             {
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
+
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder == null)
+                {
+                    return false;
+                }
+
+                EncryptOutputFolderBox.Text = folder.Path;
+                SetStatus($"Encrypt output folder selected: {folder.Name}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse encrypt output folder: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
                 return false;
             }
-
-            EncryptOutputFolderBox.Text = folder.Path;
-            SetStatus($"Encrypt output folder selected: {folder.Name}");
-            return true;
         }
 
         private async void BrowseEncryptOutputFolderButton_Click(object sender, RoutedEventArgs e)
@@ -637,12 +675,17 @@ namespace FileLocker
         {
             try
             {
+                SetExplorerIntegrationControlsEnabled(false);
                 await RunExplorerIntegrationScriptAsync(unregister: false);
                 await ShowInfoDialogAsync("Explorer actions were enabled for the current user.", "Explorer Integration");
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Unable to enable Explorer actions: {ex.Message}");
+                await ShowErrorDialogAsync($"Unable to enable Explorer actions: {GetFriendlyExceptionMessage(ex, "Explorer integration failed.")}");
+            }
+            finally
+            {
+                SetExplorerIntegrationControlsEnabled(true);
             }
         }
 
@@ -650,12 +693,30 @@ namespace FileLocker
         {
             try
             {
+                SetExplorerIntegrationControlsEnabled(false);
                 await RunExplorerIntegrationScriptAsync(unregister: true);
                 await ShowInfoDialogAsync("Explorer actions were removed for the current user.", "Explorer Integration");
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Unable to remove Explorer actions: {ex.Message}");
+                await ShowErrorDialogAsync($"Unable to remove Explorer actions: {GetFriendlyExceptionMessage(ex, "Explorer integration removal failed.")}");
+            }
+            finally
+            {
+                SetExplorerIntegrationControlsEnabled(true);
+            }
+        }
+
+        private void SetExplorerIntegrationControlsEnabled(bool isEnabled)
+        {
+            if (RegisterExplorerIntegrationButton != null)
+            {
+                RegisterExplorerIntegrationButton.IsEnabled = isEnabled;
+            }
+
+            if (RemoveExplorerIntegrationButton != null)
+            {
+                RemoveExplorerIntegrationButton.IsEnabled = isEnabled;
             }
         }
 
@@ -684,24 +745,50 @@ namespace FileLocker
                 throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", scriptPath);
             }
 
-            string arguments = unregister
-                ? $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -ExecutablePath \"{executablePath}\" -Unregister"
-                : $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -ExecutablePath \"{executablePath}\"";
-
             var startInfo = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = arguments,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true
             };
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(scriptPath);
+            startInfo.ArgumentList.Add("-ExecutablePath");
+            startInfo.ArgumentList.Add(executablePath);
+            if (unregister)
+            {
+                startInfo.ArgumentList.Add("-Unregister");
+            }
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start PowerShell.");
-            string stderr = await process.StandardError.ReadToEndAsync();
-            string stdout = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
+            Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best-effort cleanup only.
+                }
+
+                throw new TimeoutException("Explorer integration update timed out.");
+            }
+
+            string stderr = await stderrTask;
+            string stdout = await stdoutTask;
 
             if (process.ExitCode != 0)
             {
@@ -714,7 +801,7 @@ namespace FileLocker
             if (_isProcessing)
             {
                 _processingCancellation?.Cancel();
-                SetStatus("Cancellation requested. The current item will finish before the queue stops.");
+                SetStatus("Cancellation requested. FileLocker will stop at the next safe point.");
             }
         }
 
@@ -780,7 +867,7 @@ namespace FileLocker
                 return null;
             }
 
-            File.WriteAllText(file.Path, contents);
+            await FileWriteService.WriteAllTextAtomicallyAsync(file.Path, contents, Encoding.UTF8);
             return file.Path;
         }
 
@@ -810,7 +897,7 @@ namespace FileLocker
             builder.AppendLine("| Source | Output | Status | Message | Hash | Original | Output | Compression Delta | Compression | Failure |");
             builder.AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
-            foreach (var result in entry.Results)
+            foreach (FileOperationResult result in EnumerateReceiptResults(entry))
             {
                 builder.AppendLine(
                     $"| {EscapeMarkdown(RenderReportPath(result.SourcePath, includeFullPaths))} " +
@@ -821,7 +908,7 @@ namespace FileLocker
                     $"| {EscapeMarkdown(FormatReportSize(result.OriginalSizeBytes))} " +
                     $"| {EscapeMarkdown(FormatReportSize(result.OutputSizeBytes))} " +
                     $"| {EscapeMarkdown(FormatReportDelta(result))} " +
-                    $"| {EscapeMarkdown(FormatCompressionReceipt(result))} " +
+                    $"| {EscapeMarkdown(FormatCompressionReceipt(result, includeFullPaths))} " +
                     $"| {EscapeMarkdown(result.FailureCategory ?? "-")} |");
             }
 
@@ -833,7 +920,7 @@ namespace FileLocker
             var builder = new StringBuilder();
             builder.AppendLine("SourcePath,OutputPath,Status,Message,HashValue,BackupPath,OriginalRetained,OutputVerified,OriginalBytes,OutputBytes,CompressionSavedBytes,CompressionAddedBytes,CompressionRequested,CompressionApplied,CompressionReason,CompressedBytes,ElapsedMilliseconds,FailureCategory");
 
-            foreach (var result in entry.Results)
+            foreach (FileOperationResult result in EnumerateReceiptResults(entry))
             {
                 builder.AppendLine(string.Join(",",
                     EscapeCsv(RenderReportPath(result.SourcePath, includeFullPaths)),
@@ -850,7 +937,7 @@ namespace FileLocker
                     result.NetStorageAddedBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     result.CompressionRequested ? "true" : "false",
                     result.CompressionApplied ? "true" : "false",
-                    EscapeCsv(result.CompressionReason ?? string.Empty),
+                    EscapeCsv(RenderReportText(result.CompressionReason, includeFullPaths)),
                     result.CompressedSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     result.ElapsedMilliseconds?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     EscapeCsv(result.FailureCategory ?? string.Empty)));
@@ -867,6 +954,11 @@ namespace FileLocker
             }
         }
 
+        private static IEnumerable<FileOperationResult> EnumerateReceiptResults(OperationHistoryEntry entry)
+        {
+            return (entry.Results ?? []).Where(result => result is not null);
+        }
+
         private static string RenderReportMessage(string? message, bool includeFullPaths)
         {
             if (string.IsNullOrWhiteSpace(message))
@@ -874,7 +966,7 @@ namespace FileLocker
                 return "-";
             }
 
-            return includeFullPaths ? message : SensitiveDataRedactor.RedactMessage(message);
+            return RenderReportText(message, includeFullPaths, "-");
         }
 
         private static string FormatReportSize(long? bytes)
@@ -909,7 +1001,7 @@ namespace FileLocker
             return "-";
         }
 
-        private static string FormatCompressionReceipt(FileOperationResult result)
+        private static string FormatCompressionReceipt(FileOperationResult result, bool includeFullPaths)
         {
             if (!result.CompressionRequested)
             {
@@ -917,9 +1009,20 @@ namespace FileLocker
             }
 
             string state = result.CompressionApplied ? "Applied" : "Skipped";
-            return string.IsNullOrWhiteSpace(result.CompressionReason)
+            string reason = RenderReportText(result.CompressionReason, includeFullPaths);
+            return string.IsNullOrWhiteSpace(reason)
                 ? state
-                : $"{state}: {result.CompressionReason}";
+                : $"{state}: {reason}";
+        }
+
+        private static string RenderReportText(string? text, bool includeFullPaths, string emptyFallback = "")
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return emptyFallback;
+            }
+
+            return includeFullPaths ? text : SensitiveDataRedactor.RedactMessage(text);
         }
 
         private static string RenderReportPath(string? path, bool includeFullPaths, string emptyFallback = "")
@@ -929,29 +1032,27 @@ namespace FileLocker
                 return emptyFallback;
             }
 
-            return includeFullPaths ? path : RedactPath(path);
+            return includeFullPaths ? path : SensitiveDataRedactor.RedactPath(path);
         }
 
         private static string EscapeMarkdown(string text)
         {
-            return text.Replace("|", "\\|", StringComparison.Ordinal);
+            return text
+                .Replace("\r\n", " ", StringComparison.Ordinal)
+                .Replace("\n", " ", StringComparison.Ordinal)
+                .Replace("\r", " ", StringComparison.Ordinal)
+                .Replace("|", "\\|", StringComparison.Ordinal);
         }
 
         private static string EscapeCsv(string text)
         {
-            if (text.Contains(',') || text.Contains('"') || text.Contains('\n') || text.Contains('\r'))
-            {
-                return $"\"{text.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
-            }
-
-            return text;
+            return CsvCellFormatter.Format(text);
         }
 
-        private async void About_Click(object sender, RoutedEventArgs e)
+        private void About_Click(object sender, RoutedEventArgs e)
         {
             UpdateAboutMenuInfo();
             FlyoutBase.ShowAttachedFlyout(AboutButton);
-            await Task.CompletedTask;
         }
 
         private async void ShowTutorialButton_Click(object sender, RoutedEventArgs e)
@@ -1091,48 +1192,89 @@ namespace FileLocker
             await CheckForUpdatesAsync(isManualCheck: true);
         }
 
-        private void OpenGitHubMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenGitHubMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            OpenWithShell(UpdateService.GitHubRepositoryUrl);
+            await OpenShellMenuTargetAsync(
+                () => UpdateService.GitHubRepositoryUrl,
+                "Unable to open the FileLocker project page.");
         }
 
-        private void OpenReportsFolderMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenReportsFolderMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            OpenWithShell(GetReportsDirectory());
+            await OpenShellMenuTargetAsync(
+                GetReportsDirectory,
+                "Unable to open the reports folder.");
         }
 
-        private void OpenInstallFolderMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenInstallFolderMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            string? processPath = Environment.ProcessPath;
-            string installDirectory = !string.IsNullOrWhiteSpace(processPath)
-                ? Path.GetDirectoryName(processPath) ?? GetAppDataDirectory()
-                : GetAppDataDirectory();
-            OpenWithShell(installDirectory);
+            await OpenShellMenuTargetAsync(
+                () =>
+                {
+                    string? processPath = Environment.ProcessPath;
+                    return !string.IsNullOrWhiteSpace(processPath)
+                        ? Path.GetDirectoryName(processPath) ?? GetAppDataDirectory()
+                        : GetAppDataDirectory();
+                },
+                "Unable to open the install folder.");
         }
 
-        private void OpenUpdateDownloadsMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenUpdateDownloadsMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            string path = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "FileLocker",
-                "Updater",
-                "Downloads");
-            Directory.CreateDirectory(path);
-            OpenWithShell(path);
+            await OpenShellMenuTargetAsync(
+                () =>
+                {
+                    string path = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "FileLocker",
+                        "Updater",
+                        "Downloads");
+                    Directory.CreateDirectory(path);
+                    return path;
+                },
+                "Unable to open the update downloads folder.");
         }
 
-        private void OpenAppDataFolderMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenAppDataFolderMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            OpenWithShell(GetAppDataDirectory());
+            await OpenShellMenuTargetAsync(
+                GetAppDataDirectory,
+                "Unable to open the app data folder.");
+        }
+
+        private async Task OpenShellMenuTargetAsync(Func<string> resolveTarget, string failureMessage)
+        {
+            try
+            {
+                OpenWithShell(resolveTarget());
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"{failureMessage} {GetFriendlyExceptionMessage(ex, "Open failed.")}");
+            }
         }
 
         private static void OpenWithShell(string target)
         {
-            Process.Start(new ProcessStartInfo
+            using Process? process = Process.Start(CreateShellOpenStartInfo(target));
+            if (process == null)
             {
-                FileName = target,
+                throw new InvalidOperationException("Windows did not open the requested target.");
+            }
+        }
+
+        internal static ProcessStartInfo CreateShellOpenStartInfo(string? target)
+        {
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                throw new InvalidOperationException("A file, folder, or link target is required.");
+            }
+
+            return new ProcessStartInfo
+            {
+                FileName = target.Trim(),
                 UseShellExecute = true
-            });
+            };
         }
 
         // Advanced options event handlers
@@ -1246,4 +1388,3 @@ namespace FileLocker
         }
     }
 }
-

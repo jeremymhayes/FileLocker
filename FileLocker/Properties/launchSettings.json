@@ -1,8 +1,5 @@
 {
   "profiles": {
-    "FileLocker (Package)": {
-      "commandName": "MsixPackage"
-    },
     "FileLocker (Unpackaged)": {
       "commandName": "Project",
       "jsWebView2Debugging": false,

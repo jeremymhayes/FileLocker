@@ -101,6 +101,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
   const [preview, setPreview] = useState<MetadataResponse | null>(null)
   const [categories, setCategories] = useState<MetadataCategory[]>([])
   const [activeFilePath, setActiveFilePath] = useState("")
+  const [isPreviewStale, setIsPreviewStale] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
 
   useEffect(() => {
@@ -108,15 +109,23 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
       return
     }
 
+    if (isRunning) {
+      toast.error("Wait for the current metadata preview to finish before changing the selection.")
+      onDroppedPathsHandled?.()
+      return
+    }
+
+    setIsPreviewStale(true)
     setPaths((current) => mergeUniquePaths(current, droppedPaths))
     onDroppedPathsHandled?.()
-  }, [droppedPaths, onDroppedPathsHandled])
+  }, [droppedPaths, isRunning, onDroppedPathsHandled])
 
   useEffect(() => {
     if (paths.length === 0) {
       setPreview(null)
       setCategories([])
       setActiveFilePath("")
+      setIsPreviewStale(false)
       return
     }
 
@@ -130,37 +139,78 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
     [categories]
   )
 
-  const selectedFileCount = preview?.summary.filesSelected ?? paths.length
+  const selectedFileCount = isPreviewStale ? paths.length : preview?.summary.filesSelected ?? paths.length
   const selectedTagCount = preview?.summary.tagsFound ?? 0
-  const selectedCategoryCount = preview?.summary.categoriesSelected ?? selectedCategoryNames.length
-  const compatibilityMessage = preview?.warnings[0]
+  const selectedCategoryCount = isPreviewStale ? selectedCategoryNames.length : preview?.summary.categoriesSelected ?? selectedCategoryNames.length
+  const previewStatus = isRunning
+    ? "Previewing"
+    : isPreviewStale && preview
+      ? "Preview needs refresh"
+      : preview?.summary.status ?? "Waiting for files"
+  const previewStatusTone = preview && !isPreviewStale ? "good" : isPreviewStale && preview ? "warning" : "neutral"
+  const compatibilityMessage = isPreviewStale && preview
+    ? "Preview settings changed. Refresh the preview to update metadata results and report output."
+    : preview?.warnings[0]
     ?? "Metadata support varies by file type. FileLocker previews detected fields before any future cleanup work."
 
   async function pickFiles() {
-    const response = await invoke<{ paths: string[] }>("files.pickFiles")
-    setPaths((current) => mergeUniquePaths(current, response.paths))
+    if (isRunning) {
+      return
+    }
+
+    try {
+      const response = await invoke<{ paths: string[] }>("files.pickFiles")
+      setIsPreviewStale(true)
+      setPaths((current) => mergeUniquePaths(current, response.paths))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick files.")
+    }
   }
 
   async function pickFolder() {
-    const response = await invoke<{ path: string }>("files.pickFolder")
-    if (response.path) {
-      setPaths((current) => mergeUniquePaths(current, [response.path]))
+    if (isRunning) {
+      return
+    }
+
+    try {
+      const response = await invoke<{ path: string }>("files.pickFolder")
+      if (response.path) {
+        setIsPreviewStale(true)
+        setPaths((current) => mergeUniquePaths(current, [response.path]))
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a folder.")
     }
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
 
+    if (isRunning) {
+      toast.error("Wait for the current metadata preview to finish before changing the selection.")
+      return
+    }
+
     const droppedPaths = Array.from(event.dataTransfer.files)
       .map((file) => (file as File & { path?: string }).path)
       .filter((path): path is string => Boolean(path))
 
     if (droppedPaths.length > 0) {
+      setIsPreviewStale(true)
       setPaths((current) => mergeUniquePaths(current, droppedPaths))
     }
   }
 
+  function handleDropZoneDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = isRunning ? "none" : "copy"
+  }
+
   async function inspect(focusPath?: string, silent = false) {
+    if (isRunning) {
+      return
+    }
+
     if (paths.length === 0) {
       if (!silent) {
         toast.error("Select one or more files or folders to inspect.")
@@ -180,6 +230,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
       setPreview(response)
       setCategories(response.categories)
       setActiveFilePath(response.activeFilePath)
+      setIsPreviewStale(false)
 
       if (!silent) {
         toast.success(`Metadata preview ready for ${response.file.displayName}.`)
@@ -194,6 +245,11 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
   }
 
   function toggleCategory(name: string, checked: boolean) {
+    if (isRunning) {
+      return
+    }
+
+    setIsPreviewStale(true)
     setCategories((current) =>
       current.map((category) =>
         category.name === name
@@ -204,18 +260,54 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
   }
 
   function selectAllCategories() {
+    if (isRunning) {
+      return
+    }
+
+    setIsPreviewStale(true)
     setCategories((current) => current.map((category) => ({ ...category, isSelected: category.isSupported })))
   }
 
   function clearCategorySelection() {
+    if (isRunning) {
+      return
+    }
+
+    setIsPreviewStale(true)
     setCategories((current) => current.map((category) => ({ ...category, isSelected: false })))
   }
 
+  function updateMode(value: string) {
+    if (isRunning) {
+      return
+    }
+
+    if (value !== mode) {
+      setIsPreviewStale(true)
+    }
+
+    setMode(value)
+  }
+
+  function removePreviewPath(path: string) {
+    if (isRunning) {
+      return
+    }
+
+    setIsPreviewStale(true)
+    setPaths((current) => current.filter((item) => item !== path))
+  }
+
   function clearSelection() {
+    if (isRunning) {
+      return
+    }
+
     setPaths([])
     setPreview(null)
     setCategories([])
     setActiveFilePath("")
+    setIsPreviewStale(false)
   }
 
   const activeFile = preview?.files.find((file) => file.fullPath === activeFilePath) ?? preview?.files[0] ?? null
@@ -263,7 +355,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
 
             <Dialog>
               <DialogTrigger asChild>
-                <Button variant="outline" size="lg" disabled={!preview}>
+                <Button variant="outline" size="lg" disabled={!preview || isPreviewStale}>
                   <FilePenLine data-icon="inline-start" />
                   View Report
                 </Button>
@@ -284,23 +376,30 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
             <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
               <SectionBody className="px-4 py-3">
                 <div
-                  className="flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent-purple/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent-purple/70"
-                  onDragOver={(event) => event.preventDefault()}
+                  className={cn(
+                    "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent-purple/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent-purple/70",
+                    isRunning && "cursor-not-allowed opacity-70"
+                  )}
+                  role="group"
+                  aria-label="Metadata file drop zone"
+                  aria-describedby="metadata-drop-zone-description"
+                  aria-disabled={isRunning}
+                  onDragOver={handleDropZoneDragOver}
                   onDrop={handleDrop}
                 >
                   <div className="flex size-8 items-center justify-center rounded-md border border-accent-purple/35 bg-accent-purple/12 text-accent-purple">
                     <Fingerprint className="size-5" aria-hidden />
                   </div>
                   <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drop files here to inspect metadata</h3>
-                  <p className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
+                  <p id="metadata-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
                     Browse files or folders from your device, then review detected metadata before you decide how it should be handled.
                   </p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
-                    <Button variant="violet" onClick={() => void pickFiles()}>
+                    <Button variant="violet" onClick={() => void pickFiles()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse Files
                     </Button>
-                    <Button variant="secondary" onClick={() => void pickFolder()}>
+                    <Button variant="secondary" onClick={() => void pickFolder()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse Folder
                     </Button>
@@ -340,19 +439,26 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                     </div>
                     <div className="divide-y divide-border/80">
                       {preview.files.map((file) => (
-                        <button
+                        <div
                           key={file.fullPath}
-                          type="button"
                           className={cn(
-                            "grid min-h-10 w-full grid-cols-[minmax(0,1.6fr)_minmax(120px,0.8fr)_100px_130px_110px_56px] gap-3 px-3 py-2 text-left transition-colors hover:bg-accent-purple/6",
+                            "grid min-h-10 w-full grid-cols-[minmax(0,1.6fr)_minmax(120px,0.8fr)_100px_130px_110px_56px] gap-3 px-3 py-2 transition-colors hover:bg-accent-purple/6",
                             file.fullPath === activeFilePath && "bg-accent-purple/8"
                           )}
-                          onClick={() => {
-                            setActiveFilePath(file.fullPath)
-                            void inspect(file.fullPath, true)
-                          }}
                         >
-                          <div className="min-w-0">
+                          <button
+                            type="button"
+                            className="col-span-5 grid grid-cols-[minmax(0,1.6fr)_minmax(120px,0.8fr)_100px_130px_110px] items-center gap-3 text-left disabled:cursor-not-allowed"
+                            onClick={() => {
+                              if (isRunning) {
+                                return
+                              }
+
+                              setActiveFilePath(file.fullPath)
+                              void inspect(file.fullPath, true)
+                            }}
+                            disabled={isRunning}
+                          >
                             <div className="flex items-center gap-3">
                               <FileTypeIcon filename={file.displayName} />
                               <div className="min-w-0">
@@ -360,26 +466,26 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                                 <div className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{file.fullPath}</div>
                               </div>
                             </div>
-                          </div>
-                          <div className="truncate text-sm text-secondary">{file.fileType}</div>
-                          <div className="text-sm text-secondary">{file.sizeDisplay}</div>
-                          <div className="text-sm text-accent-purple">{file.metadataTagCount} tags</div>
-                          <div className="flex items-center gap-2">
-                            <span className={cn("size-2.5 rounded-md", file.isSupported ? "bg-accent-green" : "bg-accent-orange")} />
-                            <span className={cn("text-sm", file.isSupported ? "text-accent-green" : "text-accent-orange")}>{file.statusDisplay}</span>
-                          </div>
+                            <div className="truncate text-sm text-secondary">{file.fileType}</div>
+                            <div className="text-sm text-secondary">{file.sizeDisplay}</div>
+                            <div className="text-sm text-accent-purple">{file.metadataTagCount} tags</div>
+                            <div className="flex items-center gap-2">
+                              <span className={cn("size-2.5 rounded-md", file.isSupported ? "bg-accent-green" : "bg-accent-orange")} />
+                              <span className={cn("text-sm", file.isSupported ? "text-accent-green" : "text-accent-orange")}>{file.statusDisplay}</span>
+                            </div>
+                          </button>
                           <div className="flex items-center">
-                            <span
+                            <button
+                              type="button"
                               className="rounded-md p-1.5 text-muted transition-colors hover:bg-background/40 hover:text-primary"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                setPaths((current) => current.filter((item) => item !== file.fullPath))
-                              }}
+                              onClick={() => removePreviewPath(file.fullPath)}
+                              aria-label={`Remove ${file.displayName}`}
+                              disabled={isRunning}
                             >
                               <Trash2 className="size-4" aria-hidden />
-                            </span>
+                            </button>
                           </div>
-                        </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -458,7 +564,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                       <label key={category.name} className="flex items-start gap-2.5 rounded-md border border-border/80 bg-background/35 px-3 py-2 transition-colors hover:border-accent-purple/30 hover:bg-accent-purple/6">
                         <Checkbox
                           checked={category.isSelected}
-                          disabled={!category.isSupported}
+                          disabled={!category.isSupported || isRunning}
                           onCheckedChange={(checked) => toggleCategory(category.name, checked === true)}
                           className="mt-1 border-accent-purple/35 data-checked:border-accent-purple data-checked:bg-accent-purple focus-visible:border-accent-purple focus-visible:ring-accent-purple/30"
                         />
@@ -485,10 +591,10 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                 </div>
 
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <Button variant="outline" onClick={selectAllCategories} disabled={categories.length === 0}>
+                  <Button variant="outline" onClick={selectAllCategories} disabled={categories.length === 0 || isRunning}>
                     Select All
                   </Button>
-                  <Button variant="outline" onClick={clearCategorySelection} disabled={categories.length === 0}>
+                  <Button variant="outline" onClick={clearCategorySelection} disabled={categories.length === 0 || isRunning}>
                     Clear Selection
                   </Button>
                 </div>
@@ -500,7 +606,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                 <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Scramble Mode</SectionTitle>
               </SectionHeader>
               <SectionBody className="px-4 py-3">
-                <Select value={mode} onValueChange={setMode}>
+                <Select value={mode} onValueChange={updateMode} disabled={isRunning}>
                   <SelectTrigger>
                     <SelectValue placeholder="Mode" />
                   </SelectTrigger>
@@ -531,8 +637,8 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                   <SummaryRow label="Output" value={preview?.summary.output ?? "Preview only"} />
                   <SummaryRow
                     label="Status"
-                    value={preview?.summary.status ?? "Waiting for files"}
-                    tone={preview ? "good" : "neutral"}
+                    value={previewStatus}
+                    tone={previewStatusTone}
                   />
                 </div>
               </SectionBody>
@@ -555,13 +661,13 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
             <div className="grid gap-2">
               <Button variant="violet" onClick={() => void inspect()} disabled={paths.length === 0 || isRunning}>
                 <Eye data-icon="inline-start" />
-                {isRunning ? "Previewing" : "Preview Changes"}
+                {isRunning ? "Previewing" : isPreviewStale && preview ? "Refresh Preview" : "Preview Changes"}
               </Button>
               <Button variant="secondary" disabled>
                 <Sparkles data-icon="inline-start" />
                 Scramble Metadata
               </Button>
-              <Button variant="outline" onClick={clearSelection} disabled={paths.length === 0}>
+              <Button variant="outline" onClick={clearSelection} disabled={paths.length === 0 || isRunning}>
                 <X data-icon="inline-start" />
                 Clear Selection
               </Button>
@@ -598,14 +704,14 @@ function MetadataPreviewRow({ label, value, highlight = false }: MetadataPreview
 type SummaryRowProps = {
   label: string
   value: string
-  tone?: "neutral" | "good"
+  tone?: "neutral" | "good" | "warning"
 }
 
 function SummaryRow({ label, value, tone = "neutral" }: SummaryRowProps) {
   return (
     <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/80 bg-background/35 px-3 py-2">
       <span className="text-sm text-secondary">{label}</span>
-      <span className={cn("font-display text-sm font-semibold tracking-tight", tone === "good" ? "text-accent-green" : "text-primary")}>{value}</span>
+      <span className={cn("font-display text-sm font-semibold tracking-tight", tone === "good" ? "text-accent-green" : tone === "warning" ? "text-accent-orange" : "text-primary")}>{value}</span>
     </div>
   )
 }

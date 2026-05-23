@@ -20,7 +20,9 @@ internal static class SystemMaintenanceService
     private const uint SherbNoProgressUi = 0x00000002;
     private const uint SherbNoSound = 0x00000004;
     private const int MaxCleanupScanFiles = 100_000;
+    private const int MaxCleanupOperationWarnings = 8;
     private static readonly TimeSpan DriveToolTimeout = TimeSpan.FromMinutes(120);
+    private static readonly string[] RegistryExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi"];
 
     internal static MaintenanceDriveList GetDrives()
     {
@@ -49,12 +51,27 @@ internal static class SystemMaintenanceService
             categories.Sum(category => category.skippedCount));
     }
 
-    internal static CleanupRunResult RunCleanup(IReadOnlyCollection<string>? categoryIds)
+    internal static CleanupRunResult RunCleanup(IReadOnlyCollection<string>? categoryIds, string? confirmation)
     {
+        if (!string.Equals(confirmation, "CLEAN SELECTED", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Confirm cleanup before deleting selected cleanup categories.");
+        }
+
         HashSet<string> selectedIds = NormalizeCategoryIds(categoryIds);
+        if (selectedIds.Count == 0)
+        {
+            throw new InvalidOperationException("Select at least one cleanup category.");
+        }
+
         CleanupDefinition[] definitions = GetCleanupDefinitions()
-            .Where(definition => selectedIds.Count == 0 || selectedIds.Contains(definition.Id))
+            .Where(definition => selectedIds.Contains(definition.Id))
             .ToArray();
+
+        if (definitions.Length != selectedIds.Count)
+        {
+            throw new InvalidOperationException("The selected cleanup categories are no longer available.");
+        }
 
         if (definitions.Any(definition => definition.RequiresAdministrator))
         {
@@ -196,22 +213,26 @@ internal static class SystemMaintenanceService
         }
 
         HashSet<string> selectedIds = issueIds is { Count: > 0 }
-            ? issueIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            ? issueIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : [];
+        if (selectedIds.Count == 0)
+        {
+            throw new InvalidOperationException("Select at least one registry issue.");
+        }
 
         RegistryScanResult scan = ScanRegistry();
         RegistryIssue[] selectedIssues = scan.issues
-            .Where(issue => issue.canClean && (selectedIds.Count == 0 || selectedIds.Contains(issue.id)))
+            .Where(issue => issue.canClean && selectedIds.Contains(issue.id))
             .ToArray();
+
+        if (selectedIssues.Length != selectedIds.Count)
+        {
+            throw new InvalidOperationException("The selected registry issues are no longer available.");
+        }
 
         if (selectedIssues.Any(issue => string.Equals(issue.hive, "HKLM", StringComparison.OrdinalIgnoreCase)))
         {
             RequireAdministrator("Cleaning local-machine registry entries");
-        }
-
-        if (selectedIssues.Length == 0)
-        {
-            return new RegistryCleanResult(0, 0, string.Empty, [], [], scan);
         }
 
         string backupPath = WriteRegistryBackup(selectedIssues);
@@ -227,7 +248,10 @@ internal static class SystemMaintenanceService
             }
             catch (Exception ex)
             {
-                failures.Add(new RegistryCleanFailure(issue.id, issue.displayName, ex.Message));
+                failures.Add(new RegistryCleanFailure(
+                    issue.id,
+                    issue.displayName,
+                    SensitiveDataRedactor.RedactMessage(ex.Message)));
             }
         }
 
@@ -261,7 +285,7 @@ internal static class SystemMaintenanceService
     private static HashSet<string> NormalizeCategoryIds(IReadOnlyCollection<string>? categoryIds)
     {
         return categoryIds is { Count: > 0 }
-            ? categoryIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            ? categoryIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : [];
     }
 
@@ -431,7 +455,7 @@ internal static class SystemMaintenanceService
             IgnoreInaccessible = true,
             RecurseSubdirectories = true,
             ReturnSpecialDirectories = false,
-            AttributesToSkip = FileAttributes.System
+            AttributesToSkip = FileAttributes.System | FileAttributes.ReparsePoint
         };
 
         try
@@ -458,7 +482,7 @@ internal static class SystemMaintenanceService
         }
         catch (Exception ex)
         {
-            warnings.Add(ex.Message);
+            AddCleanupWarning(warnings, ex.Message);
             skippedCount++;
         }
 
@@ -522,6 +546,11 @@ internal static class SystemMaintenanceService
             return new CleanupDeleteSummary(0, 0, 1, [$"{definition.Label} is not an approved cleanup location."]);
         }
 
+        if (IsReparsePoint(approvedRoot))
+        {
+            return new CleanupDeleteSummary(0, 0, 1, [$"{definition.Label} is a reparse point and was skipped."]);
+        }
+
         long freedBytes = 0;
         int deletedFiles = 0;
         int skippedItems = 0;
@@ -530,7 +559,8 @@ internal static class SystemMaintenanceService
         {
             IgnoreInaccessible = true,
             RecurseSubdirectories = true,
-            ReturnSpecialDirectories = false
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = FileAttributes.ReparsePoint
         };
 
         try
@@ -541,14 +571,15 @@ internal static class SystemMaintenanceService
                 {
                     var info = new FileInfo(file);
                     long size = info.Exists ? info.Length : 0;
-                    File.SetAttributes(file, FileAttributes.Normal);
+                    FileCleanupService.ClearReadOnlyAttribute(file);
                     File.Delete(file);
                     freedBytes += size;
                     deletedFiles++;
                 }
-                catch
+                catch (Exception ex)
                 {
                     skippedItems++;
+                    AddCleanupWarning(warnings, $"{file}: {ex.Message}");
                 }
             }
 
@@ -558,22 +589,50 @@ internal static class SystemMaintenanceService
                 {
                     if (!string.Equals(Path.GetFullPath(directory), approvedRoot, StringComparison.OrdinalIgnoreCase))
                     {
+                        FileCleanupService.ClearReadOnlyAttribute(directory);
                         Directory.Delete(directory, recursive: false);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     skippedItems++;
+                    AddCleanupWarning(warnings, $"{directory}: {ex.Message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            warnings.Add(ex.Message);
+            AddCleanupWarning(warnings, ex.Message);
             skippedItems++;
         }
 
         return new CleanupDeleteSummary(freedBytes, deletedFiles, skippedItems, warnings.ToArray());
+    }
+
+    private static void AddCleanupWarning(List<string> warnings, string message)
+    {
+        if (warnings.Count < MaxCleanupOperationWarnings)
+        {
+            warnings.Add(SensitiveDataRedactor.RedactMessage(message));
+            return;
+        }
+
+        if (warnings.Count == MaxCleanupOperationWarnings)
+        {
+            warnings.Add("Additional cleanup items were skipped.");
+        }
+    }
+
+    private static bool IsReparsePoint(string path)
+    {
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static CleanupDeleteSummary EmptyRecycleBin(CleanupCategory before)
@@ -600,14 +659,23 @@ internal static class SystemMaintenanceService
                string.Equals(normalized, expected, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string NormalizeDriveRoot(string? driveRoot)
+    internal static string NormalizeDriveRoot(string? driveRoot)
     {
         if (string.IsNullOrWhiteSpace(driveRoot))
         {
             throw new InvalidOperationException("Select a drive first.");
         }
 
-        string fullPath = Path.GetFullPath(driveRoot.Trim());
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(driveRoot.Trim());
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new InvalidOperationException("The selected drive is invalid.", ex);
+        }
+
         string? root = Path.GetPathRoot(fullPath);
         if (string.IsNullOrWhiteSpace(root))
         {
@@ -648,7 +716,11 @@ internal static class SystemMaintenanceService
             process.StartInfo.ArgumentList.Add(argument);
         }
 
-        process.Start();
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Unable to start {fileName}.");
+        }
+
         Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
         Task<string> errorTask = process.StandardError.ReadToEndAsync();
 
@@ -710,7 +782,7 @@ internal static class SystemMaintenanceService
         }
         catch (Exception ex)
         {
-            warnings.Add($"{hive}\\{keyPath}: {ex.Message}");
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
         }
     }
 
@@ -732,7 +804,7 @@ internal static class SystemMaintenanceService
                     string displayName = subKey?.GetValue("DisplayName")?.ToString() ?? subKeyName;
                     string? uninstallTarget = ExtractExecutablePath(subKey?.GetValue("UninstallString")?.ToString());
                     string? displayTarget = ExtractExecutablePath(subKey?.GetValue("DisplayIcon")?.ToString());
-                    string? installLocation = NormalizeRegistryPath(subKey?.GetValue("InstallLocation")?.ToString());
+                    string? installLocation = RegistryPathNormalizer.Normalize(subKey?.GetValue("InstallLocation")?.ToString());
                     string? targetPath = uninstallTarget ?? displayTarget;
 
                     if (string.IsNullOrWhiteSpace(targetPath) || !IsMissingPath(targetPath))
@@ -757,13 +829,13 @@ internal static class SystemMaintenanceService
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"{hive}\\{keyPath}\\{subKeyName}: {ex.Message}");
+                    warnings.Add($"{hive}\\{keyPath}\\{subKeyName}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
                 }
             }
         }
         catch (Exception ex)
         {
-            warnings.Add($"{hive}\\{keyPath}: {ex.Message}");
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
         }
     }
 
@@ -801,7 +873,7 @@ internal static class SystemMaintenanceService
 
     private static string? ExtractExecutablePath(string? command)
     {
-        string? normalized = NormalizeRegistryPath(command);
+        string? normalized = RegistryPathNormalizer.Normalize(command);
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return null;
@@ -824,27 +896,49 @@ internal static class SystemMaintenanceService
             }
         }
 
-        foreach (string extension in new[] { ".exe", ".bat", ".cmd", ".com", ".msi" })
+        int executableEndIndex = FindRegistryExecutablePathEnd(normalized);
+        return executableEndIndex > 0
+            ? normalized[..executableEndIndex].Trim().Trim('"')
+            : null;
+    }
+
+    private static int FindRegistryExecutablePathEnd(string value)
+    {
+        int bestEndIndex = -1;
+        foreach (string extension in RegistryExecutableExtensions)
         {
-            int index = normalized.IndexOf(extension, StringComparison.OrdinalIgnoreCase);
-            if (index >= 0)
+            int searchIndex = 0;
+            while (searchIndex < value.Length)
             {
-                return normalized[..(index + extension.Length)].Trim().Trim('"');
+                int index = value.IndexOf(extension, searchIndex, StringComparison.OrdinalIgnoreCase);
+                if (index < 0)
+                {
+                    break;
+                }
+
+                int endIndex = index + extension.Length;
+                if (IsRegistryCommandPathBoundary(value, endIndex))
+                {
+                    if (bestEndIndex < 0 || endIndex < bestEndIndex)
+                    {
+                        bestEndIndex = endIndex;
+                    }
+
+                    break;
+                }
+
+                searchIndex = index + 1;
             }
         }
 
-        return null;
+        return bestEndIndex;
     }
 
-    private static string? NormalizeRegistryPath(string? value)
+    private static bool IsRegistryCommandPathBoundary(string value, int index)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        string expanded = Environment.ExpandEnvironmentVariables(value.Trim());
-        return expanded.Trim('"').Trim();
+        return index >= value.Length ||
+            char.IsWhiteSpace(value[index]) ||
+            value[index] is '"' or ',';
     }
 
     private static bool IsMissingPath(string path)
@@ -857,7 +951,7 @@ internal static class SystemMaintenanceService
     {
         string backupDirectory = Path.Combine(GetAppDataDirectory(), "RegistryBackups");
         Directory.CreateDirectory(backupDirectory);
-        string backupPath = Path.Combine(backupDirectory, $"FileLocker-RegistryBackup-{DateTime.Now:yyyyMMdd-HHmmss}.reg");
+        string backupPath = FileWriteService.ResolveAvailablePath(Path.Combine(backupDirectory, $"FileLocker-RegistryBackup-{DateTime.Now:yyyyMMdd-HHmmss}.reg"));
 
         var builder = new StringBuilder();
         builder.AppendLine("Windows Registry Editor Version 5.00");
@@ -868,8 +962,13 @@ internal static class SystemMaintenanceService
             AppendRegistryIssueBackup(builder, issue);
         }
 
-        File.WriteAllText(backupPath, builder.ToString(), Encoding.Unicode);
+        WriteAllTextAtomically(backupPath, builder.ToString(), Encoding.Unicode);
         return backupPath;
+    }
+
+    private static void WriteAllTextAtomically(string path, string contents, Encoding encoding)
+    {
+        FileWriteService.WriteAllTextAtomically(path, contents, encoding);
     }
 
     private static void AppendRegistryIssueBackup(StringBuilder builder, RegistryIssue issue)
