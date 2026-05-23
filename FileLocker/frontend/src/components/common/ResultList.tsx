@@ -33,7 +33,12 @@ export function ResultList({ results, onReveal }: ResultListProps) {
                 <div className="flex shrink-0 items-center gap-3">
                   <StatusBadge status={result.status} />
                   {result.outputPath && onReveal ? (
-                    <Button variant="ghost" size="sm" onClick={() => onReveal(result.outputPath!)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Open ${fileName(result.outputPath)}`}
+                      onClick={() => onReveal(result.outputPath!)}
+                    >
                       Open
                     </Button>
                   ) : null}

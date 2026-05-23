@@ -235,7 +235,7 @@ namespace FileLocker
             }
         }
 
-        private async void MetadataDropPanel_DragOver(object sender, DragEventArgs e)
+        private void MetadataDropPanel_DragOver(object sender, DragEventArgs e)
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
@@ -244,25 +244,8 @@ namespace FileLocker
 
             e.AcceptedOperation = DataPackageOperation.Copy;
             SetMetadataDropVisual(active: true);
-
-            var deferral = e.GetDeferral();
-            try
-            {
-                IReadOnlyList<IStorageItem> items = await e.DataView.GetStorageItemsAsync();
-                MetadataDropTitleText.Text = items.Count > 0
-                    ? $"Release {items.Count} item(s) to inspect"
-                    : "Drop files here to inspect metadata";
-                MetadataDropHelperText.Text = "Files stay on this device. Preview does not modify originals.";
-            }
-            catch
-            {
-                MetadataDropTitleText.Text = "Drop files here to inspect metadata";
-                MetadataDropHelperText.Text = "or browse from your device";
-            }
-            finally
-            {
-                deferral.Complete();
-            }
+            MetadataDropTitleText.Text = "Release to inspect metadata";
+            MetadataDropHelperText.Text = "Files stay on this device. Preview does not modify originals.";
         }
 
         private async void MetadataDropPanel_Drop(object sender, DragEventArgs e)
@@ -275,6 +258,7 @@ namespace FileLocker
                 return;
             }
 
+            var deferral = e.GetDeferral();
             try
             {
                 IReadOnlyList<IStorageItem> items = await e.DataView.GetStorageItemsAsync();
@@ -296,6 +280,10 @@ namespace FileLocker
             catch (Exception ex)
             {
                 await ShowErrorDialogAsync($"Unable to inspect dropped files: {GetFriendlyExceptionMessage(ex, "Drop failed.")}");
+            }
+            finally
+            {
+                deferral.Complete();
             }
         }
 
@@ -392,7 +380,7 @@ namespace FileLocker
         private async void MetadataScrambleButton_Click(object sender, RoutedEventArgs e)
         {
             await ShowInfoDialogAsync(
-                "Metadata writing is not available yet. FileLocker can select files and build a local, non-destructive preview, but it will not claim metadata was removed until safe writing support is available.",
+                "Metadata writing is disabled in this build. FileLocker can select files and build a local, non-destructive preview, but it will not claim metadata was removed until safe writing support is available.",
                 "Metadata Scrambler");
             SetMetadataScramblerStatus("Preview only");
         }
@@ -563,6 +551,11 @@ namespace FileLocker
             while (pendingDirectories.Count > 0)
             {
                 string currentDirectory = pendingDirectories.Pop();
+                if (IsMetadataReparsePointDirectory(currentDirectory, warnings))
+                {
+                    continue;
+                }
+
                 IEnumerable<string> childDirectories;
                 try
                 {
@@ -570,12 +563,17 @@ namespace FileLocker
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {ex.Message}");
+                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "Folder scan failed.")}");
                     continue;
                 }
 
                 foreach (string childDirectory in childDirectories)
                 {
+                    if (IsMetadataReparsePointDirectory(childDirectory, warnings))
+                    {
+                        continue;
+                    }
+
                     pendingDirectories.Push(childDirectory);
                 }
 
@@ -586,7 +584,7 @@ namespace FileLocker
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {ex.Message}");
+                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
                     continue;
                 }
 
@@ -597,7 +595,25 @@ namespace FileLocker
             }
         }
 
-        private MetadataSelectedFileViewModel CreateMetadataSelectedFile(string path)
+        private static bool IsMetadataReparsePointDirectory(string directoryPath, ICollection<string> warnings)
+        {
+            try
+            {
+                if ((File.GetAttributes(directoryPath) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint)
+                {
+                    warnings.Add($"Skipped reparse-point folder: {directoryPath}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
+            }
+
+            return false;
+        }
+
+        private static MetadataSelectedFileViewModel CreateMetadataSelectedFile(string path)
         {
             var fileInfo = new FileInfo(path);
             string extension = fileInfo.Extension.ToLowerInvariant();

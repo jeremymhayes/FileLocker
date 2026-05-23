@@ -74,6 +74,7 @@ internal sealed class OpenPayloadResult : IDisposable
     public void Dispose()
     {
         PlaintextStream.Dispose();
+        CryptographicOperations.ZeroMemory(MetadataBytes);
         CryptographicOperations.ZeroMemory(_dek);
     }
 }
@@ -89,6 +90,7 @@ internal static class PayloadChunkedService
     private const int TagSize = 16;
     private const int DekSize = 32;
     private const int NoncePrefixSize = 8;
+    private const int MaxMetadataSize = 64 * 1024 * 1024;
 
     internal static void WritePayload(
         Stream output,
@@ -100,13 +102,17 @@ internal static class PayloadChunkedService
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(metadataBytes);
         ArgumentNullException.ThrowIfNull(writeContent);
+        ValidateWriteInputs(inputs);
+        ValidateMetadataLength(metadataBytes.Length);
+        cancellationToken.ThrowIfCancellationRequested();
 
         byte[] dek = GenerateRandomBytes(DekSize);
         byte[] noncePrefix = GenerateRandomBytes(NoncePrefixSize);
-        List<WrappedKeySlot> slots = CreateWrappedSlots(dek, inputs);
+        List<WrappedKeySlot> slots = [];
 
         try
         {
+            slots = CreateWrappedSlots(dek, inputs);
             WriteHeader(output, inputs, noncePrefix, slots);
 
             using var chunkStream = new ChunkEncryptingStream(output, dek, noncePrefix, inputs.ChunkSize, cancellationToken);
@@ -120,27 +126,38 @@ internal static class PayloadChunkedService
         finally
         {
             CryptographicOperations.ZeroMemory(dek);
-            foreach (WrappedKeySlot slot in slots)
-            {
-                CryptographicOperations.ZeroMemory(slot.Salt);
-                CryptographicOperations.ZeroMemory(slot.Nonce);
-                CryptographicOperations.ZeroMemory(slot.Tag);
-                CryptographicOperations.ZeroMemory(slot.WrappedDek);
-            }
+            ClearWrappedSlots(slots);
+        }
+    }
+
+    private static void ValidateWriteInputs(PayloadWriteInputs inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        if (string.IsNullOrWhiteSpace(inputs.Password))
+        {
+            throw new ArgumentException("Payload password is required.", nameof(inputs));
+        }
+
+        if (inputs.ChunkSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(inputs), "Payload chunk size must be greater than zero.");
         }
     }
 
     internal static OpenPayloadResult OpenPayload(Stream input, PayloadUnlockInputs unlockInputs, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(unlockInputs);
+        cancellationToken.ThrowIfCancellationRequested();
 
         PayloadHeader header = ReadHeader(input);
         byte[] dek = UnwrapDek(header, unlockInputs);
         try
         {
-            var plaintextStream = new ChunkDecryptingStream(input, dek, header.NoncePrefix, cancellationToken);
+            var plaintextStream = new ChunkDecryptingStream(input, dek, header.NoncePrefix, header.ChunkSize, cancellationToken);
             byte[] metadataLengthBuffer = ReadExactly(plaintextStream, sizeof(int));
             int metadataLength = BinaryPrimitives.ReadInt32LittleEndian(metadataLengthBuffer);
+            ValidateMetadataLength(metadataLength);
             byte[] metadataBytes = ReadExactly(plaintextStream, metadataLength);
             return new OpenPayloadResult(header, metadataBytes, plaintextStream, dek);
         }
@@ -148,6 +165,14 @@ internal static class PayloadChunkedService
         {
             CryptographicOperations.ZeroMemory(dek);
             throw;
+        }
+    }
+
+    internal static void ValidateMetadataLength(int metadataLength)
+    {
+        if (metadataLength < 0 || metadataLength > MaxMetadataSize)
+        {
+            throw new InvalidDataException("Payload metadata length is invalid.");
         }
     }
 
@@ -166,24 +191,28 @@ internal static class PayloadChunkedService
         }
     }
 
-    internal static void RotateKeys(Stream input, Stream output, PayloadRotateInputs inputs)
+    internal static void RotateKeys(Stream input, Stream output, PayloadRotateInputs inputs, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
+        ValidateRotateInputs(inputs);
+        cancellationToken.ThrowIfCancellationRequested();
 
         PayloadHeader header = ReadHeader(input);
         byte[] dek = UnwrapDek(header, inputs.CurrentInputs);
-        List<WrappedKeySlot> slots = CreateWrappedSlots(
-            dek,
-            new PayloadWriteInputs(
-                inputs.NewPassword,
-                inputs.NewKeyfileBytes,
-                inputs.NewRecoveryKey,
-                header.ChunkSize,
-                header.Flags));
+        List<WrappedKeySlot> slots = [];
 
         try
         {
+            slots = CreateWrappedSlots(
+                dek,
+                new PayloadWriteInputs(
+                    inputs.NewPassword,
+                    inputs.NewKeyfileBytes,
+                    inputs.NewRecoveryKey,
+                    header.ChunkSize,
+                    header.Flags));
+
             WriteHeader(
                 output,
                 new PayloadWriteInputs(
@@ -196,23 +225,56 @@ internal static class PayloadChunkedService
                 slots);
 
             input.Position = header.CiphertextOffset;
-            input.CopyTo(output);
+            CopyRemainingStream(input, output, cancellationToken);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(dek);
-            foreach (WrappedKeySlot slot in slots)
+            ClearWrappedSlots(slots);
+        }
+    }
+
+    private static void CopyRemainingStream(Stream input, Stream output, CancellationToken cancellationToken)
+    {
+        byte[] buffer = new byte[131072];
+        try
+        {
+            while (true)
             {
-                CryptographicOperations.ZeroMemory(slot.Salt);
-                CryptographicOperations.ZeroMemory(slot.Nonce);
-                CryptographicOperations.ZeroMemory(slot.Tag);
-                CryptographicOperations.ZeroMemory(slot.WrappedDek);
+                cancellationToken.ThrowIfCancellationRequested();
+                int read = input.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                output.Write(buffer, 0, read);
             }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    private static void ValidateRotateInputs(PayloadRotateInputs inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        ArgumentNullException.ThrowIfNull(inputs.CurrentInputs);
+        if (string.IsNullOrWhiteSpace(inputs.NewPassword))
+        {
+            throw new ArgumentException("New payload password is required.", nameof(inputs));
         }
     }
 
     internal static bool LooksLikePayloadV3(Stream input)
     {
+        ArgumentNullException.ThrowIfNull(input);
+        if (!input.CanRead || !input.CanSeek)
+        {
+            return false;
+        }
+
         long originalPosition = input.Position;
         try
         {
@@ -277,19 +339,49 @@ internal static class PayloadChunkedService
         int argonMemoryKb = reader.ReadInt32();
         int argonParallelism = reader.ReadInt32();
         int chunkSize = reader.ReadInt32();
+        if (algorithmId != AlgorithmIdAes256Gcm)
+        {
+            throw new InvalidDataException("Unsupported payload algorithm.");
+        }
+
+        if (kdfId != KdfIdArgon2Id)
+        {
+            throw new InvalidDataException("Unsupported payload key derivation.");
+        }
+
+        if (argonIterations <= 0 || argonMemoryKb <= 0 || argonParallelism <= 0)
+        {
+            throw new InvalidDataException("Invalid payload key-derivation parameters.");
+        }
+
+        if (chunkSize <= 0)
+        {
+            throw new InvalidDataException("Invalid payload chunk size.");
+        }
+
         int noncePrefixLength = reader.ReadByte();
-        byte[] noncePrefix = reader.ReadBytes(noncePrefixLength);
+        if (noncePrefixLength != NoncePrefixSize)
+        {
+            throw new InvalidDataException("Invalid payload nonce prefix length.");
+        }
+
+        byte[] noncePrefix = ReadRequiredBytes(reader, noncePrefixLength, "nonce prefix");
         int slotCount = reader.ReadByte();
+        if (slotCount <= 0)
+        {
+            throw new InvalidDataException("Payload header does not contain any key slots.");
+        }
+
         var slots = new List<WrappedKeySlot>(slotCount);
 
         for (int i = 0; i < slotCount; i++)
         {
             slots.Add(new WrappedKeySlot(
                 (PayloadKeySlotKind)reader.ReadByte(),
-                reader.ReadBytes(SaltSize),
-                reader.ReadBytes(NonceSize),
-                reader.ReadBytes(TagSize),
-                reader.ReadBytes(DekSize)));
+                ReadRequiredBytes(reader, SaltSize, "key-slot salt"),
+                ReadRequiredBytes(reader, NonceSize, "key-slot nonce"),
+                ReadRequiredBytes(reader, TagSize, "key-slot tag"),
+                ReadRequiredBytes(reader, DekSize, "wrapped data-encryption key")));
         }
 
         return new PayloadHeader(
@@ -306,19 +398,47 @@ internal static class PayloadChunkedService
             input.Position);
     }
 
-    private static List<WrappedKeySlot> CreateWrappedSlots(byte[] dek, PayloadWriteInputs inputs)
+    private static byte[] ReadRequiredBytes(BinaryReader reader, int count, string description)
     {
-        var slots = new List<WrappedKeySlot>
+        byte[] bytes = reader.ReadBytes(count);
+        if (bytes.Length != count)
         {
-            CreateWrappedSlot(PayloadKeySlotKind.Password, inputs.Password, inputs.KeyfileBytes, dek)
-        };
-
-        if (!string.IsNullOrWhiteSpace(inputs.RecoveryKey))
-        {
-            slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Recovery, inputs.RecoveryKey, null, dek));
+            throw new InvalidDataException($"Payload header is truncated while reading {description}.");
         }
 
-        return slots;
+        return bytes;
+    }
+
+    private static List<WrappedKeySlot> CreateWrappedSlots(byte[] dek, PayloadWriteInputs inputs)
+    {
+        var slots = new List<WrappedKeySlot>();
+        try
+        {
+            slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Password, inputs.Password, inputs.KeyfileBytes, dek));
+
+            if (!string.IsNullOrWhiteSpace(inputs.RecoveryKey))
+            {
+                slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Recovery, inputs.RecoveryKey, null, dek));
+            }
+
+            return slots;
+        }
+        catch
+        {
+            ClearWrappedSlots(slots);
+            throw;
+        }
+    }
+
+    private static void ClearWrappedSlots(IEnumerable<WrappedKeySlot> slots)
+    {
+        foreach (WrappedKeySlot slot in slots)
+        {
+            CryptographicOperations.ZeroMemory(slot.Salt);
+            CryptographicOperations.ZeroMemory(slot.Nonce);
+            CryptographicOperations.ZeroMemory(slot.Tag);
+            CryptographicOperations.ZeroMemory(slot.WrappedDek);
+        }
     }
 
     private static WrappedKeySlot CreateWrappedSlot(PayloadKeySlotKind kind, string secretText, byte[]? keyfileBytes, byte[] dek)
@@ -328,16 +448,26 @@ internal static class PayloadChunkedService
         byte[] tag = new byte[TagSize];
         byte[] wrappedDek = new byte[dek.Length];
         byte[] kek = DeriveArgon2Key(secretText, salt, keyfileBytes);
+        bool slotAssigned = false;
 
         try
         {
             using var aes = new AesGcm(kek, TagSize);
             aes.Encrypt(nonce, dek, wrappedDek, tag);
-            return new WrappedKeySlot(kind, salt, nonce, tag, wrappedDek);
+            WrappedKeySlot slot = new(kind, salt, nonce, tag, wrappedDek);
+            slotAssigned = true;
+            return slot;
         }
         finally
         {
             CryptographicOperations.ZeroMemory(kek);
+            if (!slotAssigned)
+            {
+                CryptographicOperations.ZeroMemory(salt);
+                CryptographicOperations.ZeroMemory(nonce);
+                CryptographicOperations.ZeroMemory(tag);
+                CryptographicOperations.ZeroMemory(wrappedDek);
+            }
         }
     }
 
@@ -532,14 +662,20 @@ internal static class PayloadChunkedService
         public override void Write(ReadOnlySpan<byte> buffer)
         {
             byte[] temp = buffer.ToArray();
-            Write(temp, 0, temp.Length);
+            try
+            {
+                Write(temp, 0, temp.Length);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(temp);
+            }
         }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                Complete();
                 CryptographicOperations.ZeroMemory(_buffer);
             }
 
@@ -574,17 +710,19 @@ internal static class PayloadChunkedService
         private readonly Stream _input;
         private readonly byte[] _dek;
         private readonly byte[] _noncePrefix;
+        private readonly int _chunkSize;
         private readonly CancellationToken _cancellationToken;
         private byte[] _buffer = Array.Empty<byte>();
         private int _bufferOffset;
         private int _chunkIndex;
         private bool _completed;
 
-        internal ChunkDecryptingStream(Stream input, byte[] dek, byte[] noncePrefix, CancellationToken cancellationToken)
+        internal ChunkDecryptingStream(Stream input, byte[] dek, byte[] noncePrefix, int chunkSize, CancellationToken cancellationToken)
         {
             _input = input;
             _dek = dek;
             _noncePrefix = noncePrefix;
+            _chunkSize = chunkSize;
             _cancellationToken = cancellationToken;
         }
 
@@ -649,9 +787,19 @@ internal static class PayloadChunkedService
             _cancellationToken.ThrowIfCancellationRequested();
             byte[] lengthBytes = PayloadChunkedService.ReadExactly(_input, sizeof(int));
             int chunkLength = BinaryPrimitives.ReadInt32LittleEndian(lengthBytes);
+            if (chunkLength < 0 || chunkLength > _chunkSize)
+            {
+                throw new InvalidDataException("Invalid payload chunk length.");
+            }
+
             if (chunkLength == 0)
             {
                 _completed = true;
+                if (_buffer.Length > 0)
+                {
+                    CryptographicOperations.ZeroMemory(_buffer);
+                }
+
                 _buffer = Array.Empty<byte>();
                 _bufferOffset = 0;
                 return;
@@ -660,24 +808,37 @@ internal static class PayloadChunkedService
             byte[] tag = PayloadChunkedService.ReadExactly(_input, TagSize);
             byte[] ciphertext = PayloadChunkedService.ReadExactly(_input, chunkLength);
             byte[] plaintext = new byte[chunkLength];
-            Span<byte> nonce = stackalloc byte[NonceSize];
-            _noncePrefix.CopyTo(nonce[..NoncePrefixSize]);
-            BinaryPrimitives.WriteInt32LittleEndian(nonce[NoncePrefixSize..], _chunkIndex);
-            byte[] aad = BitConverter.GetBytes(_chunkIndex);
+            bool plaintextAssigned = false;
 
-            using (var aes = new AesGcm(_dek, TagSize))
+            try
             {
-                aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
-            }
+                Span<byte> nonce = stackalloc byte[NonceSize];
+                _noncePrefix.CopyTo(nonce[..NoncePrefixSize]);
+                BinaryPrimitives.WriteInt32LittleEndian(nonce[NoncePrefixSize..], _chunkIndex);
+                byte[] aad = BitConverter.GetBytes(_chunkIndex);
 
-            if (_buffer.Length > 0)
+                using (var aes = new AesGcm(_dek, TagSize))
+                {
+                    aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+                }
+
+                if (_buffer.Length > 0)
+                {
+                    CryptographicOperations.ZeroMemory(_buffer);
+                }
+
+                _buffer = plaintext;
+                plaintextAssigned = true;
+                _bufferOffset = 0;
+                _chunkIndex++;
+            }
+            finally
             {
-                CryptographicOperations.ZeroMemory(_buffer);
+                if (!plaintextAssigned)
+                {
+                    CryptographicOperations.ZeroMemory(plaintext);
+                }
             }
-
-            _buffer = plaintext;
-            _bufferOffset = 0;
-            _chunkIndex++;
         }
     }
 }

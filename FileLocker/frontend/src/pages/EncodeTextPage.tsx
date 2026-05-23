@@ -45,6 +45,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
   const [format, setFormat] = useState("Base64")
   const [input, setInput] = useState("")
   const [output, setOutput] = useState("")
+  const [conversionError, setConversionError] = useState("")
   const [preserveLineBreaks, setPreserveLineBreaks] = useState(true)
   const [isRunning, setIsRunning] = useState(false)
 
@@ -55,23 +56,89 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
     ? "Waiting for input"
     : isRunning
       ? "Converting"
+      : conversionError
+        ? "Failed"
       : output
         ? "Ready"
         : "Input ready"
+  const outputStatusText = isRunning ? "Converting" : conversionError ? "Conversion failed" : output ? "Generated successfully" : "Run a conversion to populate output"
+  const outputBadgeText = isRunning ? "Converting" : conversionError ? "Failed" : output ? "Ready" : "Waiting"
 
   const quickExample = useMemo(() => exampleInputs[format] ?? exampleInputs.Base64, [format])
 
   async function run() {
+    if (isRunning) {
+      return
+    }
+
+    if (!input) {
+      toast.error("Enter text before running a conversion.")
+      return
+    }
+
+    setOutput("")
+    setConversionError("")
     setIsRunning(true)
     try {
       const response = await invoke<{ output: string; inputLength: number; outputLength: number }>("text.convert", { mode, format, input, preserveLineBreaks })
       setOutput(response.output)
       toast.success(`${format} ${mode === "decode" ? "decoded" : "encoded"}.`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Conversion failed.")
+      const message = error instanceof Error && error.message ? error.message : "Conversion failed."
+      setConversionError(message)
+      toast.error(message)
     } finally {
       setIsRunning(false)
     }
+  }
+
+  function updateInput(value: string) {
+    if (isRunning) {
+      return
+    }
+
+    setInput(value)
+    setOutput("")
+    setConversionError("")
+  }
+
+  function updateMode(value: string) {
+    if (isRunning) {
+      return
+    }
+
+    if (value !== mode) {
+      setOutput("")
+      setConversionError("")
+    }
+
+    setMode(value)
+  }
+
+  function updateFormat(value: string) {
+    if (isRunning) {
+      return
+    }
+
+    if (value !== format) {
+      setOutput("")
+      setConversionError("")
+    }
+
+    setFormat(value)
+  }
+
+  function updatePreserveLineBreaks(value: boolean) {
+    if (isRunning) {
+      return
+    }
+
+    if (value !== preserveLineBreaks) {
+      setOutput("")
+      setConversionError("")
+    }
+
+    setPreserveLineBreaks(value)
   }
 
   async function copyOutput() {
@@ -79,18 +146,32 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
       return
     }
 
-    await navigator.clipboard.writeText(output)
-    toast.success("Output copied.")
+    try {
+      await navigator.clipboard.writeText(output)
+      toast.success("Output copied.")
+    } catch {
+      toast.error("Output could not be copied.")
+    }
   }
 
   function loadExample() {
+    if (isRunning) {
+      return
+    }
+
     setInput(quickExample)
     setOutput("")
+    setConversionError("")
   }
 
   function clearAll() {
+    if (isRunning) {
+      return
+    }
+
     setInput("")
     setOutput("")
+    setConversionError("")
   }
 
   return (
@@ -159,14 +240,15 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                 <div className="rounded-md border border-border/80 bg-background/35 p-3">
                   <Textarea
                     value={input}
-                    onChange={(event) => setInput(event.target.value)}
+                    onChange={(event) => updateInput(event.target.value)}
                     placeholder="Enter text to encode or decode"
                     className="min-h-[180px] border-none bg-transparent px-0 py-0 font-mono text-sm leading-snug shadow-none focus-visible:ring-0"
+                    disabled={isRunning}
                   />
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={loadExample} variant="secondary">
+                  <Button onClick={loadExample} variant="secondary" disabled={isRunning}>
                     <FileText data-icon="inline-start" />
                     Load Example
                   </Button>
@@ -174,7 +256,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                     <RefreshCw data-icon="inline-start" className={cn(isRunning && "animate-spin")} />
                     {isRunning ? "Converting" : "Run Conversion"}
                   </Button>
-                  <Button onClick={clearAll} variant="outline" disabled={!input && !output}>
+                  <Button onClick={clearAll} variant="outline" disabled={(!input && !output) || isRunning}>
                     <Eraser data-icon="inline-start" />
                     Clear
                   </Button>
@@ -189,20 +271,20 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                     <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Conversion Output</SectionTitle>
                     <p className="mt-1 text-sm leading-snug text-secondary">{outputLength} characters</p>
                   </div>
-                  <Badge variant={output ? "secondary" : "outline"}>{output ? "Ready" : "Waiting"}</Badge>
+                  <Badge variant={conversionError ? "destructive" : output ? "secondary" : "outline"}>{outputBadgeText}</Badge>
                 </div>
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="text-sm text-secondary">{modeLabel} using {format}</div>
-                <div className="rounded-md border border-sky-400/55 bg-background/35 px-3 py-3">
-                  <pre className={cn("min-h-[150px] whitespace-pre-wrap break-all font-mono text-sm leading-snug", output ? "text-primary" : "text-secondary")}>
-                    {output || "No output. Run a conversion to generate text."}
+                <div className={cn("rounded-md border bg-background/35 px-3 py-3", conversionError ? "border-destructive/55" : "border-sky-400/55")}>
+                  <pre className={cn("min-h-[150px] whitespace-pre-wrap break-all font-mono text-sm leading-snug", conversionError ? "text-red-100" : output ? "text-primary" : "text-secondary")}>
+                    {conversionError || output || "No output. Run a conversion to generate text."}
                   </pre>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className={cn("rounded-md border px-3 py-2 text-sm leading-snug", output ? "border-accent-green/25 bg-accent-green/8 text-accent-green" : "border-border/80 bg-background/35 text-secondary")}>
-                    {output ? "Generated successfully" : "Run a conversion to populate output"}
+                  <div className={cn("rounded-md border px-3 py-2 text-sm leading-snug", conversionError ? "border-destructive/25 bg-destructive/10 text-red-100" : output ? "border-accent-green/25 bg-accent-green/8 text-accent-green" : "border-border/80 bg-background/35 text-secondary")}>
+                    {outputStatusText}
                   </div>
                   <Button onClick={() => void copyOutput()} disabled={!output}>
                     <Copy data-icon="inline-start" />
@@ -225,7 +307,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <Field label="Mode">
-                  <Select value={mode} onValueChange={setMode}>
+                  <Select value={mode} onValueChange={updateMode} disabled={isRunning}>
                     <SelectTrigger>
                       <SelectValue placeholder="Mode" />
                     </SelectTrigger>
@@ -239,7 +321,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                 </Field>
 
                 <Field label="Format">
-                  <Select value={format} onValueChange={setFormat}>
+                  <Select value={format} onValueChange={updateFormat} disabled={isRunning}>
                     <SelectTrigger>
                       <SelectValue placeholder="Format" />
                     </SelectTrigger>
@@ -260,7 +342,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                     <span className="block font-display text-sm font-semibold tracking-tight text-primary">Preserve line breaks</span>
                     <span className="mt-0.5 block text-xs leading-snug text-secondary">Keep line breaks when safe for the chosen format.</span>
                   </span>
-                  <Switch checked={preserveLineBreaks} onCheckedChange={setPreserveLineBreaks} />
+                  <Switch checked={preserveLineBreaks} onCheckedChange={updatePreserveLineBreaks} disabled={isRunning} />
                 </label>
               </SectionBody>
             </Section>
@@ -279,7 +361,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                 <SummaryRow icon={Languages} label="Format" value={format} />
                 <SummaryRow icon={FileText} label="Input length" value={`${inputLength} characters`} />
                 <SummaryRow icon={FileText} label="Output length" value={`${outputLength} characters`} />
-                <SummaryRow icon={output ? CheckCircle2 : Info} label="Status" value={statusText} good={Boolean(output)} />
+                <SummaryRow icon={conversionError ? Info : output ? CheckCircle2 : Info} label="Status" value={statusText} good={Boolean(output)} />
               </SectionBody>
             </Section>
 
@@ -305,7 +387,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                   <Binary data-icon="inline-start" />
                   {isRunning ? "Converting" : "Run Conversion"}
                 </Button>
-                <Button className="flex-1" variant="outline" onClick={clearAll} disabled={!input && !output}>
+                <Button className="flex-1" variant="outline" onClick={clearAll} disabled={(!input && !output) || isRunning}>
                   <Eraser data-icon="inline-start" />
                   Clear
                 </Button>

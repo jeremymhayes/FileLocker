@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type DragEvent } from "react"
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react"
 import {
   BookOpen,
   CheckCircle2,
@@ -11,6 +11,7 @@ import {
   Info,
   ShieldCheck,
   Trash2,
+  TriangleAlertIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -67,6 +68,16 @@ type HashFilesPageProps = {
   onDroppedPathsHandled?: () => void
 }
 
+type RunningHashAction = "hash" | "manifest" | null
+type ExpectedHashState = {
+  isPresent: boolean
+  isSupported: boolean
+  normalized: string
+}
+
+const supportedHashPattern = /^[0-9a-fA-F]+$/
+const expectedHashStatusId = "hash-expected-status"
+
 const hashGuidePoints = [
   "SHA-256 is the recommended general-purpose file fingerprint for integrity checks.",
   "Hashes verify whether file contents changed. They do not hide file contents or encrypt anything.",
@@ -79,21 +90,58 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
   const [algorithm, setAlgorithm] = useState("SHA-256")
   const [expectedHash, setExpectedHash] = useState("")
   const [result, setResult] = useState<HashResponse | null>(null)
+  const [hashError, setHashError] = useState("")
   const [manifest, setManifest] = useState<HashManifestResponse | null>(null)
+  const [manifestError, setManifestError] = useState("")
   const [verification, setVerification] = useState("Not verified")
-  const [isRunning, setIsRunning] = useState(false)
+  const [verificationError, setVerificationError] = useState("")
+  const [runningAction, setRunningAction] = useState<RunningHashAction>(null)
   const [pathDetails, setPathDetails] = useState<DescribePathsResponse["items"]>([])
   const [pathWarnings, setPathWarnings] = useState<string[]>([])
   const [isDescribingPaths, setIsDescribingPaths] = useState(false)
+  const isRunning = runningAction !== null
+
+  const resetGeneratedOutputs = useCallback(() => {
+    setResult(null)
+    setHashError("")
+    setManifest(null)
+    setManifestError("")
+    setVerification("Not verified")
+    setVerificationError("")
+  }, [])
+
+  const replacePaths = useCallback((nextPaths: string[]) => {
+    if (isRunning) {
+      toast.error("Wait for the current hash operation to finish before changing the selection.")
+      return
+    }
+
+    resetGeneratedOutputs()
+    setPaths(nextPaths)
+  }, [isRunning, resetGeneratedOutputs])
+
+  const addPaths = useCallback((nextPaths: string[]) => {
+    if (nextPaths.length === 0) {
+      return
+    }
+
+    if (isRunning) {
+      toast.error("Wait for the current hash operation to finish before changing the selection.")
+      return
+    }
+
+    resetGeneratedOutputs()
+    setPaths((current) => mergeUniquePaths(current, nextPaths))
+  }, [isRunning, resetGeneratedOutputs])
 
   useEffect(() => {
     if (droppedPaths.length === 0) {
       return
     }
 
-    setPaths((current) => mergeUniquePaths(current, droppedPaths))
+    addPaths(droppedPaths)
     onDroppedPathsHandled?.()
-  }, [droppedPaths, onDroppedPathsHandled])
+  }, [addPaths, droppedPaths, onDroppedPathsHandled])
 
   useEffect(() => {
     if (paths.length === 0) {
@@ -114,10 +162,12 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
         setPathDetails(response.items)
         setPathWarnings(response.warnings)
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setPathDetails([])
-          setPathWarnings([])
+          setPathWarnings([error instanceof Error && error.message
+            ? `Unable to read selected file details. ${error.message}`
+            : "Unable to read selected file details."])
         }
       })
       .finally(() => {
@@ -144,33 +194,96 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Hash" || entry.operation === "Hash Manifest").slice(0, 5),
     [dashboard]
   )
-  const canHash = paths.length > 0 && !isRunning
-  const canVerify = Boolean(result?.hash) && expectedHash.trim().length > 0
+  const selectedFile = pathDetails.find((item) => !item.isDirectory) ?? (pathDetails.length === 0 && selectedItem ? selectedItem : null)
+  const isHashing = runningAction === "hash"
+  const isSavingManifest = runningAction === "manifest"
+  const expectedHashState = useMemo(() => getExpectedHashState(expectedHash), [expectedHash])
+  const expectedHashInvalid = expectedHashState.isPresent && !expectedHashState.isSupported
+  const canHash = Boolean(selectedFile) && !isRunning && !isDescribingPaths
+  const canVerify = Boolean(result?.hash) && expectedHashState.isSupported && !isRunning
   const verificationGood = verification === "Match"
-  const currentStatus = result?.hash ? "Ready" : paths.length > 0 ? "Waiting" : "No file selected"
+  const verificationHasIssue = verification === "Mismatch" || expectedHashInvalid || Boolean(verificationError)
+  const VerificationStatusIcon = verificationGood ? CheckCircle2 : verificationHasIssue ? TriangleAlertIcon : Info
+  const verificationReadyTitle = verificationError ? "Verification failed" : expectedHashInvalid ? "Check expected hash" : "Ready to verify"
+  const verificationReadyDescription = expectedHashInvalid
+    ? "Paste a SHA-256 or SHA-512 hash before verifying."
+    : verificationError || "Paste a known hash to compare against the generated result."
+  const currentStatus = isHashing ? "Hashing" : isSavingManifest ? "Saving manifest" : hashError ? "Failed" : result?.hash ? "Ready" : paths.length > 0 ? "Waiting" : "No file selected"
+  const hashOutputStatus = isHashing
+    ? "Generating file hash"
+    : isSavingManifest
+      ? "Saving manifest for selected paths"
+      : hashError
+        ? "Hash generation failed"
+      : result?.hash
+        ? "Generated successfully"
+        : canHash
+          ? "Waiting for file and algorithm selection"
+          : "Select a file target to generate a single hash"
   const hashOutputTitle = result ? `${result.algorithm} Hash` : `${algorithm} Hash`
 
   async function pickFiles() {
-    const response = await invoke<{ paths: string[] }>("files.pickFiles")
-    setPaths(response.paths)
-  }
-
-  async function pickFolder() {
-    const response = await invoke<{ path: string }>("files.pickFolder")
-    if (response.path) {
-      setPaths((current) => mergeUniquePaths(current, [response.path]))
+    try {
+      const response = await invoke<{ paths: string[] }>("files.pickFiles")
+      replacePaths(response.paths)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick files.")
     }
   }
 
+  async function pickFolder() {
+    try {
+      const response = await invoke<{ path: string }>("files.pickFolder")
+      if (response.path) {
+        addPaths([response.path])
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to pick a folder.")
+    }
+  }
+
+  function handleDropZoneDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = isRunning ? "none" : "copy"
+  }
+
+  function handleAlgorithmChange(nextAlgorithm: string) {
+    if (isRunning) {
+      return
+    }
+
+    if (nextAlgorithm === algorithm) {
+      return
+    }
+
+    resetGeneratedOutputs()
+    setAlgorithm(nextAlgorithm)
+  }
+
+  function handleExpectedHashChange(nextExpectedHash: string) {
+    setExpectedHash(nextExpectedHash)
+    setVerification("Not verified")
+    setVerificationError("")
+  }
+
   async function compute() {
-    if (paths.length === 0) {
+    if (isRunning) {
+      return
+    }
+
+    if (!selectedFile) {
       toast.error("Select one file to hash.")
       return
     }
 
-    setIsRunning(true)
+    setRunningAction("hash")
+    setResult(null)
+    setHashError("")
+    setManifestError("")
+    setVerification("Not verified")
+    setVerificationError("")
     try {
-      const response = await invoke<HashResponse>("hash.compute", { path: paths[0], algorithm, operationId: crypto.randomUUID() })
+      const response = await invoke<HashResponse>("hash.compute", { path: selectedFile.fullPath, algorithm, operationId: crypto.randomUUID() })
       setResult(response)
       setVerification("Not verified")
       if (response.dashboard) {
@@ -178,49 +291,82 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
       }
       toast.success(`${response.algorithm} hash generated for ${response.fileName}.`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Hash generation failed.")
+      const message = error instanceof Error && error.message ? error.message : "Hash generation failed."
+      setHashError(message)
+      toast.error(message)
     } finally {
-      setIsRunning(false)
+      setRunningAction(null)
     }
   }
 
   async function verify() {
+    if (isRunning) {
+      return
+    }
+
     if (!result?.hash) {
       toast.error("Generate a hash first.")
       return
     }
 
-    const response = await invoke<{ match: boolean; status: string }>("hash.verify", { generatedHash: result.hash, expectedHash })
-    setVerification(response.status)
-    toast[response.match ? "success" : "error"](response.match ? "Hash matches." : "Hash mismatch.")
+    if (!expectedHashState.isSupported) {
+      toast.error(expectedHashState.isPresent ? "Paste a SHA-256 or SHA-512 hash before verifying." : "Paste an expected hash before verifying.")
+      return
+    }
+
+    try {
+      setVerificationError("")
+      const response = await invoke<{ match: boolean; status: string }>("hash.verify", { generatedHash: result.hash, expectedHash })
+      setVerification(response.status)
+      toast[response.match ? "success" : "error"](response.match ? "Hash matches." : "Hash mismatch.")
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Hash verification failed."
+      setVerification("Failed")
+      setVerificationError(message)
+      toast.error(message)
+    }
   }
 
   async function copyHash() {
     if (!result?.hash) {
       return
     }
-    await navigator.clipboard.writeText(result.hash)
-    toast.success("Hash copied.")
+
+    try {
+      await navigator.clipboard.writeText(result.hash)
+      toast.success("Hash copied.")
+    } catch {
+      toast.error("Hash could not be copied.")
+    }
   }
 
   async function generateManifest() {
+    if (isRunning) {
+      return
+    }
+
     if (paths.length === 0) {
       toast.error("Select files or folders for the manifest.")
       return
     }
 
-    setIsRunning(true)
+    setRunningAction("manifest")
+    setManifest(null)
+    setManifestError("")
     try {
       const response = await invoke<HashManifestResponse>("hash.manifestCreate", { paths, algorithm })
       setManifest(response)
+      setManifestError("")
       if (response.dashboard) {
         onDashboardUpdate(response.dashboard)
       }
       toast.success(`Generated ${response.algorithm} manifest for ${response.fileCount} file(s).`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Manifest generation failed.")
+      const message = error instanceof Error && error.message ? error.message : "Manifest generation failed."
+      setManifestError(message)
+      toast.error(message)
     } finally {
-      setIsRunning(false)
+      setRunningAction(null)
     }
   }
 
@@ -243,16 +389,22 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
     }
 
     const text = `${result.algorithm}: ${result.hash}`
-    await navigator.clipboard.writeText(text)
-    toast.success("Hash results copied.")
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success("Hash results copied.")
+    } catch {
+      toast.error("Hash results could not be copied.")
+    }
   }
 
   function clearSelection() {
+    if (isRunning) {
+      return
+    }
+
     setPaths([])
-    setResult(null)
-    setManifest(null)
+    resetGeneratedOutputs()
     setExpectedHash("")
-    setVerification("Not verified")
   }
 
   return (
@@ -308,31 +460,36 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
             <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
               <SectionBody className="px-4 py-3">
                 <div
-                  className="flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-sky-400/70"
-                  onDragOver={(event: DragEvent<HTMLDivElement>) => event.preventDefault()}
+                  className={cn(
+                    "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-sky-400/70",
+                    isRunning && "cursor-not-allowed opacity-70"
+                  )}
+                  role="group"
+                  aria-label="Hash file drop zone"
+                  aria-describedby="hash-drop-zone-description"
+                  aria-disabled={isRunning}
+                  onDragOver={handleDropZoneDragOver}
                   onDrop={(event: DragEvent<HTMLDivElement>) => {
                     event.preventDefault()
                     const droppedPaths = Array.from(event.dataTransfer.files)
                       .map((file) => (file as File & { path?: string }).path)
                       .filter((path): path is string => Boolean(path))
-                    if (droppedPaths.length > 0) {
-                      setPaths((current) => mergeUniquePaths(current, droppedPaths))
-                    }
+                    addPaths(droppedPaths)
                   }}
                 >
                   <div className="flex size-8 items-center justify-center rounded-md border border-sky-400/30 bg-sky-400/10 text-sky-300">
                     <FileDigit className="size-5" aria-hidden />
                   </div>
                   <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drop a file here to generate a hash</h3>
-                  <p className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
+                  <p id="hash-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
                     Choose a file for a single hash or add multiple files and folders when you want a manifest for broader integrity tracking.
                   </p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
-                    <Button variant="default" onClick={() => void pickFiles()}>
+                    <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse File
                     </Button>
-                    <Button variant="secondary" onClick={() => void pickFolder()}>
+                    <Button variant="secondary" onClick={() => void pickFolder()} disabled={isRunning}>
                       <FolderOpen data-icon="inline-start" />
                       Browse Folder
                     </Button>
@@ -385,7 +542,7 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
                         <SelectedInfo label="Status" value={paths.length > 0 ? "Ready" : "Waiting"} good={paths.length > 0} />
                       </div>
 
-                      <Button variant="outline" onClick={clearSelection}>
+                      <Button variant="outline" onClick={clearSelection} disabled={isRunning}>
                         <Trash2 data-icon="inline-start" />
                         Remove
                       </Button>
@@ -405,14 +562,14 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="text-sm text-secondary">{hashOutputTitle}</div>
-                <div className="rounded-md border border-sky-400/55 bg-background/35 px-3 py-3">
-                  <div className={cn("break-all font-mono text-sm leading-snug", result?.hash ? "text-primary" : "text-secondary")}>
-                    {result?.hash ?? "Generate a hash to populate the digest output."}
+                <div className={cn("rounded-md border bg-background/35 px-3 py-3", hashError ? "border-destructive/55" : "border-sky-400/55")}>
+                  <div className={cn("break-all font-mono text-sm leading-snug", hashError ? "text-red-100" : result?.hash ? "text-primary" : "text-secondary")}>
+                    {hashError || result?.hash || "Generate a hash to populate the digest output."}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="rounded-md border border-accent-green/25 bg-accent-green/8 px-3 py-2 text-sm leading-snug text-accent-green">
-                    {result?.hash ? "Generated successfully" : "Waiting for file and algorithm selection"}
+                  <div className={cn("rounded-md border px-3 py-2 text-sm leading-snug", hashError ? "border-destructive/25 bg-destructive/10 text-red-100" : "border-accent-green/25 bg-accent-green/8 text-accent-green")}>
+                    {hashOutputStatus}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button onClick={() => void copyHash()} disabled={!result?.hash}>
@@ -421,7 +578,7 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
                     </Button>
                     <Button variant="secondary" onClick={() => void generateManifest()} disabled={isRunning || paths.length === 0}>
                       <Hash data-icon="inline-start" />
-                      Save Result
+                      {isSavingManifest ? "Saving" : "Save Manifest"}
                     </Button>
                   </div>
                 </div>
@@ -435,6 +592,11 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
                         Show Manifest
                       </Button>
                     </div>
+                  </div>
+                ) : null}
+                {manifestError ? (
+                  <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm leading-snug text-secondary" role="status" aria-live="polite">
+                    {manifestError}
                   </div>
                 ) : null}
               </SectionBody>
@@ -453,7 +615,7 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <Field label="Select algorithm">
-                  <Select value={algorithm} onValueChange={setAlgorithm}>
+                  <Select value={algorithm} onValueChange={handleAlgorithmChange} disabled={isRunning}>
                     <SelectTrigger>
                       <SelectValue placeholder="Algorithm" />
                     </SelectTrigger>
@@ -482,22 +644,22 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="flex gap-3">
-                  <Input value={expectedHash} onChange={(event) => setExpectedHash(event.target.value)} placeholder="Paste expected hash to verify" />
+                  <Input value={expectedHash} onChange={(event) => handleExpectedHashChange(event.target.value)} placeholder="Paste expected hash to verify" aria-label="Expected hash" aria-invalid={expectedHashInvalid || undefined} aria-describedby={expectedHashStatusId} />
                   <Button onClick={() => void verify()} disabled={!canVerify}>
                     Verify
                   </Button>
                 </div>
-                <div className={cn("rounded-md border px-3 py-3", verificationGood ? "border-accent-green/35 bg-accent-green/8" : verification === "Mismatch" ? "border-accent-red/35 bg-accent-red/8" : "border-border/80 bg-background/35")}>
+                <div className={cn("rounded-md border px-3 py-3", verificationGood ? "border-accent-green/35 bg-accent-green/8" : verificationHasIssue ? "border-accent-red/35 bg-accent-red/8" : "border-border/80 bg-background/35")}>
                   <div className="flex items-start gap-2.5">
-                    <div className={cn("mt-0.5 flex size-7 items-center justify-center rounded-md border", verificationGood ? "border-accent-green/30 bg-accent-green/10 text-accent-green" : verification === "Mismatch" ? "border-accent-red/30 bg-accent-red/10 text-accent-red" : "border-border/70 bg-background/40 text-secondary")}>
-                      <CheckCircle2 className="size-4" aria-hidden />
+                    <div className={cn("mt-0.5 flex size-7 items-center justify-center rounded-md border", verificationGood ? "border-accent-green/30 bg-accent-green/10 text-accent-green" : verificationHasIssue ? "border-accent-red/30 bg-accent-red/10 text-accent-red" : "border-border/70 bg-background/40 text-secondary")}>
+                      <VerificationStatusIcon className="size-4" aria-hidden />
                     </div>
                     <div>
-                      <div className={cn("font-display text-sm font-semibold tracking-tight", verificationGood ? "text-accent-green" : verification === "Mismatch" ? "text-accent-red" : "text-primary")}>
-                        {verificationGood ? "Hash matches" : verification === "Mismatch" ? "Hash mismatch" : "Ready to verify"}
+                      <div className={cn("font-display text-sm font-semibold tracking-tight", verificationGood ? "text-accent-green" : verificationHasIssue ? "text-accent-red" : "text-primary")}>
+                        {verificationGood ? "Hash matches" : verification === "Mismatch" ? "Hash mismatch" : verificationReadyTitle}
                       </div>
-                      <p className="mt-0.5 text-xs leading-snug text-secondary">
-                        {verificationGood ? "The file appears authentic." : verification === "Mismatch" ? "The generated hash does not match the value you supplied." : "Paste a known hash to compare against the generated result."}
+                      <p id={expectedHashStatusId} className="mt-0.5 text-xs leading-snug text-secondary" aria-live="polite">
+                        {verificationGood ? "The file appears authentic." : verification === "Mismatch" ? "The generated hash does not match the value you supplied." : verificationReadyDescription}
                       </p>
                     </div>
                   </div>
@@ -518,8 +680,8 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
                 <SummaryRow icon={FileText} label="File selected" value={selectedItem?.displayName ?? "None"} />
                 <SummaryRow icon={Hash} label="Algorithm" value={algorithm} />
                 <SummaryRow icon={Clock3} label="Hash length" value={result ? `${result.expectedLength} characters` : algorithm === "SHA-512" ? "128 characters" : "64 characters"} />
-                <SummaryRow icon={result?.hash ? CheckCircle2 : Clock3} label="Status" value={currentStatus} good={Boolean(result?.hash)} />
-                <SummaryRow icon={verificationGood ? CheckCircle2 : Info} label="Verification" value={verificationGood ? "Match" : verification} good={verificationGood} />
+                <SummaryRow icon={hashError ? TriangleAlertIcon : result?.hash ? CheckCircle2 : Clock3} label="Status" value={currentStatus} good={Boolean(result?.hash)} />
+                <SummaryRow icon={verificationError ? TriangleAlertIcon : verificationGood ? CheckCircle2 : Info} label="Verification" value={verificationGood ? "Match" : verification} good={verificationGood} />
               </SectionBody>
             </Section>
 
@@ -557,9 +719,9 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
               <SectionFooter className="flex gap-2 border-t border-border bg-transparent px-4 py-3">
                 <Button className="flex-1" onClick={() => void compute()} disabled={!canHash}>
                   <Hash data-icon="inline-start" />
-                  {isRunning ? "Hashing" : "Generate Hash"}
+                  {isHashing ? "Hashing" : "Generate Hash"}
                 </Button>
-                <Button className="flex-1" variant="outline" onClick={clearSelection} disabled={paths.length === 0}>
+                <Button className="flex-1" variant="outline" onClick={clearSelection} disabled={paths.length === 0 || isRunning}>
                   <Trash2 data-icon="inline-start" />
                   Clear
                 </Button>
@@ -606,4 +768,112 @@ function SummaryRow({ icon: Icon, label, value, good = false }: SummaryRowProps)
       <span className={cn("max-w-[13rem] truncate text-right font-display text-sm font-semibold tracking-tight", good ? "text-accent-green" : "text-primary")}>{value}</span>
     </div>
   )
+}
+
+function getExpectedHashState(input: string): ExpectedHashState {
+  const normalized = normalizeSupportedHash(input)
+  return {
+    isPresent: input.trim().length > 0,
+    isSupported: Boolean(normalized),
+    normalized,
+  }
+}
+
+function normalizeSupportedHash(input: string) {
+  if (!input.trim()) {
+    return ""
+  }
+
+  for (const candidate of enumerateHexRuns(input)) {
+    if (isSupportedHash(candidate)) {
+      return candidate.toLowerCase()
+    }
+  }
+
+  const compact = removeHashSeparators(input)
+  if (isSupportedHash(compact)) {
+    return compact.toLowerCase()
+  }
+
+  for (const candidate of enumerateSeparatedHexGroups(input)) {
+    const hash = getSupportedHashSuffix(candidate)
+    if (hash) {
+      return hash.toLowerCase()
+    }
+  }
+
+  return ""
+}
+
+function removeHashSeparators(input: string) {
+  let compact = ""
+  for (const character of input) {
+    if (/\s/.test(character) || character === "-" || character === ":") {
+      continue
+    }
+
+    if (!/[0-9a-fA-F]/.test(character)) {
+      return ""
+    }
+
+    compact += character
+  }
+
+  return compact
+}
+
+function enumerateHexRuns(input: string) {
+  return input.match(/[0-9a-fA-F]+/g) ?? []
+}
+
+function enumerateSeparatedHexGroups(input: string) {
+  const groups: string[] = []
+  let current = ""
+  for (const character of input) {
+    if (/[0-9a-fA-F]/.test(character)) {
+      current += character
+      continue
+    }
+
+    if (/\s/.test(character) || character === "-" || character === ":") {
+      continue
+    }
+
+    if (current.length > 0) {
+      groups.push(current)
+      current = ""
+    }
+  }
+
+  if (current.length > 0) {
+    groups.push(current)
+  }
+
+  return groups
+}
+
+function getSupportedHashSuffix(candidate: string) {
+  if (isSupportedHash(candidate)) {
+    return candidate
+  }
+
+  if (candidate.length > 128) {
+    const sha512 = candidate.slice(-128)
+    if (isSupportedHash(sha512)) {
+      return sha512
+    }
+  }
+
+  if (candidate.length > 64) {
+    const sha256 = candidate.slice(-64)
+    if (isSupportedHash(sha256)) {
+      return sha256
+    }
+  }
+
+  return ""
+}
+
+function isSupportedHash(value: string) {
+  return (value.length === 64 || value.length === 128) && supportedHashPattern.test(value)
 }

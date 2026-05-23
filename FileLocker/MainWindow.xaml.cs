@@ -92,7 +92,6 @@ namespace FileLocker
         private string _aboutUpdateStatusText = "Updates: automatic checks enabled";
         private bool _isCheckingForUpdates;
         private bool _isDownloadingUpdate;
-        private bool _hasStartedAutomaticUpdateCheck;
 
         // Advanced options properties
         public bool IsCompressModeEnabled { get; set; } = true;
@@ -273,7 +272,7 @@ namespace FileLocker
                 // Keep startup resilient when AppWindow customization is unavailable.
             }
 
-            _ = InitializeWebViewAsync(launchPaths, launchAction);
+            _ = InitializeWebViewSafelyAsync(launchPaths, launchAction);
         }
 
         private void MainWindow_Closed(object sender, WindowEventArgs args)
@@ -281,10 +280,23 @@ namespace FileLocker
             _isWindowClosed = true;
             _processingCancellation?.Cancel();
             _preflightRefreshCancellation?.Cancel();
+            CancelCurrentHashGeneration();
+            DetachWebViewHandlers();
         }
 
         private void ApplyWindowTitleBarColors()
         {
+            if (isDarkTheme)
+            {
+                NativeTitleBar.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 20, 28, 46));
+                NativeTitleBar.BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 11, 19, 32));
+            }
+            else
+            {
+                NativeTitleBar.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 248, 251, 255));
+                NativeTitleBar.BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 214, 224, 237));
+            }
+
             // Keep native window behavior intact; only tint the system title bar when supported.
             if (_appWindow?.TitleBar == null || !AppWindowTitleBar.IsCustomizationSupported())
             {

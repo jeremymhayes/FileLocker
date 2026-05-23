@@ -35,34 +35,14 @@ namespace FileLocker
     public sealed partial class MainWindow : Window
     {
         // --- Drag & Drop ---
-        private async void DropPanel_DragOver(object sender, DragEventArgs e)
+        private void DropPanel_DragOver(object sender, DragEventArgs e)
         {
             if (e.DataView.Contains(StandardDataFormats.StorageItems))
             {
                 e.AcceptedOperation = DataPackageOperation.Copy;
                 AnimateDropPanel(true);
-                var deferral = e.GetDeferral();
-                try
-                {
-                    var items = await e.DataView.GetStorageItemsAsync();
-                    int count = items.Count;
-                    DropLabel.Text = count > 0
-                        ? $"Release {count} item(s) to queue"
-                        : ActiveDropLabelText;
-                    DropHintText.Text = count > 0
-                        ? $"Encrypt will write to {BuildRunSummaryOutputLocation()} and {(RemoveOriginalsToggle.IsOn ? "remove originals after success." : "keep originals.")}"
-                        : "Drop files or folders anywhere in this area.";
-                }
-                catch
-                {
-                    DropLabel.Text = ActiveDropLabelText;
-                    DropHintText.Text = "Drop files or folders anywhere in this area.";
-                }
-                finally
-                {
-                    deferral.Complete();
-                }
-
+                DropLabel.Text = ActiveDropLabelText;
+                DropHintText.Text = $"Encrypt will write to {BuildRunSummaryOutputLocation()} and {(RemoveOriginalsToggle.IsOn ? "remove originals after success." : "keep originals.")}";
                 DropLabel.FontWeight = FontWeights.Bold;
             }
         }
@@ -75,7 +55,15 @@ namespace FileLocker
 
             if (e.DataView.Contains(StandardDataFormats.StorageItems))
             {
-                await ProcessDroppedFilesAsync(e.DataView);
+                var deferral = e.GetDeferral();
+                try
+                {
+                    await ProcessDroppedFilesAsync(e.DataView);
+                }
+                finally
+                {
+                    deferral.Complete();
+                }
             }
 
             UpdateDropHint();
@@ -108,20 +96,27 @@ namespace FileLocker
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Error processing dropped files: {ex.Message}");
+                await ShowErrorDialogAsync($"Error processing dropped files: {GetFriendlyExceptionMessage(ex, "Drop failed.")}");
             }
         }
 
         private async Task BrowseFiles()
         {
-            FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
-
-            var files = await picker.PickMultipleFilesAsync();
-            if (files.Count > 0)
+            try
             {
-                var filePaths = files.Select(f => f.Path).ToArray();
-                AddFilesToList(filePaths);
-                SetStatus($"Added {filePaths.Length} file(s)");
+                FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
+
+                var files = await picker.PickMultipleFilesAsync();
+                if (files.Count > 0)
+                {
+                    var filePaths = files.Select(f => f.Path).ToArray();
+                    AddFilesToList(filePaths);
+                    SetStatus($"Added {filePaths.Length} file(s)");
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse files: {GetFriendlyExceptionMessage(ex, "File picker failed.")}");
             }
         }
 
@@ -132,13 +127,20 @@ namespace FileLocker
 
         private async Task BrowseFolder()
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            try
             {
-                AddFilesToList([folder.Path]);
-                SetStatus($"Added folder: {folder.Name}");
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
+
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder != null)
+                {
+                    AddFilesToList([folder.Path]);
+                    SetStatus($"Added folder: {folder.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse folders: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
             }
         }
 
@@ -229,7 +231,7 @@ namespace FileLocker
                     }
                     catch (Exception ex)
                     {
-                        result.Warnings.Add($"Unable to read {Path.GetFileName(path)}: {ex.Message}");
+                        result.Warnings.Add($"Unable to read {Path.GetFileName(path)}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
                     }
 
                     continue;
@@ -258,6 +260,11 @@ namespace FileLocker
             while (pendingDirectories.Count > 0)
             {
                 string currentDirectory = pendingDirectories.Pop();
+                if (IsReparsePointDirectory(currentDirectory, warnings))
+                {
+                    continue;
+                }
+
                 IEnumerable<string> childDirectories;
                 try
                 {
@@ -265,12 +272,17 @@ namespace FileLocker
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {ex.Message}");
+                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "Folder scan failed.")}");
                     continue;
                 }
 
                 foreach (string childDirectory in childDirectories)
                 {
+                    if (IsReparsePointDirectory(childDirectory, warnings))
+                    {
+                        continue;
+                    }
+
                     pendingDirectories.Push(childDirectory);
                 }
 
@@ -281,7 +293,7 @@ namespace FileLocker
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {ex.Message}");
+                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
                     continue;
                 }
 
@@ -294,13 +306,31 @@ namespace FileLocker
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add($"Unable to inspect {file}: {ex.Message}");
+                        warnings.Add($"Unable to inspect {file}: {GetFriendlyExceptionMessage(ex, "File inspection failed.")}");
                         continue;
                     }
 
                     yield return new ExpandedQueueFile(file, rootFolderPath, true, fileInfo.Length);
                 }
             }
+        }
+
+        private static bool IsReparsePointDirectory(string directoryPath, ICollection<string> warnings)
+        {
+            try
+            {
+                if ((File.GetAttributes(directoryPath) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint)
+                {
+                    warnings.Add($"Skipped reparse-point folder: {directoryPath}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
+            }
+
+            return false;
         }
 
         private void ShowBatchInfoBar(string message, InfoBarSeverity severity)
@@ -501,12 +531,24 @@ namespace FileLocker
                 return;
             }
 
-            Process.Start(new ProcessStartInfo
+            try
             {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{item.SourcePath}\"",
-                UseShellExecute = true
-            });
+                using Process? process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{item.SourcePath}\"",
+                    UseShellExecute = true
+                });
+
+                if (process == null)
+                {
+                    throw new InvalidOperationException("Windows did not open Explorer.");
+                }
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to open file location: {GetFriendlyExceptionMessage(ex, "Explorer could not open the location.")}");
+            }
         }
 
         private void QueueItemRemoveButton_Click(object sender, RoutedEventArgs e)
@@ -796,7 +838,12 @@ namespace FileLocker
                 return;
             }
 
-            profileName = profileName.Trim();
+            profileName = NormalizeProfileName(profileName);
+            if (string.IsNullOrWhiteSpace(profileName))
+            {
+                return;
+            }
+
             _customProfiles.RemoveAll(profile => string.Equals(profile.Name, profileName, StringComparison.OrdinalIgnoreCase));
             _customProfiles.Add(new EncryptionProfile
             {
@@ -816,13 +863,53 @@ namespace FileLocker
                 IsBuiltIn = false
             });
 
-            SaveProfiles();
+            try
+            {
+                await SaveProfilesAsync();
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to save the profile: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+                SetStatus($"Profile was not saved: {profileName}");
+                return;
+            }
+
             RefreshProfileCombo();
             ProfileCombo.SelectedItem = profileName;
             UpdateProfilePresentation(FindProfile(profileName));
             UpdateRunSummaryBanner();
             UpdateSafetyBanner();
             SetStatus($"Saved profile: {profileName}");
+        }
+
+        private static string NormalizeProfileName(string? profileName)
+        {
+            if (string.IsNullOrWhiteSpace(profileName))
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder(profileName.Length);
+            bool pendingWhitespace = false;
+            foreach (char character in profileName.Trim())
+            {
+                if (char.IsControl(character) || char.IsWhiteSpace(character))
+                {
+                    pendingWhitespace = true;
+                    continue;
+                }
+
+                if (pendingWhitespace && builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(character);
+                pendingWhitespace = false;
+            }
+
+            string normalized = builder.ToString().Trim();
+            return normalized.Length > 80 ? normalized[..80] : normalized;
         }
 
         private void ConfigureModeOptions()
@@ -989,6 +1076,12 @@ namespace FileLocker
         // --- Encrypt/Decrypt ---
         private async void EncryptButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_isProcessing)
+            {
+                SetStatus("Wait for the current operation to finish.");
+                return;
+            }
+
             if (!await ValidateInputAsync(ProcessingIntent.Encrypt)) return;
             if (!await EnsureEncryptOutputDestinationAsync()) return;
             if (RemoveOriginalsToggle.IsOn &&
@@ -1003,6 +1096,12 @@ namespace FileLocker
 
         private async void DecryptButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_isProcessing)
+            {
+                SetStatus("Wait for the current operation to finish.");
+                return;
+            }
+
             if (!await ValidateInputAsync(ProcessingIntent.Decrypt)) return;
             if (RemoveOriginalsToggle.IsOn &&
                 !await ConfirmSourceDeletionAsync(ProcessingIntent.Decrypt, FileList.Count))
@@ -1016,12 +1115,24 @@ namespace FileLocker
 
         private async void InspectButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_isProcessing)
+            {
+                SetStatus("Wait for the current operation to finish.");
+                return;
+            }
+
             if (!await ValidateInputAsync(ProcessingIntent.Verify)) return;
             await ProcessFilesAsync(ProcessingIntent.Verify);
         }
 
         private async void RotateKeysButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_isProcessing)
+            {
+                SetStatus("Wait for the current operation to finish.");
+                return;
+            }
+
             if (FileList.Count == 0)
             {
                 await ShowErrorDialogAsync("Please queue one or more locked payload files first.");
@@ -1060,25 +1171,104 @@ namespace FileLocker
                     ? null
                     : RecoveryKeyBox.Text.Trim();
 
+            string currentPassword = PasswordBox.Password;
+            string currentKeyfilePath = KeyfilePathBox.Text?.Trim() ?? string.Empty;
+            string? currentRecoveryKey = string.IsNullOrWhiteSpace(RecoveryKeyBox.Text)
+                ? null
+                : RecoveryKeyBox.Text.Trim();
+            string newPasswordTrimmed = newPassword.Trim();
+            byte[]? keyfileBytes = null;
             int rotatedCount = 0;
-            foreach (QueuedFileItem item in FileList.ToList())
+            bool rotationCancelled = false;
+            try
             {
-                if (!File.Exists(item.SourcePath) || !IsPayloadV3File(item.SourcePath))
+                _isProcessing = true;
+                _processingCancellation = new CancellationTokenSource();
+                SetUIEnabled(false);
+                CancelRunButton.IsEnabled = true;
+                RefreshEncryptFilesState();
+                SetStatus("Rotating payload keys...");
+                keyfileBytes = await Task.Run(() => ReadKeyfileBytesIfConfigured(currentKeyfilePath), _processingCancellation.Token);
+
+                foreach (QueuedFileItem item in FileList.ToList())
                 {
-                    item.SetNeedsAttention("Key rotation is available for version 3 payloads only.");
-                    continue;
+                    if (_processingCancellation.IsCancellationRequested)
+                    {
+                        rotationCancelled = true;
+                        item.SetCancelled("Key rotation cancelled before this payload started.");
+                        break;
+                    }
+
+                    if (!File.Exists(item.SourcePath) || !IsPayloadV3File(item.SourcePath))
+                    {
+                        item.SetNeedsAttention("Key rotation is available for version 3 payloads only.");
+                        continue;
+                    }
+
+                    try
+                    {
+                        await Task.Run(() => RotatePayloadKeys(
+                            item.SourcePath,
+                            currentPassword,
+                            currentRecoveryKey,
+                            keyfileBytes,
+                            newPasswordTrimmed,
+                            newRecoveryKey,
+                            _processingCancellation.Token),
+                            _processingCancellation.Token);
+                        item.SetCompleted("Key slots rotated without re-encrypting the file contents.");
+                        rotatedCount++;
+                    }
+                    catch (OperationCanceledException) when (_processingCancellation.IsCancellationRequested)
+                    {
+                        rotationCancelled = true;
+                        item.SetCancelled("Key rotation cancelled before this payload completed.");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        item.SetNeedsAttention(GetFriendlyExceptionMessage(ex, "Key rotation failed."));
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (_processingCancellation?.IsCancellationRequested == true)
+            {
+                SetStatus("Key rotation cancelled.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to rotate keys: {GetFriendlyExceptionMessage(ex, "Key rotation failed.")}");
+                return;
+            }
+            finally
+            {
+                if (keyfileBytes is { Length: > 0 })
+                {
+                    CryptographicOperations.ZeroMemory(keyfileBytes);
                 }
 
-                try
+                _isProcessing = false;
+                _processingCancellation?.Dispose();
+                _processingCancellation = null;
+                CancelRunButton.IsEnabled = false;
+                SetUIEnabled(true);
+                RefreshEncryptFilesState();
+            }
+
+            if (rotationCancelled)
+            {
+                if (generateNewRecoveryKey && !string.IsNullOrWhiteSpace(newRecoveryKey) && rotatedCount > 0)
                 {
-                    RotatePayloadKeys(item.SourcePath, newPassword.Trim(), newRecoveryKey);
-                    item.SetCompleted("Key slots rotated without re-encrypting the file contents.");
-                    rotatedCount++;
+                    RecoveryKeyBox.Text = newRecoveryKey;
+                    await ShowInfoDialogAsync(
+                        $"Key rotation was cancelled after rotating {rotatedCount} payload(s).\n\nNew recovery key for rotated payloads:\n{newRecoveryKey}",
+                        "Keys Rotated");
                 }
-                catch (Exception ex)
-                {
-                    item.SetNeedsAttention(ex.Message);
-                }
+
+                SetStatus($"Key rotation cancelled after rotating {rotatedCount} payload(s).");
+                RefreshPreflightPreview();
+                return;
             }
 
             if (generateNewRecoveryKey && !string.IsNullOrWhiteSpace(newRecoveryKey))
@@ -1168,7 +1358,9 @@ namespace FileLocker
             return true;
         }
 
-        private byte[]? ReadKeyfileBytesIfConfigured(string? keyfilePath)
+        internal const long MaxKeyfileBytes = 16L * 1024L * 1024L;
+
+        internal static byte[]? ReadKeyfileBytesIfConfigured(string? keyfilePath)
         {
             if (string.IsNullOrWhiteSpace(keyfilePath))
             {
@@ -1179,6 +1371,17 @@ namespace FileLocker
             if (!File.Exists(trimmed))
             {
                 throw new FileNotFoundException("The selected keyfile could not be found.", trimmed);
+            }
+
+            var fileInfo = new FileInfo(trimmed);
+            if (fileInfo.Length == 0)
+            {
+                throw new InvalidOperationException("The selected keyfile is empty.");
+            }
+
+            if (fileInfo.Length > MaxKeyfileBytes)
+            {
+                throw new InvalidOperationException($"The selected keyfile is too large. Choose a keyfile up to {MaxKeyfileBytes / 1024 / 1024} MB.");
             }
 
             return File.ReadAllBytes(trimmed);
@@ -1195,21 +1398,36 @@ namespace FileLocker
 
             string algorithm = GetComboContent(AlgorithmCombo) ?? "AES-GCM";
             int keySize = ParseKeySizeSelection();
+            string password = PasswordBox.Password;
+            string keyfilePath = KeyfilePathBox.Text;
 
             try
             {
-                byte[]? keyfileBytes = ReadKeyfileBytesIfConfigured(KeyfilePathBox.Text);
-                string output = await Task.Run(() => RunHashOrEncode(input, algorithm, keySize, keyfileBytes));
+                string output = await Task.Run(() =>
+                {
+                    byte[]? keyfileBytes = ReadKeyfileBytesIfConfigured(keyfilePath);
+                    try
+                    {
+                        return RunHashOrEncode(input, algorithm, keySize, password, keyfileBytes);
+                    }
+                    finally
+                    {
+                        if (keyfileBytes is { Length: > 0 })
+                        {
+                            CryptographicOperations.ZeroMemory(keyfileBytes);
+                        }
+                    }
+                });
                 HashOutputBox.Text = output;
                 SetStatus($"Generated output using {algorithm} ({keySize}-bit)");
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Failed to generate output: {ex.Message}");
+                await ShowErrorDialogAsync($"Failed to generate output: {GetFriendlyExceptionMessage(ex, "Output generation failed.")}");
             }
         }
 
-        private string RunHashOrEncode(string input, string algorithm, int keySize, byte[]? keyfileBytes)
+        private string RunHashOrEncode(string input, string algorithm, int keySize, string password, byte[]? keyfileBytes)
         {
             byte[] inputBytes = Encoding.UTF8.GetBytes(input);
 
@@ -1224,12 +1442,12 @@ namespace FileLocker
                 return Convert.ToBase64String(inputBytes);
             }
 
-            return EncryptTextWithAes(inputBytes, algorithm, keySize, keyfileBytes);
+            return EncryptTextWithAes(inputBytes, algorithm, keySize, password, keyfileBytes);
         }
 
-        private string EncryptTextWithAes(byte[] inputBytes, string algorithm, int keySize, byte[]? keyfileBytes)
+        private string EncryptTextWithAes(byte[] inputBytes, string algorithm, int keySize, string password, byte[]? keyfileBytes)
         {
-            if (string.IsNullOrWhiteSpace(PasswordBox.Password))
+            if (string.IsNullOrWhiteSpace(password))
             {
                 throw new InvalidOperationException("Enter a password for AES-based helpers.");
             }
@@ -1241,7 +1459,7 @@ namespace FileLocker
 
             byte[] salt = GenerateRandomBytes(16);
             int keySizeBytes = Math.Max(16, keySize / 8);
-            byte[] key = DeriveKey(PasswordBox.Password, salt, keyfileBytes, keySizeBytes);
+            byte[] key = DeriveKey(password, salt, keyfileBytes, keySizeBytes);
             return EncodeAesGcmPayload(inputBytes, key, salt, keySize);
         }
 
@@ -1442,7 +1660,9 @@ namespace FileLocker
                 HideBatchInfoBar();
 
                 string password = PasswordBox.Password;
-                runOptions = CaptureProcessingRunOptions();
+                string keyfilePath = KeyfilePathBox.Text?.Trim() ?? string.Empty;
+                byte[]? keyfileBytes = await Task.Run(() => ReadKeyfileBytesIfConfigured(keyfilePath));
+                runOptions = CaptureProcessingRunOptions(keyfilePath, keyfileBytes);
                 if (!await ConfirmPreflightAsync(intent, runOptions))
                 {
                     return;
@@ -1530,6 +1750,30 @@ namespace FileLocker
                             result.Message ?? "Completed successfully.");
                         SetStatus($"Processed {processed}/{workItems.Count} item(s)...");
                     }
+                    catch (OperationCanceledException) when (_processingCancellation?.IsCancellationRequested == true)
+                    {
+                        cancelled = true;
+                        results.Add(new FileOperationResult
+                        {
+                            SourcePath = filePath,
+                            Status = "Cancelled",
+                            Message = "Cancelled before this item completed.",
+                            OriginalRetained = true,
+                            OutputVerified = false,
+                            FailureCategory = "Cancelled",
+                            ElapsedMilliseconds = itemElapsed.ElapsedMilliseconds
+                        });
+                        UpdateWorkItemProgress(workItem, 100, "Cancelled");
+                        SetWorkItemStatus(workItem, "Cancelled", "Cancelled before this item completed.");
+
+                        pendingPaths.AddRange(workItems.Skip(fileIndex + 1).Select(item => item.PrimaryPath));
+                        foreach (ProcessingWorkItem pendingWorkItem in workItems.Skip(fileIndex + 1))
+                        {
+                            SetWorkItemStatus(pendingWorkItem, "Cancelled", "Cancelled before this item started.");
+                        }
+
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         string failureMessage = GetFriendlyExceptionMessage(
@@ -1559,17 +1803,23 @@ namespace FileLocker
                 OperationMetricsSummary runMetrics = OperationHistoryMetrics.Calculate(results);
                 AppendHistory(intent.ToString(), runOptions, results, cancelled);
 
-                if (failedPaths.Count > 0 || pendingPaths.Count > 0)
+                if (failedPaths.Count > 0 || pendingPaths.Count > 0 || cancelled)
                 {
                     SetStatus(cancelled
-                        ? $"Stopped after {processed} item(s). {failedPaths.Count} failed and {pendingPaths.Count} remain queued."
+                        ? failedPaths.Count > 0
+                            ? $"Stopped after {processed} item(s). {failedPaths.Count} failed before cancellation."
+                            : $"Stopped after {processed} item(s)."
                         : processed > 0
                             ? $"Completed {processed} item(s). {failedPaths.Count} item(s) still need attention."
                             : $"No items were completed. {failedPaths.Count} item(s) need attention.");
 
                     ShowBatchInfoBar(
                         cancelled
-                            ? $"Run stopped. {failedPaths.Count} file(s) need attention and {pendingPaths.Count} were not started."
+                            ? failedPaths.Count > 0
+                                ? $"Run stopped. {failedPaths.Count} file(s) failed before cancellation."
+                                : pendingPaths.Count > 0
+                                    ? $"Run stopped. {pendingPaths.Count} file(s) were not started."
+                                    : "Run stopped by user."
                             : $"{failedPaths.Count} file(s) need attention. Use the row actions to inspect, retry, or remove them.",
                         InfoBarSeverity.Warning);
                 }
@@ -1592,7 +1842,7 @@ namespace FileLocker
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Error: {ex.Message}");
+                await ShowErrorDialogAsync($"Error: {GetFriendlyExceptionMessage(ex, "Processing failed.")}");
             }
             finally
             {

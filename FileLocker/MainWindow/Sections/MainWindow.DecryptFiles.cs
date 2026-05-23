@@ -187,32 +187,46 @@ namespace FileLocker
 
         private async void DecryptBrowseFilesButton_Click(object sender, RoutedEventArgs e)
         {
-            FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, ENCRYPTED_EXTENSION, ".png");
-            picker.FileTypeFilter.Add("*");
-
-            IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();
-            if (files.Count == 0)
+            try
             {
-                return;
-            }
+                FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, ENCRYPTED_EXTENSION, ".png");
+                picker.FileTypeFilter.Add("*");
 
-            AddDecryptPathsToSelection(files.Select(file => file.Path));
+                IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();
+                if (files.Count == 0)
+                {
+                    return;
+                }
+
+                AddDecryptPathsToSelection(files.Select(file => file.Path));
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse encrypted files: {GetFriendlyExceptionMessage(ex, "File picker failed.")}");
+            }
         }
 
         private async void DecryptBrowseFolderButton_Click(object sender, RoutedEventArgs e)
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder == null)
+            try
             {
-                return;
-            }
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
 
-            AddDecryptPathsToSelection([folder.Path]);
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder == null)
+                {
+                    return;
+                }
+
+                AddDecryptPathsToSelection([folder.Path]);
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse encrypted folders: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
+            }
         }
 
-        private async void DecryptDropPanel_DragOver(object sender, DragEventArgs e)
+        private void DecryptDropPanel_DragOver(object sender, DragEventArgs e)
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
@@ -220,21 +234,9 @@ namespace FileLocker
             }
 
             e.AcceptedOperation = DataPackageOperation.Copy;
-            DataPackageView dataView = e.DataView;
-            var deferral = e.GetDeferral();
-            try
-            {
-                IReadOnlyList<IStorageItem> items = await dataView.GetStorageItemsAsync();
-                DecryptDropLabel.Text = items.Count > 0
-                    ? $"Release {items.Count} item(s) to inspect"
-                    : "Release to add encrypted files";
-                DecryptDropHintText.Text = "FileLocker will queue supported encrypted files only.";
-                SetDecryptDropVisual(true);
-            }
-            finally
-            {
-                deferral.Complete();
-            }
+            DecryptDropLabel.Text = "Release to add encrypted files";
+            DecryptDropHintText.Text = "FileLocker will queue supported encrypted files only.";
+            SetDecryptDropVisual(true);
         }
 
         private async void DecryptDropPanel_Drop(object sender, DragEventArgs e)
@@ -471,27 +473,34 @@ namespace FileLocker
 
         private async void DecryptOutputBrowseButton_Click(object sender, RoutedEventArgs e)
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
-
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            if (folder == null)
-            {
-                return;
-            }
-
-            _isSyncingDecryptFilesUi = true;
             try
             {
-                DecryptSaveNextToEncryptedToggle.IsOn = false;
-                DecryptOutputLocationBox.Text = folder.Path;
-            }
-            finally
-            {
-                _isSyncingDecryptFilesUi = false;
-            }
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
 
-            UpdateDecryptDestinationUi();
-            SetStatus($"Decrypt output folder selected: {folder.Name}");
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                if (folder == null)
+                {
+                    return;
+                }
+
+                _isSyncingDecryptFilesUi = true;
+                try
+                {
+                    DecryptSaveNextToEncryptedToggle.IsOn = false;
+                    DecryptOutputLocationBox.Text = folder.Path;
+                }
+                finally
+                {
+                    _isSyncingDecryptFilesUi = false;
+                }
+
+                UpdateDecryptDestinationUi();
+                SetStatus($"Decrypt output folder selected: {folder.Name}");
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse decrypt output folder: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
+            }
         }
 
         private void DecryptOutputLocationBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -591,7 +600,7 @@ namespace FileLocker
 
         private async void StartDecryptionButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!ValidateDecryptFilesForm(showDialog: true))
+            if (!await ValidateDecryptFilesFormAsync(showDialog: true))
             {
                 RefreshDecryptFilesState();
                 return;
@@ -617,7 +626,7 @@ namespace FileLocker
             await ProcessDecryptFilesAsync();
         }
 
-        private bool ValidateDecryptFilesForm(bool showDialog)
+        private async Task<bool> ValidateDecryptFilesFormAsync(bool showDialog)
         {
             string? message = null;
             if (DecryptSelectedFiles.Count == 0)
@@ -644,7 +653,7 @@ namespace FileLocker
 
             if (showDialog)
             {
-                _ = ShowErrorDialogAsync(message);
+                await ShowErrorDialogAsync(message);
             }
 
             return false;
@@ -700,7 +709,7 @@ namespace FileLocker
                         cancelled = true;
                         foreach (DecryptSelectedItemViewModel pending in workItems.Skip(index))
                         {
-                            pending.SetFailed("Cancelled before this file started.");
+                            pending.SetCancelled("Cancelled before this file started.");
                         }
 
                         break;
@@ -742,6 +751,28 @@ namespace FileLocker
                             : $"Output written to {result.OutputPath}");
                         SetStatus($"Decrypted {processed}/{workItems.Count} item(s)...");
                     }
+                    catch (OperationCanceledException) when (_processingCancellation?.IsCancellationRequested == true)
+                    {
+                        cancelled = true;
+                        item.SetCancelled("Cancelled before this file completed.");
+                        results.Add(new FileOperationResult
+                        {
+                            SourcePath = item.FullPath,
+                            Status = "Cancelled",
+                            Message = "Cancelled before decryption completed.",
+                            OriginalRetained = true,
+                            OutputVerified = false,
+                            FailureCategory = "Cancelled",
+                            ElapsedMilliseconds = itemElapsed.ElapsedMilliseconds
+                        });
+
+                        foreach (DecryptSelectedItemViewModel pending in workItems.Skip(index + 1))
+                        {
+                            pending.SetCancelled("Cancelled before this file started.");
+                        }
+
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         string failureMessage = GetFriendlyExceptionMessage(ex, "Unknown error while decrypting.");
@@ -768,7 +799,9 @@ namespace FileLocker
                 if (failedCount > 0 || cancelled)
                 {
                     string message = cancelled
-                        ? $"Decryption stopped. {failedCount} file(s) failed or need attention."
+                        ? failedCount > 0
+                            ? $"Decryption stopped. {failedCount} file(s) failed before cancellation."
+                            : "Decryption stopped by user."
                         : $"{failedCount} file(s) need attention. Check the selected files list.";
                     ShowDecryptInfoBar(message, InfoBarSeverity.Warning);
                     SetStatus(message);

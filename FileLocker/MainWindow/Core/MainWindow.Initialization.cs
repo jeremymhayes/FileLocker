@@ -276,15 +276,27 @@ namespace FileLocker
 
         private void SaveProfiles()
         {
-            _ = SaveProfilesAsync();
+            _ = SaveProfilesSafelyAsync();
         }
 
         private async Task SaveProfilesAsync()
         {
             string json = JsonSerializer.Serialize(_customProfiles, JsonOptions);
             byte[] protectedBytes = AppPreferencesStore.ProtectForCurrentUser(Encoding.UTF8.GetBytes(json));
-            await File.WriteAllBytesAsync(GetProtectedProfilesPath(), protectedBytes);
+            await AppPreferencesStore.WriteAllBytesAtomicallyAsync(GetProtectedProfilesPath(), protectedBytes);
             TryDeleteFile(GetProfilesPath());
+        }
+
+        private async Task SaveProfilesSafelyAsync()
+        {
+            try
+            {
+                await SaveProfilesAsync();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to save profiles: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+            }
         }
 
         private void RefreshProfileCombo()
@@ -410,7 +422,7 @@ namespace FileLocker
 
         private void SaveHistory()
         {
-            _ = SaveHistoryAsync();
+            _ = SaveHistorySafelyAsync();
         }
 
         private async Task SaveHistoryAsync()
@@ -429,7 +441,7 @@ namespace FileLocker
             {
                 string json = JsonSerializer.Serialize(_operationHistory.Take(MaxHistoryEntries).ToList(), JsonOptions);
                 byte[] protectedBytes = AppPreferencesStore.ProtectForCurrentUser(Encoding.UTF8.GetBytes(json));
-                await File.WriteAllBytesAsync(protectedPath, protectedBytes);
+                await AppPreferencesStore.WriteAllBytesAtomicallyAsync(protectedPath, protectedBytes);
                 TryDeleteFile(redactedPath);
                 return;
             }
@@ -437,8 +449,20 @@ namespace FileLocker
             string redactedJson = JsonSerializer.Serialize(
                 RedactHistoryEntries(_operationHistory.Take(MaxHistoryEntries).ToList()),
                 JsonOptions);
-            await File.WriteAllTextAsync(redactedPath, redactedJson);
+            await AppPreferencesStore.WriteAllTextAtomicallyAsync(redactedPath, redactedJson, Encoding.UTF8);
             TryDeleteFile(protectedPath);
+        }
+
+        private async Task SaveHistorySafelyAsync()
+        {
+            try
+            {
+                await SaveHistoryAsync();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to save operation history: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+            }
         }
 
         private static List<OperationHistoryEntry> RedactHistoryEntries(List<OperationHistoryEntry> entries)
@@ -456,7 +480,7 @@ namespace FileLocker
                 RemoveOriginalsAfterSuccess = entry.RemoveOriginalsAfterSuccess,
                 SecureDeleteOriginals = entry.SecureDeleteOriginals,
                 VerifyAfterWrite = entry.VerifyAfterWrite,
-                BackupFolderPath = RedactPath(entry.BackupFolderPath),
+                BackupFolderPath = SensitiveDataRedactor.RedactPath(entry.BackupFolderPath),
                 Cancelled = entry.Cancelled,
                 SuccessCount = entry.SuccessCount,
                 FailureCount = entry.FailureCount,
@@ -471,11 +495,11 @@ namespace FileLocker
                 FailureCategorySummary = entry.FailureCategorySummary,
                 Results = entry.Results.Select(result => new FileOperationResult
                 {
-                    SourcePath = RedactPath(result.SourcePath),
-                    OutputPath = RedactPath(result.OutputPath),
-                    BackupPath = RedactPath(result.BackupPath),
+                    SourcePath = SensitiveDataRedactor.RedactPath(result.SourcePath),
+                    OutputPath = SensitiveDataRedactor.RedactPath(result.OutputPath),
+                    BackupPath = SensitiveDataRedactor.RedactPath(result.BackupPath),
                     Status = result.Status,
-                    Message = result.Message,
+                    Message = SensitiveDataRedactor.RedactMessage(result.Message),
                     OriginalRetained = result.OriginalRetained,
                     OutputVerified = result.OutputVerified,
                     OriginalSizeBytes = result.OriginalSizeBytes,
@@ -492,33 +516,9 @@ namespace FileLocker
             }).ToList();
         }
 
-        private static string RedactPath(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return string.Empty;
-            }
-
-            string trimmed = path.Trim();
-            string leaf = Path.GetFileName(trimmed.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            return string.IsNullOrWhiteSpace(leaf) ? "[redacted]" : Path.Combine("[redacted]", leaf);
-        }
-
         private static void TryDeleteFile(string path)
         {
-            if (!File.Exists(path))
-            {
-                return;
-            }
-
-            try
-            {
-                File.Delete(path);
-            }
-            catch
-            {
-                // Ignore cleanup issues.
-            }
+            FileCleanupService.TryDeleteTemporaryFile(path, out _);
         }
 
         private void RefreshHistoryItems()
@@ -656,12 +656,24 @@ namespace FileLocker
 
         private void PersistPreferences()
         {
-            _ = PersistPreferencesAsync();
+            _ = PersistPreferencesSafelyAsync();
         }
 
         private async Task PersistPreferencesAsync()
         {
             await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+        }
+
+        private async Task PersistPreferencesSafelyAsync()
+        {
+            try
+            {
+                await PersistPreferencesAsync();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to save preferences: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+            }
         }
 
         private static string GetExperienceLevelDisplay(UserExperienceLevel level)
@@ -1105,7 +1117,7 @@ namespace FileLocker
             catch (Exception ex)
             {
                 PayloadInspectorSection.Visibility = Visibility.Visible;
-                PayloadInspectorText.Text = $"Inspector could not parse the queued payload yet: {ex.Message}";
+                PayloadInspectorText.Text = $"Inspector could not parse the queued payload yet: {GetFriendlyExceptionMessage(ex, "Payload inspection failed.")}";
                 return;
             }
 

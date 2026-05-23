@@ -29,6 +29,7 @@ namespace FileLocker
         private string _hashStatusDisplay = "Waiting for file";
         private string _hashVerificationDisplay = "Not verified";
         private bool _isHashingFile;
+        private CancellationTokenSource? _hashGenerationCancellation;
 
         public ObservableCollection<HashRecentItem> RecentHashItems { get; } = [];
 
@@ -82,18 +83,25 @@ namespace FileLocker
 
         private async void HashBrowseFileButton_Click(object sender, RoutedEventArgs e)
         {
-            FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
-
-            StorageFile? file = await picker.PickSingleFileAsync();
-            if (file == null)
+            try
             {
-                return;
-            }
+                FileOpenPicker picker = CreateOpenFilePicker(PickerLocationId.DocumentsLibrary, "*");
 
-            SelectHashFile(file.Path);
+                StorageFile? file = await picker.PickSingleFileAsync();
+                if (file == null)
+                {
+                    return;
+                }
+
+                SelectHashFile(file.Path);
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse hash file: {GetFriendlyExceptionMessage(ex, "File picker failed.")}");
+            }
         }
 
-        private async void HashDropPanel_DragOver(object sender, DragEventArgs e)
+        private void HashDropPanel_DragOver(object sender, DragEventArgs e)
         {
             if (!e.DataView.Contains(StandardDataFormats.StorageItems))
             {
@@ -101,23 +109,9 @@ namespace FileLocker
             }
 
             e.AcceptedOperation = DataPackageOperation.Copy;
-            var deferral = e.GetDeferral();
-            try
-            {
-                var items = await e.DataView.GetStorageItemsAsync();
-                int fileCount = items.OfType<StorageFile>().Count();
-                HashDropTitleText.Text = fileCount > 0
-                    ? fileCount == 1 ? "Release to select this file" : "Release to select the first file"
-                    : "Drop a file here to generate a hash";
-                HashDropHelperText.Text = fileCount > 0
-                    ? "Hash Files uses one primary file at a time."
-                    : "Folders are not hashed from this screen.";
-                SetHashDropVisual(true);
-            }
-            finally
-            {
-                deferral.Complete();
-            }
+            HashDropTitleText.Text = "Release to select a file";
+            HashDropHelperText.Text = "Hash Files uses one primary file at a time.";
+            SetHashDropVisual(true);
         }
 
         private async void HashDropPanel_Drop(object sender, DragEventArgs e)
@@ -129,6 +123,7 @@ namespace FileLocker
                 return;
             }
 
+            var deferral = e.GetDeferral();
             try
             {
                 var items = await e.DataView.GetStorageItemsAsync();
@@ -148,7 +143,11 @@ namespace FileLocker
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Unable to select dropped file: {ex.Message}");
+                await ShowErrorDialogAsync($"Unable to select dropped file: {GetFriendlyExceptionMessage(ex, "Drop failed.")}");
+            }
+            finally
+            {
+                deferral.Complete();
             }
         }
 
@@ -171,6 +170,11 @@ namespace FileLocker
             }
 
             var fileInfo = new FileInfo(filePath);
+            if (_isHashingFile && !string.Equals(_hashSelectedFile?.FullPath, fileInfo.FullName, StringComparison.OrdinalIgnoreCase))
+            {
+                CancelCurrentHashGeneration();
+            }
+
             _hashSelectedFile = new HashSelectedFileViewModel(
                 fileInfo.Name,
                 fileInfo.FullName,
@@ -210,11 +214,16 @@ namespace FileLocker
 
             if (_isHashingFile)
             {
-                return;
+                if (_hashGenerationCancellation?.IsCancellationRequested != true)
+                {
+                    return;
+                }
             }
 
             HashSelectedFileViewModel selectedFile = _hashSelectedFile;
             string selectedAlgorithm = _hashSelectedAlgorithm;
+            using var hashCancellation = new CancellationTokenSource();
+            _hashGenerationCancellation = hashCancellation;
             _isHashingFile = true;
             _hashStatusDisplay = "Hashing";
             _hashVerificationDisplay = "Not verified";
@@ -239,7 +248,7 @@ namespace FileLocker
                     selectedFile.FullPath,
                     selectedAlgorithm,
                     progress,
-                    CancellationToken.None);
+                    hashCancellation.Token);
 
                 if (_hashSelectedFile?.FullPath != selectedFile.FullPath ||
                     !string.Equals(_hashSelectedAlgorithm, selectedAlgorithm, StringComparison.OrdinalIgnoreCase))
@@ -255,6 +264,14 @@ namespace FileLocker
                 _hashVerificationDisplay = "Not verified";
                 RecordHashOperation(hashElapsed.ElapsedMilliseconds);
                 SetStatus($"{selectedAlgorithm} hash generated for {selectedFile.DisplayName}.");
+            }
+            catch (OperationCanceledException) when (hashCancellation.IsCancellationRequested)
+            {
+                if (_hashSelectedFile?.FullPath == selectedFile.FullPath)
+                {
+                    _hashStatusDisplay = "Ready";
+                    SetStatus("Hash generation cancelled.");
+                }
             }
             catch (Exception ex)
             {
@@ -273,8 +290,12 @@ namespace FileLocker
             }
             finally
             {
-                _isHashingFile = false;
-                RefreshHashFilesState();
+                if (ReferenceEquals(_hashGenerationCancellation, hashCancellation))
+                {
+                    _hashGenerationCancellation = null;
+                    _isHashingFile = false;
+                    RefreshHashFilesState();
+                }
             }
         }
 
@@ -312,6 +333,12 @@ namespace FileLocker
                 _hashStatusDisplay = _hashSelectedFile == null ? "Waiting for file" : "Ready";
                 SetStatus("Hash algorithm changed. Generate a new hash for the selected file.");
             }
+            else if (changed && _isHashingFile)
+            {
+                CancelCurrentHashGeneration();
+                _hashStatusDisplay = _hashSelectedFile == null ? "Waiting for file" : "Ready";
+                SetStatus("Hash generation cancelled because the algorithm changed.");
+            }
 
             RefreshHashFilesState();
         }
@@ -340,8 +367,7 @@ namespace FileLocker
                 return;
             }
 
-            string expected = NormalizeHashInput(ExpectedHashBox.Text);
-            if (string.IsNullOrWhiteSpace(expected))
+            if (string.IsNullOrWhiteSpace(ExpectedHashBox.Text))
             {
                 _hashVerificationDisplay = "Not verified";
                 SetStatus("Paste an expected hash before verifying.");
@@ -349,7 +375,22 @@ namespace FileLocker
                 return;
             }
 
-            string generated = NormalizeHashInput(_generatedFileHash);
+            if (!HashInputNormalizer.TryNormalizeSupportedHash(ExpectedHashBox.Text, out string expected))
+            {
+                _hashVerificationDisplay = "Not verified";
+                SetStatus("Paste a SHA-256 or SHA-512 hash before verifying.");
+                RefreshHashFilesState();
+                return;
+            }
+
+            if (!HashInputNormalizer.TryNormalizeSupportedHash(_generatedFileHash, out string generated))
+            {
+                _hashVerificationDisplay = "Not verified";
+                SetStatus("Generated hash is not valid. Generate the hash again.");
+                RefreshHashFilesState();
+                return;
+            }
+
             _hashVerificationDisplay = string.Equals(expected, generated, StringComparison.OrdinalIgnoreCase)
                 ? "Match"
                 : "Mismatch";
@@ -390,12 +431,12 @@ namespace FileLocker
                     return;
                 }
 
-                await File.WriteAllTextAsync(file.Path, BuildHashResultExport(), Encoding.UTF8);
+                await FileWriteService.WriteAllTextAtomicallyAsync(file.Path, BuildHashResultExport(), Encoding.UTF8);
                 SetStatus($"Hash result saved to {file.Name}.");
             }
             catch (Exception ex)
             {
-                await ShowErrorDialogAsync($"Unable to save the hash result: {ex.Message}");
+                await ShowErrorDialogAsync($"Unable to save the hash result: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
             }
         }
 
@@ -428,6 +469,8 @@ namespace FileLocker
 
         private void ClearHashFilesState(bool clearFile, bool setStatus)
         {
+            CancelCurrentHashGeneration();
+
             if (clearFile)
             {
                 _hashSelectedFile = null;
@@ -443,6 +486,14 @@ namespace FileLocker
             }
 
             RefreshHashFilesState();
+        }
+
+        private void CancelCurrentHashGeneration()
+        {
+            if (_hashGenerationCancellation is { IsCancellationRequested: false } cancellation)
+            {
+                cancellation.Cancel();
+            }
         }
 
         private void ClearHashOutput(bool clearExpectedHash)
@@ -630,11 +681,18 @@ namespace FileLocker
                 return;
             }
 
-            var dataPackage = new DataPackage();
-            dataPackage.SetText(_generatedFileHash);
-            Clipboard.SetContent(dataPackage);
-            Clipboard.Flush();
-            SetStatus("Hash copied to clipboard.");
+            try
+            {
+                var dataPackage = new DataPackage();
+                dataPackage.SetText(_generatedFileHash);
+                Clipboard.SetContent(dataPackage);
+                Clipboard.Flush();
+                SetStatus("Hash copied to clipboard.");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to copy hash: {GetFriendlyExceptionMessage(ex, "Clipboard is unavailable.")}");
+            }
         }
 
         private void CopyHashResultSummaryToClipboard()
@@ -645,11 +703,18 @@ namespace FileLocker
                 return;
             }
 
-            var dataPackage = new DataPackage();
-            dataPackage.SetText(BuildHashResultExport());
-            Clipboard.SetContent(dataPackage);
-            Clipboard.Flush();
-            SetStatus("Filename and hash summary copied to clipboard.");
+            try
+            {
+                var dataPackage = new DataPackage();
+                dataPackage.SetText(BuildHashResultExport());
+                Clipboard.SetContent(dataPackage);
+                Clipboard.Flush();
+                SetStatus("Filename and hash summary copied to clipboard.");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Unable to copy hash summary: {GetFriendlyExceptionMessage(ex, "Clipboard is unavailable.")}");
+            }
         }
 
         private string BuildHashResultExport()
@@ -780,14 +845,7 @@ namespace FileLocker
 
         private static string NormalizeHashInput(string? input)
         {
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                return string.Empty;
-            }
-
-            return new string(input.Where(character => !char.IsWhiteSpace(character)).ToArray())
-                .Trim()
-                .ToLowerInvariant();
+            return HashInputNormalizer.Normalize(input);
         }
 
         private string ReadSelectedHashAlgorithm()

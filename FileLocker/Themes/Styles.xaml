@@ -30,6 +30,8 @@
             <Color x:Key="AppWarningColor">#FFB74D</Color>
             <Color x:Key="AppDangerColor">#FF4D68</Color>
             <Color x:Key="AppMetadataColor">#9B5CFF</Color>
+            <Color x:Key="AppWarningBackgroundColor">#241409</Color>
+            <Color x:Key="AppDangerBackgroundColor">#281018</Color>
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
@@ -59,6 +61,8 @@
             <Color x:Key="AppWarningColor">#B76300</Color>
             <Color x:Key="AppDangerColor">#E04461</Color>
             <Color x:Key="AppMetadataColor">#7B52DC</Color>
+            <Color x:Key="AppWarningBackgroundColor">#FFF8ED</Color>
+            <Color x:Key="AppDangerBackgroundColor">#FFF0F3</Color>
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
@@ -105,6 +109,8 @@
     <SolidColorBrush x:Key="SuccessBrush" Color="{ThemeResource AppSuccessColor}" />
     <SolidColorBrush x:Key="WarningBrush" Color="{ThemeResource AppWarningColor}" />
     <SolidColorBrush x:Key="DangerBrush" Color="{ThemeResource AppDangerColor}" />
+    <SolidColorBrush x:Key="WarningBackgroundBrush" Color="{ThemeResource AppWarningBackgroundColor}" />
+    <SolidColorBrush x:Key="DangerBackgroundBrush" Color="{ThemeResource AppDangerBackgroundColor}" />
     <SolidColorBrush x:Key="MetadataBrush" Color="{ThemeResource AppMetadataColor}" />
     <SolidColorBrush x:Key="FocusRingBrush" Color="{ThemeResource AppCyanColor}" />
     <SolidColorBrush x:Key="DropPanelBrush" Color="{ThemeResource AppSurfaceRaisedColor}" />
@@ -270,7 +276,7 @@
     </Style>
 
     <Style x:Key="SidebarNavButtonSelectedStyle" TargetType="Button" BasedOn="{StaticResource SidebarNavButtonStyle}">
-        <Setter Property="Background" Value="#17335C" />
+        <Setter Property="Background" Value="{ThemeResource AccentSoftBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource AppBorderStrongBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimaryBrush}" />
     </Style>
@@ -381,12 +387,12 @@
     </Style>
 
     <Style x:Key="InlineWarningBorderStyle" TargetType="Border" BasedOn="{StaticResource InlineAlertBorderStyle}">
-        <Setter Property="Background" Value="#241409" />
+        <Setter Property="Background" Value="{ThemeResource WarningBackgroundBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource WarningBrush}" />
     </Style>
 
     <Style x:Key="InlineDangerBorderStyle" TargetType="Border" BasedOn="{StaticResource InlineAlertBorderStyle}">
-        <Setter Property="Background" Value="#281018" />
+        <Setter Property="Background" Value="{ThemeResource DangerBackgroundBrush}" />
         <Setter Property="BorderBrush" Value="{ThemeResource DangerBrush}" />
     </Style>
 

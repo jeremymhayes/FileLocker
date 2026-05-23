@@ -31,8 +31,9 @@ export function SelectedPathList({ paths, onRemove, emptyMessage }: SelectedPath
             </div>
           </div>
           <button
+            type="button"
             className="rounded-md p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent"
-            aria-label={`Remove ${path}`}
+            aria-label={`Remove ${fileName(path)}`}
             onClick={() => onRemove(path)}
           >
             <X className="size-4" aria-hidden />

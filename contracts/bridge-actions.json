@@ -27,6 +27,12 @@
     "maintenance.wipeFreeSpace",
     "maintenance.scanRegistry",
     "maintenance.cleanRegistry",
+    "maintenance.scanStartup",
+    "maintenance.setStartupEnabled",
+    "maintenance.scanInstalledApps",
+    "maintenance.launchUninstaller",
+    "maintenance.scanAppLeftovers",
+    "maintenance.cleanAppLeftovers",
     "settings.get",
     "settings.save",
     "settings.reset",
@@ -36,6 +42,9 @@
     "updates.install",
     "updates.skip",
     "updates.clearSkip",
+    "updates.testDialog",
+    "updates.testStartupCheck",
+    "updates.testInstallerCleanup",
     "history.clear",
     "history.export"
   ]

@@ -38,6 +38,29 @@ public sealed class EncryptOutputPathAdvisorTests : IDisposable
         Assert.Null(suggestedPath);
     }
 
+    [Fact]
+    public void SuggestForFolderRoots_DriveRoot_ReturnsNull()
+    {
+        string driveRoot = Path.GetPathRoot(Environment.CurrentDirectory)
+            ?? throw new InvalidOperationException("Current directory does not have a drive root.");
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([driveRoot]);
+
+        Assert.Null(suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForFolderRoots_MixedDriveRootAndFolder_ReturnsNull()
+    {
+        string driveRoot = Path.GetPathRoot(Environment.CurrentDirectory)
+            ?? throw new InvalidOperationException("Current directory does not have a drive root.");
+        string sourceFolder = Directory.CreateDirectory(Path.Combine(_rootPath, "Source")).FullName;
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([driveRoot, sourceFolder]);
+
+        Assert.Null(suggestedPath);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootPath))

@@ -139,9 +139,7 @@ namespace FileLocker
                 return;
             }
 
-            UpdateStatusText.Text = _aboutUpdateStatusText.StartsWith("Up to date", StringComparison.OrdinalIgnoreCase)
-                ? "You are using the latest version."
-                : _aboutUpdateStatusText;
+            UpdateStatusText.Text = _aboutUpdateStatusText;
         }
 
         private void UpdateAccentSelectionVisual()
@@ -165,7 +163,7 @@ namespace FileLocker
             AutomationProperties.SetHelpText(button, selected ? "Selected accent color" : "Preview accent color");
         }
 
-        private async void ThemePreferenceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void ThemePreferenceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_isLoadingSettings || !_isUiReady)
             {
@@ -180,7 +178,6 @@ namespace FileLocker
             };
 
             ApplyThemePreference(selectedPreference, persist: true, syncControls: false);
-            await Task.CompletedTask;
         }
 
         private void AccentColorButton_Click(object sender, RoutedEventArgs e)
@@ -268,10 +265,18 @@ namespace FileLocker
 
         private async Task<string?> BrowseForFolderPathAsync()
         {
-            FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
+            try
+            {
+                FolderPicker picker = CreateFolderPicker(PickerLocationId.DocumentsLibrary);
 
-            StorageFolder? folder = await picker.PickSingleFolderAsync();
-            return folder?.Path;
+                StorageFolder? folder = await picker.PickSingleFolderAsync();
+                return folder?.Path;
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to browse output folder: {GetFriendlyExceptionMessage(ex, "Folder picker failed.")}");
+                return null;
+            }
         }
 
         private void StoreLocalHistoryToggle_Toggled(object sender, RoutedEventArgs e)
@@ -316,6 +321,7 @@ namespace FileLocker
 
         private async void ClearTemporaryFilesButton_Click(object sender, RoutedEventArgs e)
         {
+            Control? sourceControl = sender as Control;
             bool proceed = await ShowConfirmDialogAsync(
                 "Clear temporary updater files stored by FileLocker on this device?",
                 "Clear Temporary Files");
@@ -329,42 +335,75 @@ namespace FileLocker
                 "FileLocker",
                 "Updater");
 
-            int deletedFiles = 0;
-            if (Directory.Exists(updaterDirectory))
+            if (sourceControl != null)
             {
-                foreach (string file in Directory.EnumerateFiles(updaterDirectory, "*", SearchOption.AllDirectories))
+                sourceControl.IsEnabled = false;
+            }
+
+            FileCleanupSummary cleanup;
+            try
+            {
+                SetStatus("Clearing temporary updater files...");
+                cleanup = await Task.Run(() => FileCleanupService.DeleteTemporaryFilesUnderDirectory(updaterDirectory));
+            }
+            catch (Exception ex)
+            {
+                await ShowErrorDialogAsync($"Unable to clear temporary files: {GetFriendlyExceptionMessage(ex, "Cleanup failed.")}");
+                return;
+            }
+            finally
+            {
+                if (sourceControl != null)
                 {
-                    try
-                    {
-                        File.Delete(file);
-                        deletedFiles++;
-                    }
-                    catch
-                    {
-                        // Ignore individual cleanup failures.
-                    }
+                    sourceControl.IsEnabled = true;
                 }
             }
 
-            string message = deletedFiles == 0
+            string message = cleanup.DeletedFiles == 0
                 ? "No temporary updater files were found."
-                : $"Cleared {deletedFiles} temporary updater file(s).";
+                : $"Cleared {cleanup.DeletedFiles} temporary updater file(s).";
+            if (cleanup.FailedFiles > 0)
+            {
+                message += $" {cleanup.FailedFiles} file(s) could not be removed and can be retried later.";
+            }
+
             PrivacyHelperText.Text = $"{message} FileLocker still works entirely locally on your device.";
             await ShowInfoDialogAsync(message, "Temporary Files");
         }
 
-        private void AutoCheckUpdatesToggle_Toggled(object sender, RoutedEventArgs e)
+        private async void AutoCheckUpdatesToggle_Toggled(object sender, RoutedEventArgs e)
         {
             if (_isLoadingSettings || !_isUiReady)
             {
                 return;
             }
 
-            _updateSettings.AutoCheckEnabled = AutoCheckUpdatesToggle.IsOn;
-            UpdateService.SaveSettings(_updateSettings);
-            SetAboutUpdateStatusText(AutoCheckUpdatesToggle.IsOn
-                ? "Updates: automatic checks enabled"
-                : "Updates: automatic checks disabled");
+            bool previousValue = _updateSettings.AutoCheckEnabled;
+            bool requestedValue = AutoCheckUpdatesToggle.IsOn;
+            _updateSettings.AutoCheckEnabled = requestedValue;
+            try
+            {
+                UpdateService.SaveSettings(_updateSettings);
+                SetAboutUpdateStatusText(requestedValue
+                    ? "Updates: automatic checks enabled"
+                    : "Updates: automatic checks disabled");
+            }
+            catch (Exception ex)
+            {
+                _updateSettings.AutoCheckEnabled = previousValue;
+                _isLoadingSettings = true;
+                try
+                {
+                    AutoCheckUpdatesToggle.IsOn = previousValue;
+                }
+                finally
+                {
+                    _isLoadingSettings = false;
+                }
+
+                SetAboutUpdateStatusText("Updates: setting was not saved");
+                await ShowErrorDialogAsync($"Unable to save update settings: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+            }
         }
 
         private async void CheckNowButton_Click(object sender, RoutedEventArgs e)
@@ -375,14 +414,14 @@ namespace FileLocker
         private async void ViewLicenseButton_Click(object sender, RoutedEventArgs e)
         {
             await ShowInfoDialogAsync(
-                "A bundled license document has not been added yet.",
+                "No standalone FileLocker license document is bundled with this build. Review the project repository or installer materials before redistributing FileLocker.",
                 "View License");
         }
 
         private async void OpenSourceLicensesButton_Click(object sender, RoutedEventArgs e)
         {
             await ShowInfoDialogAsync(
-                "Open source license notices are not bundled yet.",
+                "Third-party license notices are not bundled as a separate document in this build. Review the package manifests and published project materials for current dependency license information.",
                 "Open Source Licenses");
         }
 
@@ -396,11 +435,14 @@ namespace FileLocker
                 return;
             }
 
-            ResetSettingsToDefaults();
+            await ResetSettingsToDefaultsAsync();
         }
 
-        private void ResetSettingsToDefaults()
+        private async Task ResetSettingsToDefaultsAsync()
         {
+            PreferencesSnapshot previousPreferences = CapturePreferencesSnapshot();
+            bool previousAutoCheck = _updateSettings.AutoCheckEnabled;
+
             _preferences.ThemePreference = ThemePreference.Dark;
             _themePreference = ThemePreference.Dark;
             _preferences.HistoryPrivacyMode = HistoryPrivacyMode.Redacted;
@@ -412,14 +454,70 @@ namespace FileLocker
             _preferences.CustomDecryptOutputDirectory = string.Empty;
 
             _updateSettings.AutoCheckEnabled = true;
-            UpdateService.SaveSettings(_updateSettings);
+            try
+            {
+                UpdateService.SaveSettings(_updateSettings);
+                await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+            }
+            catch (Exception ex)
+            {
+                RestorePreferencesSnapshot(previousPreferences);
+                _updateSettings.AutoCheckEnabled = previousAutoCheck;
+                ApplyPreferencesToControls();
+                LoadSettingsPreferences();
+                SetStatus("Settings reset was not saved.");
+                await ShowErrorDialogAsync($"Unable to reset settings: {GetFriendlyExceptionMessage(ex, "Save failed.")}");
+                return;
+            }
 
-            ApplyThemePreference(_themePreference, persist: true, syncControls: true);
+            ApplyThemePreference(_themePreference, persist: false, syncControls: true);
             ApplyPreferencesToControls();
             LoadSettingsPreferences();
             RefreshHistoryItems();
             SetAboutUpdateStatusText("Updates: automatic checks enabled");
             SetStatus("Settings were reset to defaults.");
         }
+
+        private PreferencesSnapshot CapturePreferencesSnapshot()
+        {
+            return new PreferencesSnapshot(
+                _preferences.IncognitoMode,
+                _preferences.HasSelectedExperienceLevel,
+                _preferences.ExperienceLevel,
+                _preferences.IncludeFullPathsInExports,
+                _preferences.OutputTimestampPolicy,
+                _preferences.UseCustomEncryptOutputDirectory,
+                _preferences.CustomEncryptOutputDirectory,
+                _preferences.UseCustomDecryptOutputDirectory,
+                _preferences.CustomDecryptOutputDirectory,
+                _preferences.ThemePreference);
+        }
+
+        private void RestorePreferencesSnapshot(PreferencesSnapshot snapshot)
+        {
+            _preferences.IncognitoMode = snapshot.IncognitoMode;
+            _preferences.HasSelectedExperienceLevel = snapshot.HasSelectedExperienceLevel;
+            _preferences.ExperienceLevel = snapshot.ExperienceLevel;
+            _preferences.IncludeFullPathsInExports = snapshot.IncludeFullPathsInExports;
+            _preferences.OutputTimestampPolicy = snapshot.OutputTimestampPolicy;
+            _preferences.UseCustomEncryptOutputDirectory = snapshot.UseCustomEncryptOutputDirectory;
+            _preferences.CustomEncryptOutputDirectory = snapshot.CustomEncryptOutputDirectory;
+            _preferences.UseCustomDecryptOutputDirectory = snapshot.UseCustomDecryptOutputDirectory;
+            _preferences.CustomDecryptOutputDirectory = snapshot.CustomDecryptOutputDirectory;
+            _preferences.ThemePreference = snapshot.ThemePreference;
+            _themePreference = snapshot.ThemePreference;
+        }
+
+        private sealed record PreferencesSnapshot(
+            bool IncognitoMode,
+            bool HasSelectedExperienceLevel,
+            UserExperienceLevel ExperienceLevel,
+            bool IncludeFullPathsInExports,
+            string OutputTimestampPolicy,
+            bool UseCustomEncryptOutputDirectory,
+            string CustomEncryptOutputDirectory,
+            bool UseCustomDecryptOutputDirectory,
+            string CustomDecryptOutputDirectory,
+            ThemePreference ThemePreference);
     }
 }

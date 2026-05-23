@@ -27,8 +27,32 @@ public sealed class OperationHistoryExporterTests
         string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: false);
 
         Assert.Contains("verificationStatus", csv);
+        Assert.Contains("message", csv);
         Assert.Contains("Missing file", csv);
         Assert.Contains("\"[redacted]", csv);
+    }
+
+    [Fact]
+    public void ExportCsv_IncludesRedactedResultMessages()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\broken.txt");
+        entry.Results[0].Message = @"Could not open 'D:\Vault\secret.txt'.";
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: false);
+
+        Assert.DoesNotContain(@"D:\Vault", csv);
+        Assert.Contains(Path.Combine("[redacted]", "secret.txt"), csv);
+    }
+
+    [Fact]
+    public void ExportCsv_PreservesResultMessagesWhenFullPathsAreEnabled()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\broken.txt");
+        entry.Results[0].Message = @"Could not open 'D:\Vault\secret.txt'.";
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: true);
+
+        Assert.Contains(@"D:\Vault\secret.txt", csv);
     }
 
     [Fact]
@@ -42,6 +66,143 @@ public sealed class OperationHistoryExporterTests
         Assert.NotNull(parsed);
         Assert.Single(parsed);
         Assert.Equal(@"C:\Files\payload.locked", parsed[0].Results[0].SourcePath);
+    }
+
+    [Fact]
+    public void ExportJson_RedactsCompressionReasonPaths()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results[0].CompressionReason = @"Skipped compression for D:\Vault\secret.txt.";
+
+        string json = OperationHistoryExporter.ExportJson([entry], includeFullPaths: false);
+
+        Assert.DoesNotContain(@"D:\Vault", json);
+        Assert.Contains("[redacted]", json);
+        Assert.Contains("secret.txt", json);
+    }
+
+    [Fact]
+    public void ExportJson_PreservesCompressionReasonPathsWhenFullPathsAreEnabled()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results[0].CompressionReason = @"Skipped compression for D:\Vault\secret.txt.";
+
+        string json = OperationHistoryExporter.ExportJson([entry], includeFullPaths: true);
+        List<OperationHistoryEntry>? parsed = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(@"Skipped compression for D:\Vault\secret.txt.", parsed[0].Results[0].CompressionReason);
+    }
+
+    [Fact]
+    public void ExportCsv_EscapesFormulaLikeTextCells()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.ProfileName = "=Launch";
+        entry.Results[0].Message = "+Run";
+        entry.Results[0].FailureCategory = "  @Risk";
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: true);
+
+        Assert.Contains("\"'=Launch\"", csv);
+        Assert.Contains("\"'+Run\"", csv);
+        Assert.Contains("\"'  @Risk\"", csv);
+    }
+
+    [Fact]
+    public void ExportCsv_TreatsNullResultListsAsEmpty()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results = null!;
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: false);
+
+        Assert.Contains("Completed", csv);
+        Assert.Contains("Not verified", csv);
+    }
+
+    [Fact]
+    public void ExportJson_TreatsNullResultListsAsEmpty()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results = null!;
+
+        string json = OperationHistoryExporter.ExportJson([entry], includeFullPaths: false);
+        List<OperationHistoryEntry>? parsed = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json);
+
+        Assert.NotNull(parsed);
+        Assert.Empty(parsed[0].Results);
+    }
+
+    [Fact]
+    public void ExportJson_SkipsNullResultRows()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results.Add(null!);
+
+        string json = OperationHistoryExporter.ExportJson([entry], includeFullPaths: true);
+        List<OperationHistoryEntry>? parsed = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json);
+
+        Assert.NotNull(parsed);
+        Assert.Single(parsed[0].Results);
+        Assert.Equal(@"C:\Files\payload.locked", parsed[0].Results[0].SourcePath);
+    }
+
+    [Fact]
+    public void ExportCsv_TreatsNullResultRowsAsEmpty()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Results = [null!];
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: false);
+
+        Assert.Contains("Completed", csv);
+        Assert.Contains("Not verified", csv);
+    }
+
+    [Fact]
+    public void ExportJson_SkipsNullHistoryEntries()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+
+        string json = OperationHistoryExporter.ExportJson([null!, entry], includeFullPaths: true);
+        List<OperationHistoryEntry>? parsed = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json);
+
+        Assert.NotNull(parsed);
+        Assert.Single(parsed);
+        Assert.Equal(@"C:\Files\payload.locked", parsed[0].Results[0].SourcePath);
+    }
+
+    [Fact]
+    public void ExportJson_TreatsNullHistorySequenceAsEmpty()
+    {
+        string json = OperationHistoryExporter.ExportJson(null, includeFullPaths: false);
+        List<OperationHistoryEntry>? parsed = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json);
+
+        Assert.NotNull(parsed);
+        Assert.Empty(parsed);
+    }
+
+    [Fact]
+    public void ExportCsv_SkipsNullHistoryEntries()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+
+        string csv = OperationHistoryExporter.ExportCsv([null!, entry], includeFullPaths: true);
+        string[] lines = csv.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(2, lines.Length);
+        Assert.Contains(@"C:\Files\payload.locked", csv);
+    }
+
+    [Fact]
+    public void ExportCsv_TreatsNullHistorySequenceAsEmpty()
+    {
+        string csv = OperationHistoryExporter.ExportCsv(null, includeFullPaths: false);
+        string[] lines = csv.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Single(lines);
+        Assert.Contains("timestampUtc", lines[0]);
     }
 
     private static OperationHistoryEntry CreateHistoryEntry(string sourcePath)

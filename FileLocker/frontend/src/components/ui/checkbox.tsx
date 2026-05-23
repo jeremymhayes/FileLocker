@@ -22,6 +22,7 @@ function Checkbox({
         className="grid place-content-center text-current transition-none [&>svg]:size-3.5"
       >
         <CheckIcon
+          aria-hidden="true"
         />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
