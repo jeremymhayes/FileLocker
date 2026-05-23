@@ -5,7 +5,7 @@
 <h1 align="center">FileLocker</h1>
 
 <p align="center">
-  A local-first Windows app for locking files, checking integrity, previewing metadata exposure, and securely cleaning up sensitive files without sending anything to the cloud.
+  A local-first Windows app for encrypting files, checking integrity, reviewing metadata exposure, managing startup apps, and cleaning up sensitive files without sending anything to the cloud.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 FileLocker is for people who want simple, local control over sensitive files on Windows.
 
-You can encrypt documents and folders, decrypt them later, generate hashes to check integrity, preview the metadata a file may expose, and securely remove files you no longer want left behind. It is designed to feel like a desktop app first, not a command-line utility or a cloud service.
+You can encrypt documents and folders, decrypt them later, generate hashes to check integrity, preview the metadata a file may expose, review startup apps, inspect installed apps, and securely remove files you no longer want left behind. It is designed to feel like a desktop app first, not a command-line utility or a cloud service.
 
 > [!IMPORTANT]
 > FileLocker handles files locally. Passwords, keyfiles, recovery material, update downloads, and file contents stay on your device.
@@ -43,19 +43,30 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 - Verify files with SHA-256 or SHA-512 when you want a clear fingerprint.
 - Preview metadata before sharing a file with someone else.
 - Securely remove files when a normal delete is not enough.
+- Review startup items and installed apps without sending system details to a remote service.
+- Clean approved cache, log, temp, and leftover app folders with visible guardrails.
 
 ## At A Glance
 
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current repo version | `1.2.0.0` |
-| Installer | Standard 64-bit Windows installer |
+| Current version | `1.2.0.0` |
+| Installer | `FileLocker-Setup-1.2.0.0.exe` |
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
 | Updates | Optional checks against GitHub Releases |
-| Interface | Drag-and-drop desktop app with quick actions and guided pages |
+| Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
+
+## New In 1.2.0.0
+
+- Added **Startup Manager** to review startup entries and disable or restore supported entries safely.
+- Added **App Manager** to review installed apps, reveal published install locations, and launch vendor uninstallers after confirmation.
+- Added app leftover cleanup for approved AppData and ProgramData cache, log, temp, and stale app folders.
+- Improved file-operation progress so the current run stays separate from previous activity.
+- Improved error handling so maintenance failures remain visible on the page instead of disappearing after a notification.
+- Improved release validation, installer metadata consistency, and checksum reporting.
 
 ## What You Can Do In The App
 
@@ -68,6 +79,12 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | **Encode Text** | Convert text using Base64, URL, Hex, HTML entities, and UTF-8 tools |
 | **Metadata Scrambler** | Preview metadata fields and review what may be exposed before sharing |
 | **Secure Delete** | Overwrite selected files where possible before removing them |
+| **Custom Clean** | Review and clean approved temporary, cache, recycle bin, and log locations |
+| **Partition Cleaner** | Wipe free space with Windows tools so deleted-file traces are harder to recover |
+| **Drive Optimizer** | Run Windows drive analysis and optimization from a guided page |
+| **Registry Fixer** | Review bounded stale startup and uninstall entries with backup-first cleanup |
+| **Startup Manager** | Review startup entries and disable or restore supported items |
+| **App Manager** | Review installed apps, launch visible uninstallers, and clean approved leftovers |
 | **Settings** | Choose output folders, history privacy, appearance, Explorer integration, and update behavior |
 | **About + Security Guide** | Read plain-language guidance about what FileLocker does and how to use it safely |
 
@@ -108,7 +125,7 @@ The app keeps a strong boundary between the interface and the file-handling logi
 ## Download And Install
 
 1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download the newest `FileLocker-Setup-<version>.exe`.
+2. Download `FileLocker-Setup-1.2.0.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
 3. Run the installer.
 4. Launch FileLocker from the Start Menu or desktop shortcut.
 
@@ -130,6 +147,10 @@ FileLocker is distributed as a 64-bit Windows desktop app. It works offline afte
 
 - Test decryption on a copy before removing important source files.
 - Secure delete is best-effort and is generally more reliable on spinning hard drives than on SSDs.
+- Startup Manager saves restore information before disabling supported entries.
+- App Manager launches vendor uninstallers only after confirmation and does not run silent uninstall commands.
+- App leftover cleanup is limited to approved AppData and ProgramData cleanup areas. Program Files and Windows folders are excluded from recursive cleanup.
+- Some System Care actions need administrator mode because Windows protects the target locations.
 - Use full-disk encryption such as BitLocker alongside FileLocker if you want stronger device-level protection.
 - Metadata preview is helpful, but no general-purpose tool can guarantee that every possible metadata field is removed from every file type.
 
@@ -149,6 +170,9 @@ FileLocker is distributed as a 64-bit Windows desktop app. It works offline afte
 - Hash manifest generation
 - Explorer right-click integration
 - Local history with privacy modes and redacted exports
+- Startup entry review with reversible disable support
+- Installed app inventory and visible uninstaller launch
+- Approved app leftover cleanup for AppData and ProgramData
 - Update checks against GitHub Releases with installer validation
 
 </details>
@@ -212,6 +236,7 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
+- [FileLocker 1.2.0.0 release notes](RELEASE_NOTES_1.2.0.0.md)
 
 ## Project Documents
 
