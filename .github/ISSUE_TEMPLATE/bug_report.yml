@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a reproducible FileLocker problem.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, keyfiles, recovery material, personal file contents, or sensitive paths.
+  - type: input
+    id: version
+    attributes:
+      label: FileLocker version
+      placeholder: "1.2.0.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2 x64"
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Affected workflow
+      options:
+        - Dashboard
+        - Encrypt Files
+        - Decrypt Files
+        - Hash Files
+        - Encode Text
+        - Metadata Scrambler
+        - Secure Delete
+        - Settings
+        - Update / Installer
+        - Custom Clean
+        - Partition Cleaner
+        - Drive Optimizer
+        - Registry Fixer
+        - Startup Manager
+        - App Manager
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use safe sample files and avoid private data.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional context
+      description: Include safe error text, logs, or screenshots if useful.

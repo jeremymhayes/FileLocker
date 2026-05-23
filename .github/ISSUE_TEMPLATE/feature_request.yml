@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest a FileLocker improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is currently difficult, unsafe, or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Keep FileLocker local-first and consistent with the existing workflows.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Encryption / Decryption
+        - Hashing
+        - Metadata
+        - Secure Delete
+        - System Care
+        - Startup Manager
+        - App Manager
+        - Settings
+        - Installer / Updates
+        - Accessibility
+        - Performance
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Project boundaries
+      options:
+        - label: This request does not require cloud accounts, telemetry, subscription features, or remote recovery.
+          required: true
+        - label: This request does not remove confirmation from destructive workflows.
+          required: true
