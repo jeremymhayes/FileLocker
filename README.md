@@ -212,3 +212,11 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
+
+## License
+
+FileLocker is licensed under the GNU General Public License v3.0 (GPLv3).
+
+You are free to use, modify, and distribute this software under the terms of the GPLv3 license.
+
+See the LICENSE file for more information.
