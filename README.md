@@ -49,7 +49,7 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current repo version | `1.1.1.0` |
+| Current repo version | `1.2.0.0` |
 | Installer | Standard 64-bit Windows installer |
 | Internet required | No, not after installation |
 | Cloud account | None |

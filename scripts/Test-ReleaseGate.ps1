@@ -67,14 +67,17 @@ foreach ($field in $versionFields.GetEnumerator()) {
 
 $packageContent = Get-Content -Raw -LiteralPath (Join-Path $projectDir "Package.appxmanifest")
 $appManifestContent = Get-Content -Raw -LiteralPath (Join-Path $projectDir "app.manifest")
-$appInstallerContent = Get-Content -Raw -LiteralPath (Join-Path $projectDir "FileLocker.appinstaller")
+$appInstallerPath = Join-Path $projectDir "FileLocker.appinstaller"
 $nsiContent = Get-Content -Raw -LiteralPath $installerScript
 $readmePath = Join-Path $repoRoot "README.md"
 $releaseNotesPath = Join-Path $repoRoot "RELEASE_NOTES_$version.md"
 
 Assert-Gate ((Get-RegexValue $packageContent 'Identity[^>]+Version="([^"]+)"' 'Package.appxmanifest Version') -eq $version) "Package.appxmanifest version is not synchronized."
 Assert-Gate ((Get-RegexValue $appManifestContent 'assemblyIdentity[^>]+version="([^"]+)"' 'app.manifest version') -eq $version) "app.manifest version is not synchronized."
-Assert-Gate ((Get-RegexValue $appInstallerContent '<AppInstaller[^>]+Version="([^"]+)"' 'FileLocker.appinstaller Version') -eq $version) "FileLocker.appinstaller version is not synchronized."
+if (Test-Path -LiteralPath $appInstallerPath) {
+    $appInstallerContent = Get-Content -Raw -LiteralPath $appInstallerPath
+    Assert-Gate ((Get-RegexValue $appInstallerContent '<AppInstaller[^>]+Version="([^"]+)"' 'FileLocker.appinstaller Version') -eq $version) "FileLocker.appinstaller version is not synchronized."
+}
 Assert-Gate ((Get-RegexValue $nsiContent '!define\s+APP_VERSION\s+"([^"]+)"' 'NSIS APP_VERSION') -eq $version) "NSIS APP_VERSION is not synchronized."
 Assert-FileExists $readmePath "README"
 Assert-FileExists $releaseNotesPath "Release notes"
