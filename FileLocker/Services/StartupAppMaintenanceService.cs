@@ -1,12 +1,15 @@
 using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -17,12 +20,21 @@ internal static class StartupAppMaintenanceService
 {
     private const int MaxLeftoverScanFiles = 75_000;
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunOnceKeyPath = @"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+    private const string StartupCategoryApps = "Startup Apps";
+    private const string StartupCategoryBroken = "Broken Startup Items";
+    private const string StartupCategoryAdvanced = "Advanced Startup Hooks";
+    private const int ServiceNoChange = -1;
+    private const int ServiceDisabled = 4;
+    private const int ScManagerConnect = 0x0001;
+    private const int ServiceQueryConfig = 0x0001;
+    private const int ServiceChangeConfig = 0x0002;
     private static readonly JsonSerializerOptions MetadataJsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
 
-    private static readonly string[] ExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi"];
+    private static readonly string[] ExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".sys", ".ocx"];
     private static readonly HashSet<string> SilentUninstallSwitches = new(StringComparer.OrdinalIgnoreCase)
     {
         "q",
@@ -64,14 +76,20 @@ internal static class StartupAppMaintenanceService
             .Select(entry => entry.item)
             .ToArray();
 
-        StartupItem[] disabledItems = LoadDisabledStartupMetadata(warnings)
+        List<StartupDisableMetadata> disabledMetadata = LoadDisabledStartupMetadata(warnings);
+        StartupItem[] disabledItems = disabledMetadata
             .Select(ToDisabledStartupItem)
             .ToArray();
+        HashSet<string> ignoredIds = LoadIgnoredStartupItemIds(warnings);
 
         StartupItem[] items = enabledItems
             .Concat(disabledItems)
+            .Select(item => item with { isIgnored = ignoredIds.Contains(item.id) })
             .GroupBy(item => item.id, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.OrderByDescending(item => item.isEnabled).First())
+            .Select(group => group
+                .OrderByDescending(item => item.isEnabled)
+                .ThenByDescending(item => item.canToggle)
+                .First())
             .OrderBy(item => item.source, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -80,6 +98,11 @@ internal static class StartupAppMaintenanceService
             items,
             items.Count(item => item.isEnabled),
             items.Count(item => !item.isEnabled),
+            items.Count(item => string.Equals(item.category, StartupCategoryBroken, StringComparison.OrdinalIgnoreCase)),
+            items.Count(item => string.Equals(item.category, StartupCategoryAdvanced, StringComparison.OrdinalIgnoreCase)),
+            disabledItems.Length,
+            items.Count(item => item.isIgnored),
+            disabledMetadata.Select(ToStartupRestoreRecord).ToArray(),
             warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
@@ -97,6 +120,99 @@ internal static class StartupAppMaintenanceService
         }
 
         return DisableStartupItem(normalizedId);
+    }
+
+    internal static StartupIgnoreResult SetStartupIgnored(string? itemId, bool ignored)
+    {
+        if (string.IsNullOrWhiteSpace(itemId))
+        {
+            throw new InvalidOperationException("Select a startup item first.");
+        }
+
+        string normalizedId = itemId.Trim();
+        HashSet<string> ignoredIds = LoadIgnoredStartupItemIds();
+        if (ignored)
+        {
+            ignoredIds.Add(normalizedId);
+        }
+        else
+        {
+            ignoredIds.Remove(normalizedId);
+        }
+
+        SaveIgnoredStartupItemIds(ignoredIds);
+        return new StartupIgnoreResult(normalizedId, ignored, ignored ? "Startup item ignored." : "Startup item returned to the active review list.");
+    }
+
+    internal static StartupExportResult ExportStartupItemDetails(string? itemId, bool includeFullPaths = true)
+    {
+        if (string.IsNullOrWhiteSpace(itemId))
+        {
+            throw new InvalidOperationException("Select a startup item first.");
+        }
+
+        StartupScanResult scan = ScanStartup();
+        StartupItem item = scan.items.FirstOrDefault(candidate => string.Equals(candidate.id, itemId.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("The selected startup item could not be found.");
+        string exportDirectory = Path.Combine(GetSystemCareDataDirectory(), "Exports");
+        Directory.CreateDirectory(exportDirectory);
+        string safeName = SanitizeFolderToken(item.name);
+        string fileName = $"FileLocker-StartupItem-{(string.IsNullOrWhiteSpace(safeName) ? item.id : safeName)}-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+        string exportPath = FileWriteService.ResolveAvailablePath(Path.Combine(exportDirectory, fileName));
+        StartupItem exportItem = includeFullPaths ? item : RedactStartupItemForExport(item);
+        FileWriteService.WriteAllTextAtomically(exportPath, JsonSerializer.Serialize(exportItem, MetadataJsonOptions), Encoding.UTF8);
+        return new StartupExportResult(exportPath, Path.GetFileName(exportPath), item.id, includeFullPaths);
+    }
+
+    private static StartupItem RedactStartupItemForExport(StartupItem item)
+    {
+        return item with
+        {
+            location = RedactStartupExportText(item.location),
+            command = RedactStartupExportText(item.command),
+            targetPath = RedactOptionalStartupExportText(item.targetPath),
+            warnings = item.warnings.Select(RedactStartupExportText).ToArray(),
+            commandRaw = RedactStartupExportText(item.commandRaw),
+            executableResolved = RedactStartupExportText(item.executableResolved),
+            arguments = RedactStartupExportText(item.arguments),
+            workingDirectory = RedactStartupExportText(item.workingDirectory),
+            sourceLocation = RedactStartupExportText(item.sourceLocation),
+            backupPayload = RedactStartupExportText(item.backupPayload),
+            notes = RedactStartupExportText(item.notes)
+        };
+    }
+
+    private static string? RedactOptionalStartupExportText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? value : RedactStartupExportText(value);
+
+    private static string RedactStartupExportText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : SensitiveDataRedactor.RedactMessage(value);
+
+    internal static StartupToggleResult RemoveBrokenStartupItem(string? itemId, string? confirmation)
+    {
+        if (!string.Equals(confirmation, "REMOVE BROKEN STARTUP", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Confirm broken startup removal before FileLocker changes the entry.");
+        }
+
+        if (string.IsNullOrWhiteSpace(itemId))
+        {
+            throw new InvalidOperationException("Select a startup item first.");
+        }
+
+        StartupItem? item = ScanStartup().items.FirstOrDefault(candidate => string.Equals(candidate.id, itemId.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (item == null || !string.Equals(item.category, StartupCategoryBroken, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("FileLocker only removes startup entries that are classified as broken.");
+        }
+
+        if (!item.canToggle)
+        {
+            throw new InvalidOperationException("This broken startup item is read-only. Export details instead of removing it.");
+        }
+
+        StartupToggleResult result = DisableStartupItem(item.id, userAction: "RemoveBroken");
+        return result with { message = $"{item.name} was removed from active startup and can be restored from FileLocker metadata." };
     }
 
     internal static InstalledAppsScanResult ScanInstalledApps()
@@ -273,11 +389,236 @@ internal static class StartupAppMaintenanceService
     internal static string? ParseStartupCommandTargetPath(string? command)
     {
         string? normalized = RegistryPathNormalizer.Normalize(command);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : ParseStartupCommandTargetCandidate(Environment.ExpandEnvironmentVariables(normalized));
+    }
+
+    internal static StartupCommandResolution ResolveStartupCommand(string? command)
+    {
+        string raw = command?.Trim() ?? string.Empty;
+        string? normalized = RegistryPathNormalizer.Normalize(raw);
         if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return new StartupCommandResolution(raw, string.Empty, string.Empty, string.Empty, string.Empty, "UnresolvedCommand", "Low", "Medium", "Command is empty.");
+        }
+
+        normalized = Environment.ExpandEnvironmentVariables(normalized);
+        ProcessCommand processCommand = ParseProcessCommand(normalized);
+        string executable = processCommand.fileName.Trim().Trim('"');
+        string arguments = processCommand.arguments;
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return new StartupCommandResolution(raw, string.Empty, arguments, string.Empty, string.Empty, "UnresolvedCommand", "Low", "Medium", "FileLocker could not identify an executable.");
+        }
+
+        string resolvedExecutable = ResolveExecutablePath(executable);
+        string workingDirectory = GetSafeDirectoryName(resolvedExecutable);
+        string launcherName = Path.GetFileName(resolvedExecutable);
+        bool knownLauncher = IsKnownStartupLauncher(launcherName) || IsKnownStartupLauncher(executable);
+        string status = DetermineCommandStatus(resolvedExecutable, knownLauncher);
+        string confidence = status is "MissingTarget" or "Valid" ? "High" : status is "SuspiciousLauncher" or "SystemProtected" ? "Medium" : "Low";
+        string risk = status switch
+        {
+            "MissingTarget" => "High",
+            "SuspiciousLauncher" => "Medium",
+            "UnresolvedCommand" => "Medium",
+            "TargetUnavailable" => "Medium",
+            "SystemProtected" => "Low",
+            _ => knownLauncher && IsPotentiallyScriptableLauncher(launcherName) ? "Medium" : "Low"
+        };
+        string notes = status switch
+        {
+            "SuspiciousLauncher" => "Startup uses a launcher that can run scripts or indirect targets.",
+            "TargetUnavailable" => "Target is on a removable, network, or currently inaccessible location.",
+            "SystemProtected" => "Target is under a protected Windows or Program Files location and is not treated as a broken startup item.",
+            "MissingTarget" => "Resolved startup target could not be found.",
+            "UnresolvedCommand" => "Command could not be resolved to a concrete executable.",
+            _ => knownLauncher ? "Command uses a recognized Windows launcher." : string.Empty
+        };
+
+        return new StartupCommandResolution(raw, resolvedExecutable, arguments, workingDirectory, launcherName, status, confidence, risk, notes);
+    }
+
+    private static string ResolveExecutablePath(string executable)
+    {
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return string.Empty;
+        }
+
+        string expanded = Environment.ExpandEnvironmentVariables(executable.Trim().Trim('"'));
+        if (Path.IsPathRooted(expanded))
+        {
+            return Path.GetFullPath(expanded);
+        }
+
+        string? pathResolved = ResolveCommandFromPath(expanded);
+        return pathResolved ?? expanded;
+    }
+
+    private static string? ResolveCommandFromPath(string executable)
+    {
+        string fileName = Path.GetFileName(executable);
+        if (string.IsNullOrWhiteSpace(fileName))
         {
             return null;
         }
 
+        string[] extensions = Path.HasExtension(fileName)
+            ? [string.Empty]
+            : (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.COM;.BAT;.CMD")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (string extension in extensions)
+            {
+                string candidate = Path.Combine(directory, fileName + extension);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string DetermineCommandStatus(string executable, bool knownLauncher)
+    {
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return "UnresolvedCommand";
+        }
+
+        string fileName = Path.GetFileName(executable);
+        if (knownLauncher && IsPotentiallyScriptableLauncher(fileName))
+        {
+            return "SuspiciousLauncher";
+        }
+
+        if (!Path.IsPathRooted(executable))
+        {
+            return knownLauncher ? "Valid" : "UnresolvedCommand";
+        }
+
+        try
+        {
+            bool protectedPath = IsProtectedStartupPath(executable);
+            string root = Path.GetPathRoot(executable) ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(root))
+            {
+                var drive = new DriveInfo(root);
+                if (drive.DriveType is DriveType.Network or DriveType.Removable || !drive.IsReady)
+                {
+                    return "TargetUnavailable";
+                }
+            }
+
+            if (File.Exists(executable) || Directory.Exists(executable))
+            {
+                return "Valid";
+            }
+
+            return protectedPath ? "SystemProtected" : "MissingTarget";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return IsProtectedStartupPath(executable) ? "SystemProtected" : "TargetUnavailable";
+        }
+        catch (IOException)
+        {
+            return IsProtectedStartupPath(executable) ? "SystemProtected" : "TargetUnavailable";
+        }
+        catch
+        {
+            return "UnresolvedCommand";
+        }
+    }
+
+    internal static bool IsProtectedStartupPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!Path.IsPathRooted(path))
+            {
+                return false;
+            }
+
+            string fullPath = Path.GetFullPath(path.Trim());
+            return IsUnderAnyPath(fullPath, GetProtectedStartupRoots(), includeRoot: false);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string GetSafeDirectoryName(string path)
+    {
+        try
+        {
+            return Path.IsPathRooted(path) ? Path.GetDirectoryName(path) ?? string.Empty : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static bool IsKnownStartupLauncher(string value)
+    {
+        string fileName = Path.GetFileName(value);
+        return fileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("msiexec", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("rundll32", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("regsvr32.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("regsvr32", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cmd", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("powershell", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("pwsh", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("wscript.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("wscript", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cscript.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cscript", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("explorer", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("java.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("java", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("python.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("python", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPotentiallyScriptableLauncher(string value)
+    {
+        string fileName = Path.GetFileName(value);
+        return fileName.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cmd", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("powershell", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("pwsh", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("wscript.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("wscript", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cscript.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("cscript", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("regsvr32.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("regsvr32", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("rundll32", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ParseStartupCommandTargetCandidate(string normalized)
+    {
         if (normalized.StartsWith('"'))
         {
             int closingQuote = normalized.IndexOf('"', 1);
@@ -352,7 +693,9 @@ internal static class StartupAppMaintenanceService
         string valueName,
         object? value,
         RegistryValueKind valueKind,
-        string backupPath)
+        string backupPath,
+        RegistryView registryView = RegistryView.Default,
+        string userAction = "Disable")
     {
         return new StartupDisableMetadata(
             item.id,
@@ -364,8 +707,25 @@ internal static class StartupAppMaintenanceService
             item.requiresAdministrator,
             DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
             backupPath,
-            ToRegistryMetadata(hive, keyPath, valueName, value, valueKind),
-            file: null);
+            ToRegistryMetadata(hive, keyPath, valueName, value, valueKind, registryView),
+            file: null,
+            item.sourceType,
+            item.category,
+            item.scope,
+            item.status,
+            GetCurrentFileLockerVersion(),
+            restoreStatus: "Available",
+            failureDetails: string.Empty,
+            userAction: userAction,
+            resolvedExecutable: GetStartupResolvedTargetSnapshot(item),
+            commandStatus: item.status,
+            confidence: item.confidence,
+            riskLevel: item.riskLevel);
+    }
+
+    private static string GetStartupResolvedTargetSnapshot(StartupItem item)
+    {
+        return FirstNonEmpty(item.executableResolved, item.targetPath ?? string.Empty);
     }
 
     internal static bool IsApprovedAppLeftoverPath(string? path)
@@ -425,7 +785,7 @@ internal static class StartupAppMaintenanceService
         return false;
     }
 
-    private static StartupToggleResult DisableStartupItem(string itemId)
+    private static StartupToggleResult DisableStartupItem(string itemId, string userAction = "Disable")
     {
         var warnings = new List<string>();
         StartupEntry entry = EnumerateEnabledStartupEntries(warnings)
@@ -449,16 +809,18 @@ internal static class StartupAppMaintenanceService
                 entry.valueName ?? string.Empty,
                 entry.registryValue,
                 entry.registryValueKind ?? RegistryValueKind.String,
-                backupPath);
+                backupPath,
+                entry.registryView,
+                userAction);
 
             disableAction = () =>
             {
-                RegistryKey root = GetRegistryRoot(entry.hive);
+                using RegistryKey root = GetRegistryRoot(entry.hive, entry.registryView);
                 using RegistryKey? key = root.OpenSubKey(entry.keyPath ?? string.Empty, writable: true);
                 key?.DeleteValue(entry.valueName ?? string.Empty, throwOnMissingValue: false);
             };
         }
-        else
+        else if (entry.kind == StartupEntryKind.File)
         {
             string sourcePath = entry.filePath ?? throw new InvalidOperationException("The selected startup shortcut could not be found.");
             if (!File.Exists(sourcePath))
@@ -468,8 +830,25 @@ internal static class StartupAppMaintenanceService
 
             string disabledPath = GetAvailableDisabledStartupFilePath(entry.item.id, sourcePath);
             Directory.CreateDirectory(Path.GetDirectoryName(disabledPath)!);
-            metadata = CreateFileStartupDisableMetadata(entry.item, disabledPath);
+            metadata = CreateFileStartupDisableMetadata(entry.item, disabledPath, userAction);
             disableAction = () => File.Move(sourcePath, disabledPath);
+        }
+        else if (entry.kind == StartupEntryKind.ScheduledTask)
+        {
+            string taskPath = entry.keyPath ?? throw new InvalidOperationException("The selected scheduled task could not be found.");
+            metadata = CreateScheduledTaskDisableMetadata(entry.item, taskPath, userAction);
+            disableAction = () => SetScheduledTaskEnabled(taskPath, enabled: false);
+        }
+        else if (entry.kind == StartupEntryKind.Service)
+        {
+            string serviceName = entry.valueName ?? throw new InvalidOperationException("The selected service could not be found.");
+            int originalStartType = entry.registryValue is int startType ? startType : QueryServiceStartType(serviceName);
+            metadata = CreateServiceDisableMetadata(entry.item, serviceName, originalStartType, userAction);
+            disableAction = () => ChangeServiceStartType(serviceName, ServiceDisabled);
+        }
+        else
+        {
+            throw new InvalidOperationException("This startup item is read-only and cannot be disabled by FileLocker.");
         }
 
         List<StartupDisableMetadata> previousMetadataItems = LoadDisabledStartupMetadata();
@@ -508,17 +887,38 @@ internal static class StartupAppMaintenanceService
             RequireAdministrator("Restoring this startup item");
         }
 
-        if (metadata.registry != null)
+        try
         {
-            RestoreRegistryStartupItem(metadata.registry);
+            if (metadata.registry != null)
+            {
+                RestoreRegistryStartupItem(metadata.registry);
+            }
+            else if (metadata.file != null)
+            {
+                RestoreStartupFolderItem(metadata.file);
+            }
+            else if (metadata.task != null)
+            {
+                RestoreScheduledTaskItem(metadata.task);
+            }
+            else if (metadata.service != null)
+            {
+                RestoreServiceStartupItem(metadata.service);
+            }
+            else
+            {
+                throw new InvalidOperationException("The startup restore metadata is incomplete.");
+            }
         }
-        else if (metadata.file != null)
+        catch (Exception ex)
         {
-            RestoreStartupFolderItem(metadata.file);
-        }
-        else
-        {
-            throw new InvalidOperationException("The startup restore metadata is incomplete.");
+            string failureDetails = SensitiveDataRedactor.RedactMessage(ex.Message);
+            SaveDisabledStartupMetadata(metadataItems
+                .Select(item => string.Equals(item.id, metadata.id, StringComparison.OrdinalIgnoreCase)
+                    ? item with { restoreStatus = "Failed", failureDetails = failureDetails }
+                    : item)
+                .ToList());
+            throw;
         }
 
         SaveDisabledStartupMetadata(metadataItems
@@ -535,103 +935,305 @@ internal static class StartupAppMaintenanceService
 
     private static IEnumerable<StartupEntry> EnumerateEnabledStartupEntries(List<string> warnings)
     {
-        foreach (StartupEntry entry in EnumerateRegistryStartupEntries(Registry.CurrentUser, "HKCU", requiresAdministrator: false, warnings))
+        foreach (IStartupEntryProvider provider in CreateStartupEntryProviders())
         {
-            yield return entry;
-        }
-
-        foreach (StartupEntry entry in EnumerateRegistryStartupEntries(Registry.LocalMachine, "HKLM", requiresAdministrator: true, warnings))
-        {
-            yield return entry;
-        }
-
-        foreach (StartupEntry entry in EnumerateStartupFolderEntries(
-            Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-            "Startup folder",
-            requiresAdministrator: false,
-            warnings))
-        {
-            yield return entry;
-        }
-
-        foreach (StartupEntry entry in EnumerateStartupFolderEntries(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup),
-            "Common Startup folder",
-            requiresAdministrator: true,
-            warnings))
-        {
-            yield return entry;
+            foreach (StartupEntry entry in provider.Enumerate(warnings))
+            {
+                yield return entry;
+            }
         }
     }
 
-    private static IReadOnlyList<StartupEntry> EnumerateRegistryStartupEntries(
-        RegistryKey root,
+    private static IEnumerable<IStartupEntryProvider> CreateStartupEntryProviders()
+    {
+        yield return new DelegateStartupEntryProvider("HKCU Run", warnings => EnumerateRegistryStartupEntriesFromHive(
+            RegistryHive.CurrentUser,
+            RegistryView.Default,
+            "HKCU",
+            "Current user",
+            RunKeyPath,
+            "HKCU Run",
+            canDisable: true,
+            requiresAdministrator: false,
+            StartupCategoryApps,
+            warnings));
+        yield return new DelegateStartupEntryProvider("HKCU RunOnce", warnings => EnumerateRegistryStartupEntriesFromHive(
+            RegistryHive.CurrentUser,
+            RegistryView.Default,
+            "HKCU",
+            "Current user",
+            RunOnceKeyPath,
+            "HKCU RunOnce",
+            canDisable: true,
+            requiresAdministrator: false,
+            StartupCategoryApps,
+            warnings));
+
+        RegistryView[] machineViews = Environment.Is64BitOperatingSystem
+            ? [RegistryView.Registry64, RegistryView.Registry32]
+            : [RegistryView.Registry32];
+        foreach (RegistryView view in machineViews)
+        {
+            string viewLabel = view == RegistryView.Registry32 && Environment.Is64BitOperatingSystem ? "32-bit" : "64-bit";
+            yield return new DelegateStartupEntryProvider($"HKLM Run {viewLabel}", warnings => EnumerateRegistryStartupEntriesFromHive(
+                RegistryHive.LocalMachine,
+                view,
+                "HKLM",
+                $"All users ({viewLabel})",
+                RunKeyPath,
+                $"HKLM Run ({viewLabel})",
+                canDisable: true,
+                requiresAdministrator: true,
+                StartupCategoryApps,
+                warnings));
+            yield return new DelegateStartupEntryProvider($"HKLM RunOnce {viewLabel}", warnings => EnumerateRegistryStartupEntriesFromHive(
+                RegistryHive.LocalMachine,
+                view,
+                "HKLM",
+                $"All users ({viewLabel})",
+                RunOnceKeyPath,
+                $"HKLM RunOnce ({viewLabel})",
+                canDisable: true,
+                requiresAdministrator: true,
+                StartupCategoryApps,
+                warnings));
+        }
+
+        yield return new DelegateStartupEntryProvider("Startup folder", warnings => EnumerateStartupFolderEntries(
+            Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+            "Startup folder",
+            requiresAdministrator: false,
+            warnings));
+        yield return new DelegateStartupEntryProvider("Common Startup folder", warnings => EnumerateStartupFolderEntries(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup),
+            "Common Startup folder",
+            requiresAdministrator: true,
+            warnings));
+        yield return new DelegateStartupEntryProvider("Policy startup", EnumeratePolicyStartupEntries);
+        yield return new DelegateStartupEntryProvider("Group Policy scripts", EnumerateGroupPolicyScriptEntries);
+        yield return new DelegateStartupEntryProvider("Advanced registry hooks", EnumerateAdvancedRegistryStartupEntries);
+        yield return new DelegateStartupEntryProvider("Services and drivers", EnumerateServiceStartupEntries);
+        yield return new DelegateStartupEntryProvider("Scheduled tasks", EnumerateScheduledTaskStartupEntries);
+        yield return new DelegateStartupEntryProvider("WMI event consumers", EnumerateWmiPermanentEventConsumers);
+        yield return new DelegateStartupEntryProvider("Packaged startup tasks", EnumeratePackagedStartupTasks);
+    }
+
+    private static IReadOnlyList<StartupEntry> EnumerateRegistryStartupEntriesFromHive(
+        RegistryHive registryHive,
+        RegistryView view,
         string hive,
+        string scope,
+        string keyPath,
+        string source,
+        bool canDisable,
         bool requiresAdministrator,
+        string defaultCategory,
         List<string> warnings)
     {
         var entries = new List<StartupEntry>();
         try
         {
-            using RegistryKey? key = root.OpenSubKey(RunKeyPath, writable: false);
+            using RegistryKey root = RegistryKey.OpenBaseKey(registryHive, view);
+            using RegistryKey? key = root.OpenSubKey(keyPath, writable: false);
             if (key == null)
             {
                 return entries;
             }
 
-            string[] valueNames;
-            try
+            foreach (string valueName in GetRegistryValueNames(key, $@"{hive}\{keyPath}", warnings))
             {
-                valueNames = key.GetValueNames();
-            }
-            catch (Exception ex)
-            {
-                AddWarning(warnings, $"{hive}\\{RunKeyPath}: {ex.Message}");
-                return entries;
-            }
-
-            foreach (string valueName in valueNames)
-            {
-                object? value;
-                RegistryValueKind valueKind;
-                try
-                {
-                    value = key.GetValue(valueName, defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-                    valueKind = key.GetValueKind(valueName);
-                }
-                catch (Exception ex)
-                {
-                    AddWarning(warnings, $"{hive}\\{RunKeyPath}\\{valueName}: {ex.Message}");
-                    continue;
-                }
-
-                string command = RegistryValueToDisplayString(value);
-                string? targetPath = ParseStartupCommandTargetPath(command);
-                string[] itemWarnings = BuildStartupTargetWarnings(targetPath);
-                string displayName = string.IsNullOrWhiteSpace(valueName) ? "(Default startup entry)" : valueName;
-                string id = CreateStableId("startup", "registry", hive, RunKeyPath, valueName);
-                var item = new StartupItem(
-                    id,
-                    displayName,
-                    $"{hive} Run",
-                    $@"{hive}\{RunKeyPath}",
-                    command,
-                    targetPath,
-                    isEnabled: true,
+                StartupEntry? entry = TryCreateRegistryStartupEntry(
+                    key,
+                    hive,
+                    scope,
+                    keyPath,
+                    source,
+                    valueName,
+                    canDisable,
                     requiresAdministrator,
-                    canToggle: true,
-                    itemWarnings.Length > 0 ? "Target needs review" : "Enabled",
-                    itemWarnings);
-
-                entries.Add(new StartupEntry(item, StartupEntryKind.Registry, hive, RunKeyPath, valueName, valueKind, value, filePath: null));
+                    defaultCategory,
+                    readOnlyManaged: !canDisable,
+                    warnings,
+                    view);
+                if (entry != null)
+                {
+                    entries.Add(entry);
+                }
             }
         }
         catch (Exception ex)
         {
-            AddWarning(warnings, $"{hive}\\{RunKeyPath}: {ex.Message}");
+            AddWarning(warnings, $"{hive}\\{keyPath}: {ex.Message}");
         }
 
         return entries;
+    }
+
+    private static string[] GetRegistryValueNames(RegistryKey key, string location, List<string> warnings)
+    {
+        try
+        {
+            return key.GetValueNames();
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"{location}: {ex.Message}");
+            return [];
+        }
+    }
+
+    private static StartupEntry? TryCreateRegistryStartupEntry(
+        RegistryKey key,
+        string hive,
+        string scope,
+        string keyPath,
+        string source,
+        string valueName,
+        bool canDisable,
+        bool requiresAdministrator,
+        string defaultCategory,
+        bool readOnlyManaged,
+        List<string> warnings,
+        RegistryView registryView = RegistryView.Default)
+    {
+        object? value;
+        RegistryValueKind valueKind;
+        try
+        {
+            value = key.GetValue(valueName, defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+            valueKind = key.GetValueKind(valueName);
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"{hive}\\{keyPath}\\{valueName}: {ex.Message}");
+            return null;
+        }
+
+        string command = RegistryValueToDisplayString(value);
+        string displayName = string.IsNullOrWhiteSpace(valueName) ? "(Default startup entry)" : valueName;
+        StartupCommandResolution resolution = ResolveStartupCommand(command);
+        string[] itemWarnings = BuildStartupTargetWarnings(resolution);
+        string category = GetStartupCategory(defaultCategory, resolution);
+        string registryViewLabel = GetRegistryViewLabel(registryView);
+        string location = FormatRegistryLocation(hive, keyPath, registryView);
+        string sourceLocation = FormatRegistryLocation(hive, $@"{keyPath}\{valueName}", registryView);
+        string id = CreateStableId("startup", "registry", hive, registryViewLabel, keyPath, source, valueName);
+        StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+        string status = readOnlyManaged
+            ? GetReadOnlyStartupStatus(source, keyPath)
+            : resolution.status == "Valid" ? "Enabled" : resolution.status;
+
+        var item = new StartupItem(
+            id,
+            displayName,
+            source,
+            location,
+            command,
+            string.IsNullOrWhiteSpace(resolution.executableResolved) ? null : resolution.executableResolved,
+            isEnabled: true,
+            requiresAdministrator,
+            canDisable && !readOnlyManaged,
+            status,
+            itemWarnings,
+            sourceType: "Registry",
+            category,
+            scope,
+            publisher.publisher,
+            publisher.signatureStatus,
+            publisher.isMicrosoftSigned,
+            commandRaw: command,
+            executableResolved: resolution.executableResolved,
+            arguments: resolution.arguments,
+            workingDirectory: resolution.workingDirectory,
+            sourceLocation,
+            lastModified: string.Empty,
+            startupImpact: category == StartupCategoryAdvanced ? "High" : "Medium",
+            confidence: resolution.confidence,
+            riskLevel: AdjustStartupRisk(resolution.riskLevel, category, publisher),
+            disableMethod: canDisable && !readOnlyManaged ? "RegistryValue" : "ReadOnly",
+            isReadOnlyManaged: readOnlyManaged,
+            backupPayload: valueKind.ToString(),
+            notes: resolution.notes);
+
+        return new StartupEntry(item, canDisable && !readOnlyManaged ? StartupEntryKind.Registry : StartupEntryKind.ReadOnlyRegistry, hive, keyPath, valueName, valueKind, value, filePath: null, registryView);
+    }
+
+    private static string GetReadOnlyStartupStatus(string source, string keyPath)
+    {
+        return source.Contains("Policy", StringComparison.OrdinalIgnoreCase) ||
+            keyPath.Contains(@"\Policies\", StringComparison.OrdinalIgnoreCase) ||
+            keyPath.StartsWith(@"Software\Policies\", StringComparison.OrdinalIgnoreCase)
+            ? "PolicyManaged"
+            : "Managed / read-only";
+    }
+
+    private static string FormatRegistryLocation(string hive, string keyPath, RegistryView registryView)
+    {
+        string viewLabel = GetRegistryViewLabel(registryView);
+        string location = $@"{hive}\{keyPath}";
+        return string.IsNullOrWhiteSpace(viewLabel) ? location : $"{location} ({viewLabel} view)";
+    }
+
+    private static string GetRegistryViewLabel(RegistryView registryView)
+    {
+        return registryView switch
+        {
+            RegistryView.Registry32 => "32-bit",
+            RegistryView.Registry64 => "64-bit",
+            _ => string.Empty
+        };
+    }
+
+    private static string[] BuildStartupTargetWarnings(StartupCommandResolution resolution)
+    {
+        var warnings = new List<string>();
+        if (resolution.status == "MissingTarget")
+        {
+            warnings.Add("The startup target path could not be found.");
+        }
+        else if (resolution.status == "UnresolvedCommand")
+        {
+            warnings.Add("FileLocker could not resolve the startup command.");
+        }
+        else if (resolution.status == "TargetUnavailable")
+        {
+            warnings.Add("The startup target is unavailable or inaccessible right now.");
+        }
+        else if (resolution.status == "SystemProtected")
+        {
+            warnings.Add("The startup target is under a protected system location and is not treated as broken.");
+        }
+        else if (resolution.status == "SuspiciousLauncher")
+        {
+            warnings.Add("Startup uses a script-capable or indirect launcher.");
+        }
+
+        return warnings.ToArray();
+    }
+
+    private static string GetStartupCategory(string defaultCategory, StartupCommandResolution resolution)
+    {
+        if (resolution.status is "MissingTarget" or "UnresolvedCommand")
+        {
+            return StartupCategoryBroken;
+        }
+
+        return defaultCategory;
+    }
+
+    private static string AdjustStartupRisk(string riskLevel, string category, StartupPublisherInfo publisher)
+    {
+        if (category == StartupCategoryBroken)
+        {
+            return "High";
+        }
+
+        if (publisher.isMicrosoftSigned && string.Equals(riskLevel, "Medium", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Low";
+        }
+
+        return riskLevel;
     }
 
     private static IEnumerable<StartupEntry> EnumerateStartupFolderEntries(
@@ -661,20 +1263,43 @@ internal static class StartupAppMaintenanceService
         foreach (string filePath in files)
         {
             string? targetPath = ResolveStartupFolderTargetPath(filePath);
-            string[] itemWarnings = BuildStartupTargetWarnings(targetPath);
+            StartupCommandResolution resolution = ResolveStartupCommand(targetPath ?? filePath);
+            string[] itemWarnings = BuildStartupTargetWarnings(resolution);
             string id = CreateStableId("startup", "folder", source, filePath);
+            string category = GetStartupCategory(StartupCategoryApps, resolution);
+            StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+            string lastModified = GetFileLastModifiedDisplay(filePath);
             var item = new StartupItem(
                 id,
                 Path.GetFileNameWithoutExtension(filePath),
                 source,
                 filePath,
                 filePath,
-                targetPath,
+                string.IsNullOrWhiteSpace(resolution.executableResolved) ? targetPath : resolution.executableResolved,
                 isEnabled: true,
                 requiresAdministrator,
                 canToggle: true,
-                itemWarnings.Length > 0 ? "Target needs review" : "Enabled",
-                itemWarnings);
+                resolution.status == "Valid" ? "Enabled" : resolution.status,
+                itemWarnings,
+                sourceType: "Startup folder",
+                category,
+                scope: requiresAdministrator ? "All users" : "Current user",
+                publisher.publisher,
+                publisher.signatureStatus,
+                publisher.isMicrosoftSigned,
+                commandRaw: filePath,
+                executableResolved: resolution.executableResolved,
+                arguments: resolution.arguments,
+                workingDirectory: resolution.workingDirectory,
+                sourceLocation: filePath,
+                lastModified,
+                startupImpact: "Medium",
+                confidence: resolution.confidence,
+                riskLevel: AdjustStartupRisk(resolution.riskLevel, category, publisher),
+                disableMethod: "MoveToDisabledStorage",
+                isReadOnlyManaged: false,
+                backupPayload: filePath,
+                notes: resolution.notes);
 
             yield return new StartupEntry(item, StartupEntryKind.File, hive: null, keyPath: null, valueName: null, registryValueKind: null, registryValue: null, filePath);
         }
@@ -705,31 +1330,1098 @@ internal static class StartupAppMaintenanceService
         }
     }
 
-    private static string[] BuildStartupTargetWarnings(string? targetPath)
+    private static IEnumerable<StartupEntry> EnumeratePolicyStartupEntries(List<string> warnings)
     {
-        if (string.IsNullOrWhiteSpace(targetPath))
+        const string policyRunPath = @"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run";
+        foreach (StartupEntry entry in EnumerateRegistryStartupEntriesFromHive(
+            RegistryHive.CurrentUser,
+            RegistryView.Default,
+            "HKCU",
+            "Current user policy",
+            policyRunPath,
+            "HKCU Policy Run",
+            canDisable: false,
+            requiresAdministrator: false,
+            StartupCategoryApps,
+            warnings))
         {
-            return ["FileLocker could not resolve the startup target path."];
+            yield return entry;
         }
 
-        string normalized = targetPath.Trim().Trim('"');
-        if (LooksLikeShellCommand(normalized))
+        foreach (StartupEntry entry in EnumerateRegistryStartupEntriesFromHive(
+            RegistryHive.LocalMachine,
+            Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32,
+            "HKLM",
+            "All users policy",
+            policyRunPath,
+            "HKLM Policy Run",
+            canDisable: false,
+            requiresAdministrator: true,
+            StartupCategoryApps,
+            warnings))
+        {
+            yield return entry;
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateGroupPolicyScriptEntries(List<string> warnings)
+    {
+        GroupPolicyScriptSource[] sources =
+        [
+            new(RegistryHive.CurrentUser, "HKCU", "Current user", @"Software\Microsoft\Windows\CurrentVersion\Group Policy\Scripts\Logon", "Group Policy logon script", false),
+            new(RegistryHive.CurrentUser, "HKCU", "Current user policy", @"Software\Policies\Microsoft\Windows\System\Scripts\Logon", "Group Policy logon script", false),
+            new(RegistryHive.LocalMachine, "HKLM", "All users", @"Software\Microsoft\Windows\CurrentVersion\Group Policy\Scripts\Startup", "Group Policy startup script", true),
+            new(RegistryHive.LocalMachine, "HKLM", "All users", @"Software\Policies\Microsoft\Windows\System\Scripts\Startup", "Group Policy startup script", true),
+            new(RegistryHive.LocalMachine, "HKLM", "All users", @"Software\Microsoft\Windows\CurrentVersion\Group Policy\Scripts\Logon", "Group Policy logon script", true),
+            new(RegistryHive.LocalMachine, "HKLM", "All users", @"Software\Policies\Microsoft\Windows\System\Scripts\Logon", "Group Policy logon script", true)
+        ];
+
+        foreach (GroupPolicyScriptSource source in sources)
+        {
+            RegistryView[] views = source.Hive == RegistryHive.LocalMachine && Environment.Is64BitOperatingSystem
+                ? [RegistryView.Registry64, RegistryView.Registry32]
+                : [RegistryView.Default];
+            foreach (RegistryView view in views)
+            {
+                using RegistryKey root = RegistryKey.OpenBaseKey(source.Hive, view);
+                using RegistryKey? key = root.OpenSubKey(source.KeyPath, writable: false);
+                if (key == null)
+                {
+                    continue;
+                }
+
+                foreach (StartupEntry entry in EnumerateGroupPolicyScriptEntriesFromKey(key, source, source.KeyPath, warnings))
+                {
+                    yield return entry;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateGroupPolicyScriptEntriesFromKey(
+        RegistryKey key,
+        GroupPolicyScriptSource source,
+        string keyPath,
+        List<string> warnings)
+    {
+        StartupEntry? entry = TryCreateGroupPolicyScriptEntry(key, source, keyPath, warnings);
+        if (entry != null)
+        {
+            yield return entry;
+        }
+
+        string[] subkeyNames;
+        try
+        {
+            subkeyNames = key.GetSubKeyNames();
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $@"{source.HiveName}\{keyPath}: {ex.Message}");
+            yield break;
+        }
+
+        foreach (string subkeyName in subkeyNames.Take(500))
+        {
+            using RegistryKey? subkey = key.OpenSubKey(subkeyName, writable: false);
+            if (subkey == null)
+            {
+                continue;
+            }
+
+            string childPath = $@"{keyPath}\{subkeyName}";
+            foreach (StartupEntry childEntry in EnumerateGroupPolicyScriptEntriesFromKey(subkey, source, childPath, warnings))
+            {
+                yield return childEntry;
+            }
+        }
+    }
+
+    private static StartupEntry? TryCreateGroupPolicyScriptEntry(
+        RegistryKey key,
+        GroupPolicyScriptSource source,
+        string keyPath,
+        List<string> warnings)
+    {
+        string script;
+        string parameters;
+        try
+        {
+            script = key.GetValue("Script", defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames)?.ToString()?.Trim() ?? string.Empty;
+            parameters = key.GetValue("Parameters", defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames)?.ToString()?.Trim() ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $@"{source.HiveName}\{keyPath}: {ex.Message}");
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(script))
+        {
+            return null;
+        }
+
+        string command = CombineCommandAndArguments(script, parameters);
+        StartupCommandResolution resolution = ResolveStartupCommand(command);
+        string category = GetStartupCategory(StartupCategoryAdvanced, resolution);
+        StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+        string id = CreateStableId("startup", "gpo-script", source.HiveName, keyPath, source.Label, command);
+        var item = new StartupItem(
+            id,
+            Path.GetFileNameWithoutExtension(script),
+            source.Label,
+            $@"{source.HiveName}\{keyPath}",
+            command,
+            string.IsNullOrWhiteSpace(resolution.executableResolved) ? null : resolution.executableResolved,
+            isEnabled: true,
+            source.RequiresAdministrator,
+            canToggle: false,
+            "PolicyManaged",
+            BuildStartupTargetWarnings(resolution),
+            sourceType: "Group Policy script",
+            category,
+            scope: source.Scope,
+            publisher.publisher,
+            publisher.signatureStatus,
+            publisher.isMicrosoftSigned,
+            commandRaw: command,
+            executableResolved: resolution.executableResolved,
+            arguments: resolution.arguments,
+            workingDirectory: resolution.workingDirectory,
+            sourceLocation: $@"{source.HiveName}\{keyPath}",
+            lastModified: string.Empty,
+            startupImpact: "High",
+            confidence: resolution.confidence,
+            riskLevel: AdjustStartupRisk(resolution.riskLevel, category, publisher),
+            disableMethod: "ReadOnlyPolicy",
+            isReadOnlyManaged: true,
+            backupPayload: "Script+Parameters",
+            notes: "Group Policy startup/logon scripts are managed by Windows policy and are shown read-only.");
+        return new StartupEntry(item, StartupEntryKind.ReadOnlyRegistry, source.HiveName, keyPath, "Script", RegistryValueKind.String, script, filePath: null);
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateAdvancedRegistryStartupEntries(List<string> warnings)
+    {
+        var valueSources = new[]
+        {
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "Winlogon", ["Shell", "Userinit", "Notify"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager", "BootExecute", ["BootExecute"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows", "AppInit DLLs", ["AppInit_DLLs"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDlls", "AppCert DLLs", null),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Lsa", "LSA packages", ["Authentication Packages", "Security Packages", "Notification Packages"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs", "KnownDLLs", null),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\NetworkProvider\Order", "Network providers", ["ProviderOrder"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\NetworkProvider\HwOrder", "Network providers", ["ProviderOrder"]),
+            new RegistryValueSource(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32", "Media codecs", null)
+        };
+
+        foreach (RegistryValueSource source in valueSources)
+        {
+            foreach (StartupEntry entry in EnumerateReadOnlyRegistryValues(source, warnings))
+            {
+                yield return entry;
+            }
+        }
+
+        foreach (StartupEntry entry in EnumerateSubkeyRegistryValue(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Active Setup\Installed Components", "Active Setup", "StubPath", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateSubkeyRegistryValue(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options", "IFEO Debugger", "Debugger", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateSubkeyRegistryValue(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit", "SilentProcessExit", "MonitorProcess", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateSubkeyRegistryValue(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Print\Monitors", "Print monitors", "Driver", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateRegistrySubkeysAsReadOnlySource(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects", "Browser helper object", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateReadOnlyRegistryValues(new RegistryValueSource(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Internet Explorer\Toolbar", "Legacy browser toolbar", null), warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateReadOnlyRegistryValues(new RegistryValueSource(RegistryHive.CurrentUser, @"Software\Microsoft\Internet Explorer\Toolbar\WebBrowser", "Legacy browser toolbar", null), warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateRegistrySubkeysAsReadOnlySource(RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Services\WinSock2\Parameters\Protocol_Catalog9\Catalog_Entries", "Winsock provider", warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateOfficeAddInEntries(warnings))
+        {
+            yield return entry;
+        }
+
+        foreach (StartupEntry entry in EnumerateShellExtensionKeys(warnings))
+        {
+            yield return entry;
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateReadOnlyRegistryValues(RegistryValueSource source, List<string> warnings)
+    {
+        RegistryView[] views = source.Hive == RegistryHive.LocalMachine && Environment.Is64BitOperatingSystem
+            ? [RegistryView.Registry64, RegistryView.Registry32]
+            : [RegistryView.Default];
+        foreach (RegistryView view in views)
+        {
+            using RegistryKey root = RegistryKey.OpenBaseKey(source.Hive, view);
+            using RegistryKey? key = root.OpenSubKey(source.KeyPath, writable: false);
+            if (key == null)
+            {
+                continue;
+            }
+
+            IEnumerable<string> valueNames = source.ValueNames ?? GetRegistryValueNames(key, $@"HKLM\{source.KeyPath}", warnings);
+            foreach (string valueName in valueNames)
+            {
+                StartupEntry? entry = TryCreateRegistryStartupEntry(
+                    key,
+                    source.Hive == RegistryHive.LocalMachine ? "HKLM" : "HKCU",
+                    source.Hive == RegistryHive.LocalMachine ? "All users" : "Current user",
+                    source.KeyPath,
+                    source.Label,
+                    valueName,
+                    canDisable: false,
+                    requiresAdministrator: source.Hive == RegistryHive.LocalMachine,
+                    StartupCategoryAdvanced,
+                    readOnlyManaged: true,
+                    warnings,
+                    view);
+                if (entry != null)
+                {
+                    yield return entry;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateSubkeyRegistryValue(RegistryHive hive, string parentPath, string label, string valueName, List<string> warnings)
+    {
+        RegistryView[] views = hive == RegistryHive.LocalMachine && Environment.Is64BitOperatingSystem
+            ? [RegistryView.Registry64, RegistryView.Registry32]
+            : [RegistryView.Default];
+        foreach (RegistryView view in views)
+        {
+            using RegistryKey root = RegistryKey.OpenBaseKey(hive, view);
+            using RegistryKey? parent = root.OpenSubKey(parentPath, writable: false);
+            if (parent == null)
+            {
+                continue;
+            }
+
+            string[] subKeyNames;
+            try
+            {
+                subKeyNames = parent.GetSubKeyNames();
+            }
+            catch (Exception ex)
+            {
+                AddWarning(warnings, $"{label}: {ex.Message}");
+                continue;
+            }
+
+            foreach (string subKeyName in subKeyNames.Take(500))
+            {
+                using RegistryKey? key = parent.OpenSubKey(subKeyName, writable: false);
+                if (key?.GetValue(valueName, defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames) == null)
+                {
+                    continue;
+                }
+
+                StartupEntry? entry = TryCreateRegistryStartupEntry(
+                    key,
+                    hive == RegistryHive.LocalMachine ? "HKLM" : "HKCU",
+                    hive == RegistryHive.LocalMachine ? "All users" : "Current user",
+                    $@"{parentPath}\{subKeyName}",
+                    label,
+                    valueName,
+                    canDisable: false,
+                    requiresAdministrator: hive == RegistryHive.LocalMachine,
+                    StartupCategoryAdvanced,
+                    readOnlyManaged: true,
+                    warnings,
+                    view);
+                if (entry != null)
+                {
+                    yield return entry;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateRegistrySubkeysAsReadOnlySource(RegistryHive hive, string parentPath, string label, List<string> warnings)
+    {
+        RegistryView[] views = hive == RegistryHive.LocalMachine && Environment.Is64BitOperatingSystem
+            ? [RegistryView.Registry64, RegistryView.Registry32]
+            : [RegistryView.Default];
+        foreach (RegistryView view in views)
+        {
+            using RegistryKey root = RegistryKey.OpenBaseKey(hive, view);
+            using RegistryKey? parent = root.OpenSubKey(parentPath, writable: false);
+            if (parent == null)
+            {
+                continue;
+            }
+
+            string[] subKeyNames;
+            try
+            {
+                subKeyNames = parent.GetSubKeyNames();
+            }
+            catch (Exception ex)
+            {
+                AddWarning(warnings, $"{label}: {ex.Message}");
+                continue;
+            }
+
+            foreach (string subKeyName in subKeyNames.Take(500))
+            {
+                string keyPath = $@"{parentPath}\{subKeyName}";
+                string registryViewLabel = GetRegistryViewLabel(view);
+                string id = CreateStableId("startup", "registry-subkey", hive.ToString(), registryViewLabel, keyPath, label);
+                string location = FormatRegistryLocation(GetHiveShortName(hive), keyPath, view);
+                var item = new StartupItem(
+                    id,
+                    subKeyName,
+                    label,
+                    location,
+                    string.Empty,
+                    targetPath: null,
+                    isEnabled: true,
+                    requiresAdministrator: hive == RegistryHive.LocalMachine,
+                    canToggle: false,
+                    "Read-only",
+                    [],
+                    sourceType: "Registry",
+                    category: StartupCategoryAdvanced,
+                    scope: hive == RegistryHive.LocalMachine ? "All users" : "Current user",
+                    publisher: string.Empty,
+                    signatureStatus: "Unknown",
+                    isMicrosoftSigned: false,
+                    commandRaw: string.Empty,
+                    executableResolved: string.Empty,
+                    arguments: string.Empty,
+                    workingDirectory: string.Empty,
+                    sourceLocation: location,
+                    lastModified: string.Empty,
+                    startupImpact: "Medium",
+                    confidence: "Medium",
+                    riskLevel: "Medium",
+                    disableMethod: "ReadOnlyRegistry",
+                    isReadOnlyManaged: true,
+                    backupPayload: keyPath,
+                    notes: $"{label} registration is shown scan-only because deleting the subkey can destabilize host applications.");
+                yield return new StartupEntry(item, StartupEntryKind.ReadOnlyRegistry, GetHiveShortName(hive), keyPath, valueName: null, registryValueKind: null, registryValue: null, filePath: null, view);
+            }
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateOfficeAddInEntries(List<string> warnings)
+    {
+        string[] apps = ["Access", "Excel", "Outlook", "PowerPoint", "Word"];
+        foreach (RegistryHive hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+        {
+            foreach (string app in apps)
+            {
+                foreach (StartupEntry entry in EnumerateRegistrySubkeysAsReadOnlySource(hive, $@"Software\Microsoft\Office\{app}\Addins", $"Office {app} add-in", warnings))
+                {
+                    yield return entry;
+                }
+            }
+        }
+    }
+
+    private static string GetHiveShortName(RegistryHive hive)
+    {
+        return hive == RegistryHive.LocalMachine ? "HKLM" : "HKCU";
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateShellExtensionKeys(List<string> warnings)
+    {
+        RegistryValueSource[] valueSources =
+        [
+            new(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", "Explorer approved shell extension", null),
+            new(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", "Explorer approved shell extension", null),
+            new(RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers", "Explorer preview handler", null),
+            new(RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers", "Explorer preview handler", null),
+            new(RegistryHive.LocalMachine, @"SOFTWARE\Classes\*\shellex\{e357fccd-a995-4576-b01f-234630154e96}", "Explorer thumbnail handler", null),
+            new(RegistryHive.CurrentUser, @"Software\Classes\*\shellex\{e357fccd-a995-4576-b01f-234630154e96}", "Explorer thumbnail handler", null),
+            new(RegistryHive.LocalMachine, @"SOFTWARE\Classes\SystemFileAssociations\image\shellex\{e357fccd-a995-4576-b01f-234630154e96}", "Explorer thumbnail handler", null),
+            new(RegistryHive.CurrentUser, @"Software\Classes\SystemFileAssociations\image\shellex\{e357fccd-a995-4576-b01f-234630154e96}", "Explorer thumbnail handler", null)
+        ];
+
+        foreach (RegistryValueSource source in valueSources)
+        {
+            foreach (StartupEntry entry in EnumerateReadOnlyRegistryValues(source, warnings))
+            {
+                yield return entry;
+            }
+        }
+
+        (RegistryHive Hive, string Path, string Label)[] subkeySources =
+        [
+            (RegistryHive.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers", "Explorer icon overlay handler"),
+            (RegistryHive.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers", "Explorer icon overlay handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\*\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\*\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\Directory\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\Directory\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\AllFileSystemObjects\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\AllFileSystemObjects\shellex\ContextMenuHandlers", "Explorer context menu handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\*\shellex\PropertySheetHandlers", "Explorer property sheet handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\*\shellex\PropertySheetHandlers", "Explorer property sheet handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\Directory\shellex\CopyHookHandlers", "Explorer copy hook handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\Directory\shellex\CopyHookHandlers", "Explorer copy hook handler"),
+            (RegistryHive.LocalMachine, @"SOFTWARE\Classes\Directory\shellex\DragDropHandlers", "Explorer drag-drop handler"),
+            (RegistryHive.CurrentUser, @"Software\Classes\Directory\shellex\DragDropHandlers", "Explorer drag-drop handler")
+        ];
+
+        foreach ((RegistryHive hive, string path, string label) in subkeySources)
+        {
+            foreach (StartupEntry entry in EnumerateRegistrySubkeysAsReadOnlySource(hive, path, label, warnings))
+            {
+                yield return entry;
+            }
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateServiceStartupEntries(List<string> warnings)
+    {
+        const string servicesPath = @"SYSTEM\CurrentControlSet\Services";
+        using RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Default);
+        using RegistryKey? servicesKey = root.OpenSubKey(servicesPath, writable: false);
+        if (servicesKey == null)
+        {
+            yield break;
+        }
+
+        string[] serviceNames;
+        try
+        {
+            serviceNames = servicesKey.GetSubKeyNames();
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"Services: {ex.Message}");
+            yield break;
+        }
+
+        foreach (string serviceName in serviceNames)
+        {
+            using RegistryKey? serviceKey = servicesKey.OpenSubKey(serviceName, writable: false);
+            if (serviceKey == null)
+            {
+                continue;
+            }
+
+            int start = RegistryIntValue(serviceKey, "Start");
+            bool delayed = RegistryIntValue(serviceKey, "DelayedAutoStart") == 1;
+            bool triggerStart = serviceKey.OpenSubKey("TriggerInfo") != null;
+            if (start is not (0 or 1 or 2) && !triggerStart)
+            {
+                continue;
+            }
+            bool canToggle = start == 2 || triggerStart;
+
+            string imagePath = GetServiceStartupCommand(serviceKey);
+            string hostImagePath = RegistryStringValue(serviceKey, "ImagePath", doNotExpandEnvironmentNames: true);
+            string serviceDll = GetServiceDllPath(serviceKey);
+
+            string displayName = RegistryStringValue(serviceKey, "DisplayName");
+            StartupCommandResolution resolution = ResolveStartupCommand(imagePath);
+            StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+            string startLabel = start switch
+            {
+                0 => "Boot driver",
+                1 => "System driver",
+                2 when delayed => "Delayed auto-start service",
+                2 => "Automatic service",
+                _ when triggerStart => "Trigger-start service",
+                _ => "Service"
+            };
+            string id = CreateStableId("startup", "service", serviceName);
+            var item = new StartupItem(
+                id,
+                string.IsNullOrWhiteSpace(displayName) ? serviceName : displayName,
+                startLabel,
+                $@"HKLM\{servicesPath}\{serviceName}",
+                imagePath,
+                string.IsNullOrWhiteSpace(resolution.executableResolved) ? null : resolution.executableResolved,
+                isEnabled: true,
+                requiresAdministrator: true,
+                canToggle,
+                canToggle ? "Enabled" : "Read-only",
+                BuildStartupTargetWarnings(resolution),
+                sourceType: "Service",
+                category: StartupCategoryAdvanced,
+                scope: "System",
+                publisher.publisher,
+                publisher.signatureStatus,
+                publisher.isMicrosoftSigned,
+                commandRaw: imagePath,
+                executableResolved: resolution.executableResolved,
+                arguments: resolution.arguments,
+                workingDirectory: resolution.workingDirectory,
+                sourceLocation: $@"HKLM\{servicesPath}\{serviceName}",
+                lastModified: string.Empty,
+                startupImpact: start is 0 or 1 ? "High" : "Medium",
+                confidence: resolution.confidence,
+                riskLevel: AdjustStartupRisk(resolution.riskLevel, StartupCategoryAdvanced, publisher),
+                disableMethod: canToggle ? "ServiceControlManager" : "ReadOnlyService",
+                isReadOnlyManaged: !canToggle,
+                backupPayload: BuildServiceStartupBackupPayload(startLabel, hostImagePath, serviceDll),
+                notes: BuildServiceStartupNotes(canToggle, hostImagePath, serviceDll));
+            yield return new StartupEntry(item, canToggle ? StartupEntryKind.Service : StartupEntryKind.ReadOnlyRegistry, hive: "HKLM", keyPath: $@"{servicesPath}\{serviceName}", valueName: serviceName, registryValueKind: RegistryValueKind.DWord, registryValue: start, filePath: null);
+        }
+    }
+
+    internal static string GetServiceStartupCommand(RegistryKey serviceKey)
+    {
+        string imagePath = RegistryStringValue(serviceKey, "ImagePath", doNotExpandEnvironmentNames: true);
+        string serviceDll = GetServiceDllPath(serviceKey);
+        if (!string.IsNullOrWhiteSpace(serviceDll) &&
+            (string.IsNullOrWhiteSpace(imagePath) || IsSvchostLauncher(imagePath)))
+        {
+            return serviceDll;
+        }
+
+        return imagePath;
+    }
+
+    private static string GetServiceDllPath(RegistryKey serviceKey)
+    {
+        string serviceDll = RegistryStringValue(serviceKey, "ServiceDll", doNotExpandEnvironmentNames: true);
+        if (!string.IsNullOrWhiteSpace(serviceDll))
+        {
+            return serviceDll;
+        }
+
+        using RegistryKey? parameters = serviceKey.OpenSubKey("Parameters", writable: false);
+        return parameters == null ? string.Empty : RegistryStringValue(parameters, "ServiceDll", doNotExpandEnvironmentNames: true);
+    }
+
+    private static bool IsSvchostLauncher(string command)
+    {
+        string? target = ParseStartupCommandTargetPath(command);
+        string fileName = Path.GetFileName(string.IsNullOrWhiteSpace(target) ? command : target);
+        return fileName.Equals("svchost.exe", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("svchost", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildServiceStartupBackupPayload(string startLabel, string hostImagePath, string serviceDll)
+    {
+        if (string.IsNullOrWhiteSpace(serviceDll))
+        {
+            return startLabel;
+        }
+
+        return string.IsNullOrWhiteSpace(hostImagePath)
+            ? $"{startLabel}; ServiceDll={serviceDll}"
+            : $"{startLabel}; ImagePath={hostImagePath}; ServiceDll={serviceDll}";
+    }
+
+    private static string BuildServiceStartupNotes(bool canToggle, string hostImagePath, string serviceDll)
+    {
+        string actionNote = canToggle
+            ? "Service start type can be changed through the Service Control Manager with restore metadata."
+            : "Boot and system drivers are scan-only because changing them can prevent Windows from starting.";
+        if (!string.IsNullOrWhiteSpace(serviceDll) && IsSvchostLauncher(hostImagePath))
+        {
+            return $"{actionNote} FileLocker resolves the service DLL because the service is hosted by svchost.exe.";
+        }
+
+        return actionNote;
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateScheduledTaskStartupEntries(List<string> warnings)
+    {
+        var entries = new List<StartupEntry>();
+        object? service = null;
+        object? rootFolder = null;
+        try
+        {
+            service = CreateScheduleService();
+            InvokeComMethod(service, "Connect");
+            rootFolder = InvokeComMethod(service, "GetFolder", "\\")
+                ?? throw new InvalidOperationException("Task Scheduler root folder could not be opened.");
+
+            int remaining = 1500;
+            CollectScheduledTaskEntries(rootFolder, warnings, entries, ref remaining);
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+        }
+        finally
+        {
+            ReleaseComObject(rootFolder);
+            ReleaseComObject(service);
+        }
+
+        return entries;
+    }
+
+    private static void CollectScheduledTaskEntries(object folder, List<string> warnings, List<StartupEntry> entries, ref int remaining)
+    {
+        if (remaining <= 0)
+        {
+            return;
+        }
+
+        object? tasks = null;
+        try
+        {
+            tasks = InvokeComMethod(folder, "GetTasks", 1);
+            int taskCount = GetComIntProperty(tasks, "Count");
+            for (int index = 1; index <= taskCount && remaining > 0; index++)
+            {
+                object? task = null;
+                try
+                {
+                    task = GetComProperty(tasks!, "Item", index);
+                    StartupEntry? entry = TryCreateScheduledTaskStartupEntry(task!, warnings);
+                    if (entry != null)
+                    {
+                        entries.Add(entry);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+                }
+                finally
+                {
+                    ReleaseComObject(task);
+                    remaining--;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+        }
+        finally
+        {
+            ReleaseComObject(tasks);
+        }
+
+        object? folders = null;
+        try
+        {
+            folders = InvokeComMethod(folder, "GetFolders", 0);
+            int folderCount = GetComIntProperty(folders, "Count");
+            for (int index = 1; index <= folderCount && remaining > 0; index++)
+            {
+                object? childFolder = null;
+                try
+                {
+                    childFolder = GetComProperty(folders!, "Item", index);
+                    CollectScheduledTaskEntries(childFolder!, warnings, entries, ref remaining);
+                }
+                catch (Exception ex)
+                {
+                    AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+                }
+                finally
+                {
+                    ReleaseComObject(childFolder);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+        }
+        finally
+        {
+            ReleaseComObject(folders);
+        }
+    }
+
+    private static StartupEntry? TryCreateScheduledTaskStartupEntry(object task, List<string> warnings)
+    {
+        object? definition = null;
+        object? triggers = null;
+        object? actions = null;
+        object? registrationInfo = null;
+        try
+        {
+            string taskPath = GetComStringProperty(task, "Path");
+            if (string.IsNullOrWhiteSpace(taskPath))
+            {
+                taskPath = GetComStringProperty(task, "Name");
+            }
+
+            definition = GetComProperty(task, "Definition");
+            if (definition == null)
+            {
+                return null;
+            }
+
+            triggers = GetComProperty(definition, "Triggers");
+            int[] triggerTypes = GetScheduledTaskTriggerTypes(triggers);
+            if (triggerTypes.Length == 0 || !triggerTypes.Any(IsScheduledTaskTriggerInScope))
+            {
+                return null;
+            }
+
+            string triggerSummary = string.Join(", ", triggerTypes.Select(GetScheduledTaskTriggerLabel).Distinct(StringComparer.OrdinalIgnoreCase));
+            actions = GetComProperty(definition, "Actions");
+            string command = BuildScheduledTaskCommand(actions);
+            StartupCommandResolution resolution = ResolveStartupCommand(command);
+            StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+            string id = CreateStableId("startup", "task", taskPath);
+            bool taskEnabled = GetComBoolProperty(task, "Enabled", defaultValue: false);
+            int state = GetComIntProperty(task, "State");
+            string status = taskEnabled ? GetScheduledTaskStateLabel(state) : "Disabled";
+            registrationInfo = GetComProperty(definition, "RegistrationInfo");
+            string lastModified = GetComStringProperty(registrationInfo, "Date");
+            string category = string.IsNullOrWhiteSpace(command)
+                ? StartupCategoryAdvanced
+                : GetStartupCategory(StartupCategoryApps, resolution);
+            bool canToggle = taskEnabled && !string.IsNullOrWhiteSpace(taskPath);
+            string notes = taskEnabled
+                ? "Scheduled task can be disabled through the Task Scheduler API with restore metadata."
+                : "Task is already disabled outside FileLocker.";
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                notes += " FileLocker could not extract an executable task action, so modification is limited.";
+                canToggle = false;
+            }
+
+            var item = new StartupItem(
+                id,
+                taskPath.TrimStart('\\'),
+                "Scheduled Task",
+                taskPath,
+                command,
+                string.IsNullOrWhiteSpace(resolution.executableResolved) ? null : resolution.executableResolved,
+                isEnabled: taskEnabled,
+                requiresAdministrator: true,
+                canToggle,
+                status,
+                BuildStartupTargetWarnings(resolution),
+                sourceType: "Scheduled Task",
+                category,
+                scope: "Task Scheduler",
+                publisher.publisher,
+                publisher.signatureStatus,
+                publisher.isMicrosoftSigned,
+                commandRaw: command,
+                executableResolved: resolution.executableResolved,
+                arguments: resolution.arguments,
+                workingDirectory: resolution.workingDirectory,
+                sourceLocation: taskPath,
+                lastModified,
+                startupImpact: GetScheduledTaskStartupImpact(triggerTypes),
+                confidence: string.IsNullOrWhiteSpace(command) ? "Low" : resolution.confidence,
+                riskLevel: AdjustStartupRisk(string.IsNullOrWhiteSpace(command) ? "Medium" : resolution.riskLevel, category, publisher),
+                disableMethod: canToggle ? "TaskScheduler" : "ReadOnlyTaskScheduler",
+                isReadOnlyManaged: !canToggle,
+                backupPayload: triggerSummary,
+                notes);
+            return new StartupEntry(item, canToggle ? StartupEntryKind.ScheduledTask : StartupEntryKind.ReadOnlyRegistry, hive: null, keyPath: taskPath, valueName: null, registryValueKind: null, registryValue: null, filePath: null);
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"Scheduled Tasks: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            ReleaseComObject(registrationInfo);
+            ReleaseComObject(actions);
+            ReleaseComObject(triggers);
+            ReleaseComObject(definition);
+        }
+    }
+
+    private static int[] GetScheduledTaskTriggerTypes(object? triggers)
+    {
+        if (triggers == null)
         {
             return [];
         }
 
-        return File.Exists(normalized) || Directory.Exists(normalized)
-            ? []
-            : ["The startup target path could not be found."];
+        int count = GetComIntProperty(triggers, "Count");
+        var types = new List<int>(count);
+        for (int index = 1; index <= count; index++)
+        {
+            object? trigger = null;
+            try
+            {
+                trigger = GetComProperty(triggers, "Item", index);
+                types.Add(GetComIntProperty(trigger, "Type"));
+            }
+            finally
+            {
+                ReleaseComObject(trigger);
+            }
+        }
+
+        return types.ToArray();
     }
 
-    private static bool LooksLikeShellCommand(string value)
+    internal static bool IsScheduledTaskTriggerInScope(int triggerType)
     {
-        string fileName = Path.GetFileName(value);
-        return fileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) ||
-               fileName.Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase) ||
-               value.Equals("msiexec", StringComparison.OrdinalIgnoreCase) ||
-               value.Equals("rundll32", StringComparison.OrdinalIgnoreCase);
+        return triggerType is 0 or 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 11;
+    }
+
+    internal static string GetScheduledTaskTriggerLabel(int triggerType)
+    {
+        return triggerType switch
+        {
+            0 => "Event",
+            1 => "Time",
+            2 => "Daily",
+            3 => "Weekly",
+            4 => "Monthly",
+            5 => "Monthly day-of-week",
+            6 => "Idle",
+            7 => "Registration",
+            8 => "Boot",
+            9 => "Logon",
+            11 => "Session change",
+            _ => $"Trigger {triggerType.ToString(CultureInfo.InvariantCulture)}"
+        };
+    }
+
+    private static string GetScheduledTaskStartupImpact(int[] triggerTypes)
+    {
+        if (triggerTypes.Any(trigger => trigger is 8 or 9 or 11))
+        {
+            return "High";
+        }
+
+        return triggerTypes.Any(trigger => trigger is 0 or 6 or 7) ? "Medium" : "Low";
+    }
+
+    private static string GetScheduledTaskStateLabel(int state)
+    {
+        return state switch
+        {
+            1 => "Disabled",
+            2 => "Queued",
+            3 => "Ready",
+            4 => "Running",
+            _ => "Enabled"
+        };
+    }
+
+    private static string BuildScheduledTaskCommand(object? actions)
+    {
+        if (actions == null)
+        {
+            return string.Empty;
+        }
+
+        int count = GetComIntProperty(actions, "Count");
+        var commands = new List<string>(count);
+        for (int index = 1; index <= count; index++)
+        {
+            object? action = null;
+            try
+            {
+                action = GetComProperty(actions, "Item", index);
+                int actionType = GetComIntProperty(action, "Type");
+                if (actionType != 0)
+                {
+                    continue;
+                }
+
+                string path = GetComStringProperty(action, "Path");
+                string arguments = GetComStringProperty(action, "Arguments");
+                commands.Add(CombineCommandAndArguments(path, arguments));
+            }
+            finally
+            {
+                ReleaseComObject(action);
+            }
+        }
+
+        return string.Join(" && ", commands.Where(command => !string.IsNullOrWhiteSpace(command)));
+    }
+
+    private static string CombineCommandAndArguments(string path, string arguments)
+    {
+        string normalizedPath = path.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            return arguments.Trim();
+        }
+
+        string command = normalizedPath.Contains(' ') && !normalizedPath.StartsWith("\"", StringComparison.Ordinal)
+            ? $"\"{normalizedPath}\""
+            : normalizedPath;
+        return string.IsNullOrWhiteSpace(arguments) ? command : $"{command} {arguments.Trim()}";
+    }
+
+    private static IEnumerable<StartupEntry> EnumerateWmiPermanentEventConsumers(List<string> warnings)
+    {
+        string powerShell = ResolveCommandFromPath("powershell.exe") ?? ResolveCommandFromPath("pwsh.exe") ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(powerShell))
+        {
+            yield break;
+        }
+
+        const string script = "Get-CimInstance -Namespace root/subscription -ClassName __EventConsumer | Select-Object Name,__CLASS,CommandLineTemplate,ExecutablePath,ScriptText | ConvertTo-Json -Compress";
+        string output;
+        try
+        {
+            output = RunHiddenProcess(powerShell, $"-NoProfile -ExecutionPolicy Bypass -Command \"{script}\"", timeoutMilliseconds: 5000, warnings, "WMI event consumers");
+        }
+        catch
+        {
+            yield break;
+        }
+
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            yield break;
+        }
+
+        JsonElement root;
+        try
+        {
+            root = JsonSerializer.Deserialize<JsonElement>(output);
+        }
+        catch (JsonException ex)
+        {
+            AddWarning(warnings, $"WMI event consumers: {ex.Message}");
+            yield break;
+        }
+
+        IEnumerable<JsonElement> consumers = root.ValueKind == JsonValueKind.Array
+            ? root.EnumerateArray()
+            : root.ValueKind == JsonValueKind.Object ? [root] : [];
+        foreach (JsonElement consumer in consumers)
+        {
+            string name = GetJsonString(consumer, "Name");
+            string consumerClass = GetJsonString(consumer, "__CLASS");
+            string command = FirstNonEmpty(
+                GetJsonString(consumer, "CommandLineTemplate"),
+                GetJsonString(consumer, "ExecutablePath"),
+                GetJsonString(consumer, "ScriptText"));
+            string id = CreateStableId("startup", "wmi", consumerClass, name, command);
+            StartupCommandResolution resolution = ResolveStartupCommand(command);
+            StartupPublisherInfo publisher = GetStartupPublisherInfo(resolution.executableResolved);
+            var item = new StartupItem(
+                id,
+                string.IsNullOrWhiteSpace(name) ? consumerClass : name,
+                "WMI permanent event consumer",
+                @"root\subscription",
+                command,
+                string.IsNullOrWhiteSpace(resolution.executableResolved) ? null : resolution.executableResolved,
+                isEnabled: true,
+                requiresAdministrator: true,
+                canToggle: false,
+                "Read-only",
+                BuildStartupTargetWarnings(resolution),
+                sourceType: "WMI",
+                category: StartupCategoryAdvanced,
+                scope: "System",
+                publisher.publisher,
+                publisher.signatureStatus,
+                publisher.isMicrosoftSigned,
+                commandRaw: command,
+                executableResolved: resolution.executableResolved,
+                arguments: resolution.arguments,
+                workingDirectory: resolution.workingDirectory,
+                sourceLocation: @"root\subscription",
+                lastModified: string.Empty,
+                startupImpact: "High",
+                confidence: string.IsNullOrWhiteSpace(command) ? "Low" : resolution.confidence,
+                riskLevel: "High",
+                disableMethod: "ReadOnlyWmi",
+                isReadOnlyManaged: true,
+                backupPayload: consumerClass,
+                notes: "WMI permanent event consumers are powerful autoload hooks and are shown scan-only.");
+            yield return new StartupEntry(item, StartupEntryKind.WmiConsumer, hive: null, keyPath: @"root\subscription", valueName: name, registryValueKind: null, registryValue: null, filePath: null);
+        }
+    }
+
+    private static IEnumerable<StartupEntry> EnumeratePackagedStartupTasks(List<string> warnings)
+    {
+        string[] roots =
+        [
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder",
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32",
+            @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData"
+        ];
+
+        foreach (string keyPath in roots)
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(keyPath, writable: false);
+            if (key == null)
+            {
+                continue;
+            }
+
+            foreach (string valueName in GetRegistryValueNames(key, $@"HKCU\{keyPath}", warnings).Take(500))
+            {
+                object? value = key.GetValue(valueName, defaultValue: null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                string command = RegistryValueToDisplayString(value);
+                bool looksPackaged = valueName.Contains("!", StringComparison.OrdinalIgnoreCase) ||
+                    valueName.Contains("App", StringComparison.OrdinalIgnoreCase) ||
+                    keyPath.Contains("AppModel", StringComparison.OrdinalIgnoreCase);
+                if (!looksPackaged)
+                {
+                    continue;
+                }
+
+                string id = CreateStableId("startup", "packaged", keyPath, valueName);
+                var item = new StartupItem(
+                    id,
+                    valueName,
+                    "Packaged startup task",
+                    $@"HKCU\{keyPath}",
+                    command,
+                    targetPath: null,
+                    isEnabled: true,
+                    requiresAdministrator: false,
+                    canToggle: false,
+                    "Read-only",
+                    [],
+                    sourceType: "Packaged app",
+                    category: StartupCategoryApps,
+                    scope: "Current user",
+                    publisher: string.Empty,
+                    signatureStatus: "Unknown",
+                    isMicrosoftSigned: false,
+                    commandRaw: command,
+                    executableResolved: string.Empty,
+                    arguments: string.Empty,
+                    workingDirectory: string.Empty,
+                    sourceLocation: $@"HKCU\{keyPath}\{valueName}",
+                    lastModified: string.Empty,
+                    startupImpact: "Medium",
+                    confidence: "Low",
+                    riskLevel: "Low",
+                    disableMethod: "ReadOnlyPackagedTask",
+                    isReadOnlyManaged: true,
+                    backupPayload: command,
+                    notes: "Packaged startup registration is shown as a discovery hint; Windows owns the package activation state.");
+                yield return new StartupEntry(item, StartupEntryKind.PackagedTask, hive: "HKCU", keyPath, valueName, registryValueKind: null, registryValue: value, filePath: null);
+            }
+        }
     }
 
     private static string? ResolveStartupFolderTargetPath(string filePath)
@@ -744,36 +2436,20 @@ internal static class StartupAppMaintenanceService
 
     private static string? TryResolveShortcutTarget(string shortcutPath)
     {
-        object? shell = null;
-        object? shortcut = null;
+        IShellLinkW? shellLink = null;
         try
         {
-            Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType == null)
+            Type? shellLinkType = Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"));
+            if (shellLinkType == null)
             {
                 return null;
             }
 
-            shell = Activator.CreateInstance(shellType);
-            if (shell == null)
-            {
-                return null;
-            }
-
-            shortcut = shellType.InvokeMember(
-                "CreateShortcut",
-                System.Reflection.BindingFlags.InvokeMethod,
-                binder: null,
-                target: shell,
-                args: [shortcutPath]);
-
-            string? targetPath = shortcut?.GetType().InvokeMember(
-                "TargetPath",
-                System.Reflection.BindingFlags.GetProperty,
-                binder: null,
-                target: shortcut,
-                args: null)?.ToString();
-
+            shellLink = (IShellLinkW)Activator.CreateInstance(shellLinkType)!;
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)shellLink).Load(shortcutPath, 0);
+            var targetBuilder = new StringBuilder(1024);
+            shellLink.GetPath(targetBuilder, targetBuilder.Capacity, IntPtr.Zero, 0);
+            string targetPath = targetBuilder.ToString();
             return string.IsNullOrWhiteSpace(targetPath) ? null : Environment.ExpandEnvironmentVariables(targetPath);
         }
         catch
@@ -782,8 +2458,7 @@ internal static class StartupAppMaintenanceService
         }
         finally
         {
-            ReleaseComObject(shortcut);
-            ReleaseComObject(shell);
+            ReleaseComObject(shellLink);
         }
     }
 
@@ -806,7 +2481,7 @@ internal static class StartupAppMaintenanceService
         }
     }
 
-    private static StartupDisableMetadata CreateFileStartupDisableMetadata(StartupItem item, string disabledPath)
+    private static StartupDisableMetadata CreateFileStartupDisableMetadata(StartupItem item, string disabledPath, string userAction = "Disable")
     {
         return new StartupDisableMetadata(
             item.id,
@@ -819,7 +2494,78 @@ internal static class StartupAppMaintenanceService
             DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
             backupPath: string.Empty,
             registry: null,
-            new StartupFileMetadata(item.location, disabledPath));
+            new StartupFileMetadata(item.location, disabledPath),
+            item.sourceType,
+            item.category,
+            item.scope,
+            item.status,
+            GetCurrentFileLockerVersion(),
+            restoreStatus: "Available",
+            failureDetails: string.Empty,
+            userAction: userAction,
+            resolvedExecutable: GetStartupResolvedTargetSnapshot(item),
+            commandStatus: item.status,
+            confidence: item.confidence,
+            riskLevel: item.riskLevel);
+    }
+
+    internal static StartupDisableMetadata CreateScheduledTaskDisableMetadata(StartupItem item, string taskPath, string userAction = "Disable")
+    {
+        return new StartupDisableMetadata(
+            item.id,
+            item.name,
+            item.source,
+            item.location,
+            item.command,
+            item.targetPath,
+            item.requiresAdministrator,
+            DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            backupPath: string.Empty,
+            registry: null,
+            file: null,
+            item.sourceType,
+            item.category,
+            item.scope,
+            item.status,
+            GetCurrentFileLockerVersion(),
+            restoreStatus: "Available",
+            failureDetails: string.Empty,
+            task: new StartupTaskMetadata(taskPath, wasEnabled: true),
+            userAction: userAction,
+            resolvedExecutable: GetStartupResolvedTargetSnapshot(item),
+            commandStatus: item.status,
+            confidence: item.confidence,
+            riskLevel: item.riskLevel);
+    }
+
+    internal static StartupDisableMetadata CreateServiceDisableMetadata(StartupItem item, string serviceName, int originalStartType, string userAction = "Disable")
+    {
+        return new StartupDisableMetadata(
+            item.id,
+            item.name,
+            item.source,
+            item.location,
+            item.command,
+            item.targetPath,
+            item.requiresAdministrator,
+            DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            backupPath: string.Empty,
+            registry: null,
+            file: null,
+            item.sourceType,
+            item.category,
+            item.scope,
+            item.status,
+            GetCurrentFileLockerVersion(),
+            restoreStatus: "Available",
+            failureDetails: string.Empty,
+            task: null,
+            service: new StartupServiceMetadata(serviceName, originalStartType),
+            userAction: userAction,
+            resolvedExecutable: GetStartupResolvedTargetSnapshot(item),
+            commandStatus: item.status,
+            confidence: item.confidence,
+            riskLevel: item.riskLevel);
     }
 
     internal static StartupItem ToDisabledStartupItem(StartupDisableMetadata metadata)
@@ -853,6 +2599,20 @@ internal static class StartupAppMaintenanceService
             status = "Restore unavailable";
         }
 
+        if (metadata.task != null && string.IsNullOrWhiteSpace(metadata.task.taskPath))
+        {
+            warnings.Add("The scheduled-task restore metadata is incomplete.");
+            canToggle = false;
+            status = "Restore unavailable";
+        }
+
+        if (metadata.service != null && (string.IsNullOrWhiteSpace(metadata.service.serviceName) || metadata.service.originalStartType is < 0 or > 4))
+        {
+            warnings.Add("The service restore metadata is incomplete.");
+            canToggle = false;
+            status = "Restore unavailable";
+        }
+
         return new StartupItem(
             metadata.id,
             metadata.name,
@@ -864,7 +2624,26 @@ internal static class StartupAppMaintenanceService
             metadata.requiresAdministrator,
             canToggle,
             status,
-            warnings.ToArray());
+            warnings.ToArray(),
+            metadata.sourceType,
+            metadata.category,
+            metadata.scope,
+            publisher: string.Empty,
+            signatureStatus: "Unknown",
+            isMicrosoftSigned: false,
+            commandRaw: metadata.command,
+            executableResolved: FirstNonEmpty(metadata.resolvedExecutable, metadata.targetPath ?? string.Empty),
+            arguments: string.Empty,
+            workingDirectory: string.Empty,
+            sourceLocation: metadata.file?.originalPath ?? metadata.location,
+            lastModified: metadata.disabledAtUtc,
+            startupImpact: "None",
+            confidence: canToggle ? "High" : "Low",
+            riskLevel: "Low",
+            disableMethod: metadata.registry != null ? "RegistryValue" : metadata.file != null ? "MoveToDisabledStorage" : metadata.task != null ? "TaskScheduler" : metadata.service != null ? "ServiceControlManager" : "RestoreMetadata",
+            isReadOnlyManaged: false,
+            backupPayload: metadata.backupPath,
+            notes: $"Disabled by FileLocker {metadata.disabledAtUtc}.");
     }
 
     private static StartupItem ToRestoredStartupItem(StartupDisableMetadata metadata)
@@ -880,7 +2659,20 @@ internal static class StartupAppMaintenanceService
             metadata.requiresAdministrator,
             canToggle: true,
             "Restored",
-            []);
+            [],
+            metadata.sourceType,
+            metadata.category,
+            metadata.scope,
+            commandRaw: metadata.command,
+            executableResolved: FirstNonEmpty(metadata.resolvedExecutable, metadata.targetPath ?? string.Empty),
+            sourceLocation: metadata.file?.originalPath ?? metadata.location,
+            lastModified: DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            startupImpact: "Medium",
+            confidence: "High",
+            riskLevel: "Low",
+            disableMethod: metadata.registry != null ? "RegistryValue" : metadata.file != null ? "MoveToDisabledStorage" : metadata.task != null ? "TaskScheduler" : metadata.service != null ? "ServiceControlManager" : "RestoreMetadata",
+            backupPayload: metadata.backupPath,
+            notes: "Restored from FileLocker metadata.");
     }
 
     private static List<StartupDisableMetadata> LoadDisabledStartupMetadata(List<string>? warnings = null)
@@ -902,6 +2694,66 @@ internal static class StartupAppMaintenanceService
         }
     }
 
+    private static StartupRestoreRecord ToStartupRestoreRecord(StartupDisableMetadata metadata)
+    {
+        return new StartupRestoreRecord(
+            metadata.id,
+            metadata.name,
+            metadata.source,
+            metadata.location,
+            metadata.command,
+            metadata.targetPath,
+            metadata.disabledAtUtc,
+            metadata.backupPath,
+            metadata.sourceType,
+            metadata.category,
+            metadata.scope,
+            metadata.originalStatus,
+            metadata.fileLockerVersion,
+            metadata.restoreStatus,
+            metadata.failureDetails,
+            metadata.registry != null ? "RegistryValue" :
+            metadata.file != null ? "StartupFolderFile" :
+            metadata.task != null ? "TaskScheduler" :
+            metadata.service != null ? "ServiceControlManager" :
+            "Unknown",
+            metadata.userAction,
+            metadata.resolvedExecutable,
+            metadata.commandStatus,
+            metadata.confidence,
+            metadata.riskLevel);
+    }
+
+    private static HashSet<string> LoadIgnoredStartupItemIds(List<string>? warnings = null)
+    {
+        string path = GetIgnoredStartupItemsPath();
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        try
+        {
+            return (JsonSerializer.Deserialize<string[]>(File.ReadAllText(path), MetadataJsonOptions) ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"FileLocker could not read ignored startup items: {ex.Message}");
+            return [];
+        }
+    }
+
+    private static void SaveIgnoredStartupItemIds(IReadOnlyCollection<string> ids)
+    {
+        FileWriteService.WriteAllTextAtomically(
+            GetIgnoredStartupItemsPath(),
+            JsonSerializer.Serialize(ids.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(), MetadataJsonOptions),
+            Encoding.UTF8);
+    }
+
     private static void SaveDisabledStartupMetadata(IReadOnlyCollection<StartupDisableMetadata> items)
     {
         string path = GetStartupMetadataPath();
@@ -911,6 +2763,11 @@ internal static class StartupAppMaintenanceService
     private static string GetStartupMetadataPath()
     {
         return Path.Combine(GetSystemCareDataDirectory(), "startup-disabled.json");
+    }
+
+    private static string GetIgnoredStartupItemsPath()
+    {
+        return Path.Combine(GetSystemCareDataDirectory(), "startup-ignored.json");
     }
 
     private static string GetDisabledStartupFilePath(string itemId, string originalPath)
@@ -959,12 +2816,25 @@ internal static class StartupAppMaintenanceService
         var builder = new StringBuilder();
         builder.AppendLine("Windows Registry Editor Version 5.00");
         builder.AppendLine();
-        builder.AppendLine($@"[{hiveName}\{entry.keyPath}]");
+        builder.AppendLine($@"[{hiveName}\{FormatRegistryBackupKeyPath(entry.keyPath ?? string.Empty, entry.registryView)}]");
         builder.AppendLine(FormatRegistryValue(entry.valueName ?? string.Empty, entry.registryValue, entry.registryValueKind ?? RegistryValueKind.String));
         builder.AppendLine();
 
         WriteAllTextAtomically(backupPath, builder.ToString(), Encoding.Unicode);
         return backupPath;
+    }
+
+    private static string FormatRegistryBackupKeyPath(string keyPath, RegistryView registryView)
+    {
+        if (registryView != RegistryView.Registry32 ||
+            !Environment.Is64BitOperatingSystem ||
+            !keyPath.StartsWith(@"SOFTWARE\", StringComparison.OrdinalIgnoreCase) ||
+            keyPath.StartsWith(@"SOFTWARE\WOW6432Node\", StringComparison.OrdinalIgnoreCase))
+        {
+            return keyPath;
+        }
+
+        return $@"SOFTWARE\WOW6432Node\{keyPath["SOFTWARE\\".Length..]}";
     }
 
     private static void WriteAllTextAtomically(string path, string contents, Encoding encoding)
@@ -977,15 +2847,17 @@ internal static class StartupAppMaintenanceService
         string keyPath,
         string valueName,
         object? value,
-        RegistryValueKind valueKind)
+        RegistryValueKind valueKind,
+        RegistryView registryView = RegistryView.Default)
     {
+        string registryViewLabel = GetRegistryViewLabel(registryView);
         return valueKind switch
         {
-            RegistryValueKind.MultiString => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, value as string[] ?? [], null, null, null),
-            RegistryValueKind.DWord => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, value is int intValue ? intValue : 0, null, null),
-            RegistryValueKind.QWord => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, null, value is long longValue ? longValue : 0, null),
-            RegistryValueKind.Binary => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, null, null, value as byte[] ?? []),
-            _ => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), value?.ToString() ?? string.Empty, null, null, null, null)
+            RegistryValueKind.MultiString => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, value as string[] ?? [], null, null, null, registryViewLabel),
+            RegistryValueKind.DWord => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, value is int intValue ? intValue : 0, null, null, registryViewLabel),
+            RegistryValueKind.QWord => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, null, value is long longValue ? longValue : 0, null, registryViewLabel),
+            RegistryValueKind.Binary => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), null, null, null, null, value as byte[] ?? [], registryViewLabel),
+            _ => new StartupRegistryMetadata(hive, keyPath, valueName, valueKind.ToString(), value?.ToString() ?? string.Empty, null, null, null, null, registryViewLabel)
         };
     }
 
@@ -996,7 +2868,7 @@ internal static class StartupAppMaintenanceService
             throw new InvalidOperationException("Startup restore metadata points outside approved startup registry locations.");
         }
 
-        RegistryKey root = GetRegistryRoot(registry.hive);
+        using RegistryKey root = GetRegistryRoot(registry.hive, ParseRegistryView(registry.registryView));
         using RegistryKey key = root.CreateSubKey(registry.keyPath, writable: true)
             ?? throw new InvalidOperationException("FileLocker could not open the startup registry key for restore.");
 
@@ -1020,11 +2892,22 @@ internal static class StartupAppMaintenanceService
         key.SetValue(registry.valueName, value, kind);
     }
 
+    private static RegistryView ParseRegistryView(string? registryView)
+    {
+        return registryView switch
+        {
+            "32-bit" => RegistryView.Registry32,
+            "64-bit" => RegistryView.Registry64,
+            _ => RegistryView.Default
+        };
+    }
+
     internal static bool IsApprovedStartupRegistryRestorePath(string? hive, string? keyPath)
     {
         return (string.Equals(hive, "HKCU", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(hive, "HKLM", StringComparison.OrdinalIgnoreCase)) &&
-            string.Equals(keyPath?.Trim('\\'), RunKeyPath, StringComparison.OrdinalIgnoreCase);
+            (string.Equals(keyPath?.Trim('\\'), RunKeyPath, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(keyPath?.Trim('\\'), RunOnceKeyPath, StringComparison.OrdinalIgnoreCase));
     }
 
     internal static void RestoreStartupFolderItem(StartupFileMetadata file)
@@ -1051,6 +2934,225 @@ internal static class StartupAppMaintenanceService
 
         Directory.CreateDirectory(Path.GetDirectoryName(file.originalPath)!);
         File.Move(file.disabledPath, file.originalPath);
+    }
+
+    internal static void RestoreScheduledTaskItem(StartupTaskMetadata task)
+    {
+        if (string.IsNullOrWhiteSpace(task.taskPath))
+        {
+            throw new InvalidOperationException("Scheduled-task restore metadata is incomplete.");
+        }
+
+        SetScheduledTaskEnabled(task.taskPath, task.wasEnabled);
+    }
+
+    internal static void RestoreServiceStartupItem(StartupServiceMetadata service)
+    {
+        if (string.IsNullOrWhiteSpace(service.serviceName))
+        {
+            throw new InvalidOperationException("Service restore metadata is incomplete.");
+        }
+
+        if (service.originalStartType is < 0 or > 4)
+        {
+            throw new InvalidOperationException("Service restore metadata has an invalid start type.");
+        }
+
+        ChangeServiceStartType(service.serviceName, service.originalStartType);
+    }
+
+    internal static (string FolderPath, string TaskName) SplitScheduledTaskPath(string taskPath)
+    {
+        string normalized = string.IsNullOrWhiteSpace(taskPath) ? string.Empty : taskPath.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new InvalidOperationException("Scheduled task path is empty.");
+        }
+
+        normalized = normalized.Replace('/', '\\');
+        if (!normalized.StartsWith('\\'))
+        {
+            normalized = "\\" + normalized;
+        }
+
+        int lastSeparator = normalized.LastIndexOf('\\');
+        if (lastSeparator <= 0 || lastSeparator == normalized.Length - 1)
+        {
+            return ("\\", normalized.Trim('\\'));
+        }
+
+        return (normalized[..lastSeparator], normalized[(lastSeparator + 1)..]);
+    }
+
+    private static void SetScheduledTaskEnabled(string taskPath, bool enabled)
+    {
+        object? service = null;
+        object? folder = null;
+        object? task = null;
+        try
+        {
+            service = CreateScheduleService();
+            InvokeComMethod(service, "Connect");
+            (string folderPath, string taskName) = SplitScheduledTaskPath(taskPath);
+            folder = InvokeComMethod(service, "GetFolder", folderPath)
+                ?? throw new InvalidOperationException("Task Scheduler folder could not be opened.");
+            task = InvokeComMethod(folder, "GetTask", taskName)
+                ?? throw new InvalidOperationException("Scheduled task could not be opened.");
+            SetComProperty(task, "Enabled", enabled);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"FileLocker could not update the scheduled task through Task Scheduler: {SensitiveDataRedactor.RedactMessage(ex.Message)}", ex);
+        }
+        finally
+        {
+            ReleaseComObject(task);
+            ReleaseComObject(folder);
+            ReleaseComObject(service);
+        }
+    }
+
+    private static object CreateScheduleService()
+    {
+        Type? schedulerType = Type.GetTypeFromProgID("Schedule.Service");
+        if (schedulerType == null)
+        {
+            throw new InvalidOperationException("Task Scheduler is not available on this system.");
+        }
+
+        return Activator.CreateInstance(schedulerType)
+            ?? throw new InvalidOperationException("Task Scheduler could not be started.");
+    }
+
+    private static object? InvokeComMethod(object target, string name, params object[] args)
+    {
+        return target.GetType().InvokeMember(name, BindingFlags.InvokeMethod, binder: null, target, args);
+    }
+
+    private static object? GetComProperty(object? target, string name, params object[] args)
+    {
+        return target?.GetType().InvokeMember(name, BindingFlags.GetProperty, binder: null, target, args);
+    }
+
+    private static string GetComStringProperty(object? target, string name)
+    {
+        object? value = GetComProperty(target, name);
+        return value?.ToString()?.Trim() ?? string.Empty;
+    }
+
+    private static int GetComIntProperty(object? target, string name)
+    {
+        object? value = GetComProperty(target, name);
+        if (value == null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static bool GetComBoolProperty(object? target, string name, bool defaultValue)
+    {
+        object? value = GetComProperty(target, name);
+        if (value == null)
+        {
+            return defaultValue;
+        }
+
+        try
+        {
+            return Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return defaultValue;
+        }
+    }
+
+    private static void SetComProperty(object target, string name, object value)
+    {
+        target.GetType().InvokeMember(name, BindingFlags.SetProperty, binder: null, target, [value]);
+    }
+
+    private static int QueryServiceStartType(string serviceName)
+    {
+        using SafeServiceHandle manager = OpenServiceControlManager(ScManagerConnect);
+        using SafeServiceHandle service = OpenServiceHandle(manager, serviceName, ServiceQueryConfig);
+        return QueryServiceConfigStartType(service);
+    }
+
+    private static void ChangeServiceStartType(string serviceName, int startType)
+    {
+        using SafeServiceHandle manager = OpenServiceControlManager(ScManagerConnect);
+        using SafeServiceHandle service = OpenServiceHandle(manager, serviceName, ServiceChangeConfig);
+        if (!ChangeServiceConfig(
+            service,
+            ServiceNoChange,
+            startType,
+            ServiceNoChange,
+            lpBinaryPathName: null,
+            lpLoadOrderGroup: null,
+            lpdwTagId: IntPtr.Zero,
+            lpDependencies: null,
+            lpServiceStartName: null,
+            lpPassword: null,
+            lpDisplayName: null))
+        {
+            throw new InvalidOperationException($"Service Control Manager could not change {serviceName}: {GetLastWin32ErrorMessage()}");
+        }
+    }
+
+    private static SafeServiceHandle OpenServiceControlManager(int desiredAccess)
+    {
+        SafeServiceHandle handle = OpenSCManager(null, null, desiredAccess);
+        return handle.IsInvalid
+            ? throw new InvalidOperationException($"Service Control Manager is unavailable: {GetLastWin32ErrorMessage()}")
+            : handle;
+    }
+
+    private static SafeServiceHandle OpenServiceHandle(SafeServiceHandle manager, string serviceName, int desiredAccess)
+    {
+        SafeServiceHandle handle = OpenService(manager, serviceName, desiredAccess);
+        return handle.IsInvalid
+            ? throw new InvalidOperationException($"Service '{serviceName}' could not be opened: {GetLastWin32ErrorMessage()}")
+            : handle;
+    }
+
+    private static int QueryServiceConfigStartType(SafeServiceHandle service)
+    {
+        _ = QueryServiceConfig(service, IntPtr.Zero, 0, out int bytesNeeded);
+        if (bytesNeeded <= 0)
+        {
+            throw new InvalidOperationException($"Service Control Manager could not read service configuration: {GetLastWin32ErrorMessage()}");
+        }
+
+        IntPtr buffer = Marshal.AllocHGlobal(bytesNeeded);
+        try
+        {
+            if (!QueryServiceConfig(service, buffer, bytesNeeded, out _))
+            {
+                throw new InvalidOperationException($"Service Control Manager could not read service configuration: {GetLastWin32ErrorMessage()}");
+            }
+
+            var config = Marshal.PtrToStructure<QueryServiceConfigNative>(buffer);
+            return config.dwStartType;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static string GetLastWin32ErrorMessage()
+    {
+        return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()).Message;
     }
 
     internal static bool IsApprovedStartupRestorePath(string? path)
@@ -1682,7 +3784,7 @@ internal static class StartupAppMaintenanceService
             }
         }
 
-        string? targetPath = ParseStartupCommandTargetPath(normalized);
+        string targetPath = ParseStartupCommandTargetCandidate(normalized);
         if (!string.IsNullOrWhiteSpace(targetPath) && normalized.StartsWith(targetPath, StringComparison.OrdinalIgnoreCase))
         {
             return new ProcessCommand(targetPath, normalized[targetPath.Length..].Trim());
@@ -1724,6 +3826,169 @@ internal static class StartupAppMaintenanceService
         if (current.Length > 0)
         {
             yield return current.ToString();
+        }
+    }
+
+    private static IReadOnlyList<Dictionary<string, string>> ParseCsvTable(string csv)
+    {
+        string[] lines = csv.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length < 2)
+        {
+            return [];
+        }
+
+        string[] headers = ParseCsvLine(lines[0]).ToArray();
+        var rows = new List<Dictionary<string, string>>();
+        foreach (string line in lines.Skip(1))
+        {
+            string[] values = ParseCsvLine(line).ToArray();
+            if (values.Length == 0)
+            {
+                continue;
+            }
+
+            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index < headers.Length && index < values.Length; index++)
+            {
+                row[headers[index]] = values[index];
+            }
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
+
+    private static IEnumerable<string> ParseCsvLine(string line)
+    {
+        var current = new StringBuilder();
+        bool inQuotes = false;
+        for (int index = 0; index < line.Length; index++)
+        {
+            char character = line[index];
+            if (character == '"')
+            {
+                if (inQuotes && index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    current.Append('"');
+                    index++;
+                    continue;
+                }
+
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (character == ',' && !inQuotes)
+            {
+                yield return current.ToString();
+                current.Clear();
+                continue;
+            }
+
+            current.Append(character);
+        }
+
+        yield return current.ToString();
+    }
+
+    private static string GetCsvValue(IReadOnlyDictionary<string, string> row, string key)
+    {
+        return row.TryGetValue(key, out string? value) ? value.Trim() : string.Empty;
+    }
+
+    private static string RunHiddenProcess(string fileName, string arguments, int timeoutMilliseconds, List<string> warnings, string label)
+    {
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        process.Start();
+        string output = process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(timeoutMilliseconds))
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            AddWarning(warnings, $"{label} scan timed out.");
+            return string.Empty;
+        }
+
+        if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(error))
+        {
+            AddWarning(warnings, $"{label}: {error.Trim()}");
+        }
+
+        return output;
+    }
+
+    private static string GetJsonString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out JsonElement property))
+        {
+            return string.Empty;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.String => property.GetString() ?? string.Empty,
+            JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+            _ => property.ToString()
+        };
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+    }
+
+    private static StartupPublisherInfo GetStartupPublisherInfo(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path) || !File.Exists(path))
+        {
+            return new StartupPublisherInfo(string.Empty, "Unknown", isMicrosoftSigned: false);
+        }
+
+        string publisher = string.Empty;
+        try
+        {
+            publisher = FileVersionInfo.GetVersionInfo(path).CompanyName?.Trim() ?? string.Empty;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            using X509Certificate certificate = X509Certificate.CreateFromSignedFile(path);
+            string subject = certificate.Subject ?? string.Empty;
+            bool microsoftSigned = subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
+            return new StartupPublisherInfo(
+                string.IsNullOrWhiteSpace(publisher) && microsoftSigned ? "Microsoft" : publisher,
+                "Signed",
+                microsoftSigned);
+        }
+        catch
+        {
+            return new StartupPublisherInfo(publisher, "Unsigned or unavailable", isMicrosoftSigned: false);
+        }
+    }
+
+    private static string GetFileLastModifiedDisplay(string path)
+    {
+        try
+        {
+            return File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
@@ -1822,9 +4087,12 @@ internal static class StartupAppMaintenanceService
         return value.Trim();
     }
 
-    private static string RegistryStringValue(RegistryKey key, string name)
+    private static string RegistryStringValue(RegistryKey key, string name, bool doNotExpandEnvironmentNames = false)
     {
-        return key.GetValue(name)?.ToString() ?? string.Empty;
+        RegistryValueOptions options = doNotExpandEnvironmentNames
+            ? RegistryValueOptions.DoNotExpandEnvironmentNames
+            : RegistryValueOptions.None;
+        return key.GetValue(name, defaultValue: null, options)?.ToString() ?? string.Empty;
     }
 
     private static int RegistryIntValue(RegistryKey key, string name)
@@ -1884,11 +4152,12 @@ internal static class StartupAppMaintenanceService
         return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
     }
 
-    private static RegistryKey GetRegistryRoot(string? hive)
+    private static RegistryKey GetRegistryRoot(string? hive, RegistryView registryView = RegistryView.Default)
     {
-        return string.Equals(hive, "HKLM", StringComparison.OrdinalIgnoreCase)
-            ? Registry.LocalMachine
-            : Registry.CurrentUser;
+        RegistryHive registryHive = string.Equals(hive, "HKLM", StringComparison.OrdinalIgnoreCase)
+            ? RegistryHive.LocalMachine
+            : RegistryHive.CurrentUser;
+        return RegistryKey.OpenBaseKey(registryHive, registryView);
     }
 
     private static string GetRegistryHiveName(string? hive)
@@ -1945,6 +4214,11 @@ internal static class StartupAppMaintenanceService
             .Select(Path.GetFullPath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static string[] GetProtectedStartupRoots()
+    {
+        return GetBlockedCleanupRoots();
     }
 
     private static bool IsUnderAnyPath(string fullPath, IEnumerable<string> roots, bool includeRoot)
@@ -2011,6 +4285,11 @@ internal static class StartupAppMaintenanceService
         return Path.Combine(GetSystemCareDataDirectory(), "DisabledStartupItems");
     }
 
+    private static string GetCurrentFileLockerVersion()
+    {
+        return typeof(StartupAppMaintenanceService).Assembly.GetName().Version?.ToString() ?? string.Empty;
+    }
+
     private sealed record StartupEntry(
         StartupItem item,
         StartupEntryKind kind,
@@ -2019,18 +4298,152 @@ internal static class StartupAppMaintenanceService
         string? valueName,
         RegistryValueKind? registryValueKind,
         object? registryValue,
-        string? filePath);
+        string? filePath,
+        RegistryView registryView = RegistryView.Default);
 
     private enum StartupEntryKind
     {
         Registry,
-        File
+        File,
+        ReadOnlyRegistry,
+        Service,
+        ScheduledTask,
+        WmiConsumer,
+        PackagedTask
     }
 
+    private interface IStartupEntryProvider
+    {
+        IEnumerable<StartupEntry> Enumerate(List<string> warnings);
+    }
+
+    private sealed class DelegateStartupEntryProvider(string name, Func<List<string>, IEnumerable<StartupEntry>> enumerate) : IStartupEntryProvider
+    {
+        public IEnumerable<StartupEntry> Enumerate(List<string> warnings)
+        {
+            try
+            {
+                return enumerate(warnings).ToArray();
+            }
+            catch (Exception ex)
+            {
+                AddWarning(warnings, $"{name}: {ex.Message}");
+                return [];
+            }
+        }
+    }
+
+    private sealed record GroupPolicyScriptSource(
+        RegistryHive Hive,
+        string HiveName,
+        string Scope,
+        string KeyPath,
+        string Label,
+        bool RequiresAdministrator);
+
+    private sealed record RegistryValueSource(RegistryHive Hive, string KeyPath, string Label, string[]? ValueNames);
+    private sealed record StartupPublisherInfo(string publisher, string signatureStatus, bool isMicrosoftSigned);
     private sealed record ProcessCommand(string fileName, string arguments);
     private sealed record LeftoverRoot(string path, bool requiresAdministrator);
     private sealed record DirectoryScanSummary(long SizeBytes, int FileCount, int SkippedCount, string[] Warnings);
+
+    [ComImport]
+    [Guid("00021401-0000-0000-C000-000000000046")]
+    private sealed class ShellLink
+    {
+    }
+
+    [ComImport]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    private interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cchMaxPath, IntPtr pfd, uint fFlags);
+        void GetIDList(out IntPtr ppidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cchMaxName);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cchMaxPath);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cchMaxPath);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetHotkey(out short pwHotkey);
+        void SetHotkey(short wHotkey);
+        void GetShowCmd(out int piShowCmd);
+        void SetShowCmd(int iShowCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cchIconPath, out int piIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+        void Resolve(IntPtr hwnd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeServiceHandle OpenSCManager(string? lpMachineName, string? lpDatabaseName, int dwDesiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeServiceHandle OpenService(SafeServiceHandle hSCManager, string lpServiceName, int dwDesiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseServiceHandle(IntPtr hSCObject);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ChangeServiceConfig(
+        SafeServiceHandle hService,
+        int dwServiceType,
+        int dwStartType,
+        int dwErrorControl,
+        string? lpBinaryPathName,
+        string? lpLoadOrderGroup,
+        IntPtr lpdwTagId,
+        string? lpDependencies,
+        string? lpServiceStartName,
+        string? lpPassword,
+        string? lpDisplayName);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryServiceConfig(SafeServiceHandle hService, IntPtr lpServiceConfig, int cbBufSize, out int pcbBytesNeeded);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct QueryServiceConfigNative
+    {
+        public int dwServiceType;
+        public int dwStartType;
+        public int dwErrorControl;
+        public IntPtr lpBinaryPathName;
+        public IntPtr lpLoadOrderGroup;
+        public int dwTagId;
+        public IntPtr lpDependencies;
+        public IntPtr lpServiceStartName;
+        public IntPtr lpDisplayName;
+    }
+
+    private sealed class SafeServiceHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SafeServiceHandle() : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            return CloseServiceHandle(handle);
+        }
+    }
 }
+
+internal sealed record StartupCommandResolution(
+    string commandRaw,
+    string executableResolved,
+    string arguments,
+    string workingDirectory,
+    string launcherName,
+    string status,
+    string confidence,
+    string riskLevel,
+    string notes);
 
 internal sealed record StartupItem(
     string id,
@@ -2043,12 +4456,37 @@ internal sealed record StartupItem(
     bool requiresAdministrator,
     bool canToggle,
     string status,
-    string[] warnings);
+    string[] warnings,
+    string sourceType = "Startup",
+    string category = "Startup Apps",
+    string scope = "",
+    string publisher = "",
+    string signatureStatus = "Unknown",
+    bool isMicrosoftSigned = false,
+    string commandRaw = "",
+    string executableResolved = "",
+    string arguments = "",
+    string workingDirectory = "",
+    string sourceLocation = "",
+    string lastModified = "",
+    string startupImpact = "Unknown",
+    string confidence = "Medium",
+    string riskLevel = "Low",
+    string disableMethod = "",
+    bool isReadOnlyManaged = false,
+    string backupPayload = "",
+    string notes = "",
+    bool isIgnored = false);
 
 internal sealed record StartupScanResult(
     StartupItem[] items,
     int enabledCount,
     int disabledCount,
+    int brokenCount,
+    int advancedCount,
+    int restoreRecordCount,
+    int ignoredCount,
+    StartupRestoreRecord[] restoreRecords,
     string[] warnings);
 
 internal sealed record StartupToggleResult(
@@ -2056,6 +4494,40 @@ internal sealed record StartupToggleResult(
     bool isEnabled,
     string backupPath,
     string message);
+
+internal sealed record StartupIgnoreResult(
+    string itemId,
+    bool isIgnored,
+    string message);
+
+internal sealed record StartupExportResult(
+    string exportPath,
+    string fileName,
+    string itemId,
+    bool fullPathsIncluded = true);
+
+internal sealed record StartupRestoreRecord(
+    string id,
+    string name,
+    string source,
+    string location,
+    string command,
+    string? targetPath,
+    string timestampUtc,
+    string backupPath,
+    string sourceType,
+    string category,
+    string scope,
+    string originalStatus,
+    string fileLockerVersion,
+    string restoreStatus,
+    string failureDetails,
+    string restoreMethod,
+    string userAction,
+    string resolvedExecutable,
+    string commandStatus,
+    string confidence,
+    string riskLevel);
 
 internal sealed record StartupDisableMetadata(
     string id,
@@ -2068,7 +4540,21 @@ internal sealed record StartupDisableMetadata(
     string disabledAtUtc,
     string backupPath,
     StartupRegistryMetadata? registry,
-    StartupFileMetadata? file);
+    StartupFileMetadata? file,
+    string sourceType = "Startup",
+    string category = "Startup Apps",
+    string scope = "",
+    string originalStatus = "",
+    string fileLockerVersion = "",
+    string restoreStatus = "Available",
+    string failureDetails = "",
+    StartupTaskMetadata? task = null,
+    StartupServiceMetadata? service = null,
+    string userAction = "Disable",
+    string resolvedExecutable = "",
+    string commandStatus = "",
+    string confidence = "",
+    string riskLevel = "");
 
 internal sealed record StartupRegistryMetadata(
     string hive,
@@ -2079,11 +4565,20 @@ internal sealed record StartupRegistryMetadata(
     string[]? multiStringValue,
     int? dwordValue,
     long? qwordValue,
-    byte[]? binaryValue);
+    byte[]? binaryValue,
+    string registryView = "");
 
 internal sealed record StartupFileMetadata(
     string originalPath,
     string disabledPath);
+
+internal sealed record StartupTaskMetadata(
+    string taskPath,
+    bool wasEnabled);
+
+internal sealed record StartupServiceMetadata(
+    string serviceName,
+    int originalStartType);
 
 internal sealed record InstalledApp(
     string id,

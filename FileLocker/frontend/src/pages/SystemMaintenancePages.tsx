@@ -3,8 +3,11 @@ import {
   AlertTriangle,
   ArrowUpDown,
   CheckCircle2,
+  Copy,
   Database,
   Download,
+  Eye,
+  FileJson,
   ExternalLink,
   FolderOpen,
   HardDrive,
@@ -36,6 +39,16 @@ import { Button } from "@/components/ui/button"
 import { Section, SectionBody, SectionFooter, SectionHeader, SectionTitle } from "@/components/layout/Workspace"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import {
+  filterStartupItems,
+  groupStartupItems,
+  sortStartupItems,
+  type StartupBucketFilter,
+  type StartupEnabledFilter,
+  type StartupIgnoredFilter,
+  type StartupSortKey,
+  type StartupTrustFilter,
+} from "@/lib/startupListUtils"
 import { cn } from "@/lib/utils"
 import type {
   AppLeftoverCleanResult,
@@ -43,7 +56,11 @@ import type {
   InstalledApp,
   InstalledAppsScanResult,
   StartupItem,
+  StartupExportResult,
+  StartupIgnoreResult,
+  StartupOpenLocationResult,
   StartupScanResult,
+  StartupRestoreRecord,
   StartupToggleResult,
   UninstallerLaunchResult,
 } from "@/types/bridge"
@@ -997,22 +1014,28 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
   const [scan, setScan] = useState<StartupScanResult | null>(null)
   const [startupScanError, setStartupScanError] = useState("")
   const [startupActionError, setStartupActionError] = useState("")
-  const [filter, setFilter] = useState<"all" | "enabled" | "disabled">("all")
+  const [query, setQuery] = useState("")
+  const [bucketFilter, setBucketFilter] = useState<StartupBucketFilter>("all")
+  const [enabledFilter, setEnabledFilter] = useState<StartupEnabledFilter>("all")
+  const [trustFilter, setTrustFilter] = useState<StartupTrustFilter>("all")
+  const [riskFilter, setRiskFilter] = useState("all")
+  const [sourceFilter, setSourceFilter] = useState("all")
+  const [ignoredFilter, setIgnoredFilter] = useState<StartupIgnoredFilter>("active")
+  const [sortKey, setSortKey] = useState<StartupSortKey>("risk")
   const [isScanning, setIsScanning] = useState(true)
   const [updatingId, setUpdatingId] = useState("")
   const [pendingToggle, setPendingToggle] = useState<StartupItem | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<StartupItem | null>(null)
+  const [selectedItemId, setSelectedItemId] = useState("")
   const items = scan?.items ?? []
-  const visibleItems = useMemo(() => {
-    if (filter === "enabled") {
-      return items.filter((item) => item.isEnabled)
-    }
-
-    if (filter === "disabled") {
-      return items.filter((item) => !item.isEnabled)
-    }
-
-    return items
-  }, [filter, items])
+  const sourceTypes = useMemo(() => Array.from(new Set(items.map((item) => item.sourceType || item.source).filter(Boolean))).sort(), [items])
+  const riskLevels = useMemo(() => Array.from(new Set(items.map((item) => item.riskLevel).filter(Boolean))).sort(), [items])
+  const visibleItems = useMemo(
+    () => sortStartupItems(filterStartupItems(items, { query, bucketFilter, enabledFilter, trustFilter, riskFilter, sourceFilter, ignoredFilter }), sortKey),
+    [bucketFilter, enabledFilter, ignoredFilter, items, query, riskFilter, sortKey, sourceFilter, trustFilter]
+  )
+  const visibleItemGroups = useMemo(() => groupStartupItems(visibleItems), [visibleItems])
+  const selectedItem = items.find((item) => item.id === selectedItemId) ?? visibleItems[0] ?? null
   const selectedAdminItems = items.filter((item) => item.requiresAdministrator)
   const startupToggleBusy = Boolean(updatingId)
   const startupWarnings = useMemo(
@@ -1037,6 +1060,7 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
     setStartupScanError("")
     setStartupActionError("")
     setPendingToggle(null)
+    setPendingRemove(null)
     try {
       const response = await invoke<StartupScanResult>("maintenance.scanStartup", {})
       setScan(response)
@@ -1046,6 +1070,81 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
       toast.error(message)
     } finally {
       setIsScanning(false)
+    }
+  }
+
+  async function setIgnored(item: StartupItem, ignored: boolean) {
+    setStartupActionError("")
+    setUpdatingId(item.id)
+    try {
+      const response = await invoke<StartupIgnoreResult>("maintenance.setStartupIgnored", { itemId: item.id, ignored })
+      toast.success(response.message)
+      await scanStartup()
+    } catch (error) {
+      setStartupActionError(showMaintenanceError(error, ignored ? "Ignore failed." : "Restore to review failed."))
+    } finally {
+      setUpdatingId("")
+    }
+  }
+
+  async function exportItem(item: StartupItem) {
+    setStartupActionError("")
+    try {
+      const response = await invoke<StartupExportResult>("maintenance.exportStartupItem", { itemId: item.id })
+      toast.success(response.fullPathsIncluded ? `Exported ${response.fileName}.` : `Exported redacted details to ${response.fileName}.`)
+      await invoke("files.revealPath", { path: response.exportPath })
+    } catch (error) {
+      setStartupActionError(showMaintenanceError(error, "Startup export failed."))
+    }
+  }
+
+  async function copyCommand(item: StartupItem) {
+    try {
+      await navigator.clipboard.writeText(item.commandRaw || item.command)
+      toast.success("Startup command copied.")
+    } catch {
+      toast.error("Command could not be copied.")
+    }
+  }
+
+  async function revealPath(path: string, fallback: string) {
+    if (!path) {
+      toast.error(fallback)
+      return
+    }
+
+    try {
+      await invoke("files.revealPath", { path })
+    } catch (error) {
+      setStartupActionError(showMaintenanceError(error, "Location could not be opened."))
+    }
+  }
+
+  async function openStartupSource(item: StartupItem) {
+    setStartupActionError("")
+    try {
+      const response = await invoke<StartupOpenLocationResult>("maintenance.openStartupSource", { itemId: item.id })
+      toast.success(`Opened ${response.targetKind}.`)
+    } catch (error) {
+      setStartupActionError(showMaintenanceError(error, "Source location could not be opened."))
+    }
+  }
+
+  async function removeBrokenItem(item: StartupItem) {
+    setPendingRemove(null)
+    setStartupActionError("")
+    setUpdatingId(item.id)
+    try {
+      const response = await invoke<StartupToggleResult>("maintenance.removeBrokenStartupItem", {
+        itemId: item.id,
+        confirmation: "REMOVE BROKEN STARTUP",
+      })
+      toast.success(response.message)
+      await scanStartup()
+    } catch (error) {
+      setStartupActionError(showMaintenanceError(error, "Broken startup removal failed."))
+    } finally {
+      setUpdatingId("")
     }
   }
 
@@ -1094,7 +1193,7 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
           ) : null}
 
           <MaintenanceSection
-            title="Startup Inventory"
+            title="Startup Control Center"
             icon={Power}
             action={
               <Button variant="outline" onClick={() => void scanStartup()} disabled={isScanning || Boolean(updatingId)}>
@@ -1103,22 +1202,71 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
               </Button>
             }
           >
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
               <MetricTile label="Enabled" value={scan ? String(scan.enabledCount) : "..."} />
               <MetricTile label="Disabled" value={scan ? String(scan.disabledCount) : "..."} />
+              <MetricTile label="Broken" value={scan ? String(scan.brokenCount) : "..."} />
+              <MetricTile label="Advanced" value={scan ? String(scan.advancedCount) : "..."} />
               <MetricTile label="Admin scoped" value={String(selectedAdminItems.length)} />
+              <MetricTile label="Restore records" value={scan ? String(scan.restoreRecordCount) : "..."} />
             </div>
             <WarningList title={startupScanError ? "Startup scan issue" : startupActionError ? "Startup action issue" : "Startup scan warnings"} warnings={startupWarnings} />
-            <div className="mt-4 flex flex-wrap gap-2">
-              {(["all", "enabled", "disabled"] as const).map((mode) => (
+            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden />
+                <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, publisher, source, command, or target" className="pl-9" />
+              </div>
+              <select className="rounded-md border border-border bg-background px-3 py-2 text-sm text-primary" value={sortKey} onChange={(event) => setSortKey(event.target.value as typeof sortKey)}>
+                <option value="risk">Sort by risk</option>
+                <option value="name">Sort by name</option>
+                <option value="publisher">Sort by publisher</option>
+                <option value="enabled">Sort by enabled</option>
+                <option value="source">Sort by source</option>
+                <option value="scope">Sort by scope</option>
+                <option value="confidence">Sort by confidence</option>
+                <option value="signature">Sort by signature</option>
+                <option value="impact">Sort by impact</option>
+              </select>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(["all", "Startup Apps", "Broken Startup Items", "Advanced Startup Hooks"] as const).map((mode) => (
                 <Button
                   key={mode}
-                  variant={filter === mode ? "secondary" : "outline"}
-                  onClick={() => setFilter(mode)}
-                  aria-pressed={filter === mode}
+                  variant={bucketFilter === mode ? "secondary" : "outline"}
+                  onClick={() => setBucketFilter(mode)}
+                  aria-pressed={bucketFilter === mode}
                   size="sm"
                 >
-                  {mode === "all" ? "All" : mode === "enabled" ? "Enabled" : "Disabled"}
+                  {mode === "all" ? "All" : mode.replace(" Startup ", " ")}
+                </Button>
+              ))}
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <select className="rounded-md border border-border bg-background px-3 py-2 text-sm text-primary" value={enabledFilter} onChange={(event) => setEnabledFilter(event.target.value as typeof enabledFilter)}>
+                <option value="all">Enabled and disabled</option>
+                <option value="enabled">Enabled only</option>
+                <option value="disabled">Disabled only</option>
+              </select>
+              <select className="rounded-md border border-border bg-background px-3 py-2 text-sm text-primary" value={trustFilter} onChange={(event) => setTrustFilter(event.target.value as typeof trustFilter)}>
+                <option value="all">All trust states</option>
+                <option value="microsoft">Microsoft</option>
+                <option value="non-microsoft">Non-Microsoft</option>
+                <option value="signed">Signed</option>
+                <option value="unsigned">Unsigned/unknown</option>
+              </select>
+              <select className="rounded-md border border-border bg-background px-3 py-2 text-sm text-primary" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+                <option value="all">All sources</option>
+                {sourceTypes.map((source) => <option key={source} value={source}>{source}</option>)}
+              </select>
+              <select className="rounded-md border border-border bg-background px-3 py-2 text-sm text-primary" value={riskFilter} onChange={(event) => setRiskFilter(event.target.value)}>
+                <option value="all">All risk levels</option>
+                {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+              </select>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(["active", "ignored", "all"] as const).map((mode) => (
+                <Button key={mode} variant={ignoredFilter === mode ? "secondary" : "outline"} size="sm" onClick={() => setIgnoredFilter(mode)}>
+                  {mode === "active" ? "Active review" : mode === "ignored" ? "Ignored" : "All review states"}
                 </Button>
               ))}
             </div>
@@ -1130,41 +1278,68 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
             action={<Badge variant="outline">{visibleItems.length} shown</Badge>}
           >
             <div className="overflow-hidden rounded-md border border-border/80">
-              <div className="grid grid-cols-[minmax(0,1fr)_128px] border-b border-border/80 bg-background/45 px-4 py-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+              <div className="grid grid-cols-[minmax(0,1fr)_208px] border-b border-border/80 bg-background/45 px-4 py-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
                 <div>Entry</div>
-                <div className="text-right">Action</div>
+                <div className="text-right">Actions</div>
               </div>
               <div className="max-h-[620px] overflow-y-auto">
-                {visibleItems.map((item) => {
-                  const adminBlocked = item.requiresAdministrator && !isAdministrator
-                  return (
-                    <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_128px] items-start gap-3 border-b border-border/70 px-4 py-3 last:border-b-0">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="font-display text-[1rem] font-semibold tracking-tight text-primary">{item.name}</div>
-                          <Badge variant={item.isEnabled ? "secondary" : "outline"}>{item.status}</Badge>
-                          <Badge variant="outline">{item.source}</Badge>
-                          {item.requiresAdministrator ? <Badge variant="destructive">Admin</Badge> : null}
-                        </div>
-                        <div className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{item.location}</div>
-                        <div className="mt-1 truncate text-sm text-secondary">{item.command}</div>
-                        {item.targetPath ? <div className="mt-1 truncate text-xs text-muted">{item.targetPath}</div> : null}
-                        {item.warnings.length > 0 ? <div className="mt-2 text-xs text-amber-400">{item.warnings[0]}</div> : null}
-                      </div>
-                      <div className="flex justify-end">
-                        <Button
-                          variant={item.isEnabled ? "destructive" : "secondary"}
-                          size="sm"
-                          disabled={!item.canToggle || adminBlocked || isScanning || startupToggleBusy}
-                          onClick={() => setPendingToggle(item)}
-                        >
-                          {item.isEnabled ? <PowerOff data-icon="inline-start" /> : <Power data-icon="inline-start" />}
-                          {updatingId === item.id ? "Updating" : item.isEnabled ? "Disable" : "Enable"}
-                        </Button>
-                      </div>
+                {visibleItemGroups.map((group) => (
+                  <div key={group.category} className="border-b border-border/80 last:border-b-0">
+                    <div className="flex items-center justify-between gap-3 border-b border-border/70 bg-background/30 px-4 py-2">
+                      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{group.category}</div>
+                      <Badge variant={group.category === "Broken Startup Items" ? "destructive" : "outline"}>{group.items.length}</Badge>
                     </div>
-                  )
-                })}
+                    {group.items.map((item) => {
+                      const adminBlocked = item.requiresAdministrator && !isAdministrator
+                      return (
+                        <div key={item.id} className={cn("grid grid-cols-[minmax(0,1fr)_208px] items-start gap-3 border-b border-border/70 px-4 py-3 last:border-b-0", selectedItem?.id === item.id && "bg-accent/5")}>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="font-display text-[1rem] font-semibold tracking-tight text-primary">{item.name}</div>
+                              <Badge variant={item.isEnabled ? "secondary" : "outline"}>{item.status}</Badge>
+                              <Badge variant={item.category === "Broken Startup Items" ? "destructive" : "outline"}>{item.category}</Badge>
+                              <Badge variant="outline">{item.sourceType || item.source}</Badge>
+                              <Badge variant={item.isMicrosoftSigned ? "secondary" : "outline"}>{item.isMicrosoftSigned ? "Microsoft" : item.signatureStatus || "Unknown"}</Badge>
+                              <Badge variant={item.riskLevel === "High" ? "destructive" : "outline"}>{item.riskLevel || "Unknown"} risk</Badge>
+                              {item.requiresAdministrator ? <Badge variant="destructive">Admin</Badge> : null}
+                              {item.isIgnored ? <Badge variant="outline">Ignored</Badge> : null}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
+                              <span>{item.scope || "Unknown scope"}</span>
+                              <span>{item.source}</span>
+                              <span>{item.confidence || "Unknown confidence"}</span>
+                              <span>{item.startupImpact || "Unknown impact"} impact</span>
+                            </div>
+                            <div className="mt-1 truncate text-sm text-secondary">{item.commandRaw || item.command}</div>
+                            {item.executableResolved || item.targetPath ? <div className="mt-1 truncate text-xs text-muted">{item.executableResolved || item.targetPath}</div> : null}
+                            {item.warnings.length > 0 ? <div className="mt-2 text-xs text-amber-400">{item.warnings[0]}</div> : null}
+                          </div>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button variant="outline" size="sm" onClick={() => setSelectedItemId(item.id)}>
+                              <Eye data-icon="inline-start" />
+                              Details
+                            </Button>
+                            <Button
+                              variant={item.isEnabled ? "destructive" : "secondary"}
+                              size="sm"
+                              disabled={!item.canToggle || adminBlocked || isScanning || startupToggleBusy}
+                              onClick={() => setPendingToggle(item)}
+                            >
+                              {item.isEnabled ? <PowerOff data-icon="inline-start" /> : <Power data-icon="inline-start" />}
+                              {updatingId === item.id ? "Updating" : item.isEnabled ? "Disable" : "Restore"}
+                            </Button>
+                            {item.category === "Broken Startup Items" && item.canToggle ? (
+                              <Button variant="destructive" size="sm" disabled={adminBlocked || isScanning || startupToggleBusy} onClick={() => setPendingRemove(item)}>
+                                <Trash2 data-icon="inline-start" />
+                                Remove
+                              </Button>
+                            ) : null}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
                 {visibleItems.length === 0 ? (
                   <div className="px-4 py-4 text-sm text-secondary">
                     {startupScanError ? "Startup scan failed. Review the warning and try again." : isScanning ? "Scanning startup entries..." : "No startup entries match this filter."}
@@ -1175,15 +1350,26 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
           </MaintenanceSection>
         </div>
 
-        <SafetyPanel
-          title="Startup Manager Guardrails"
-          points={[
-            "HKCU and HKLM Run values are backed up before FileLocker removes them.",
-            "Startup folder shortcuts are moved into FileLocker-managed disabled storage.",
-            "Disabled entries stay visible so they can be restored from this page.",
-            "Common Startup and HKLM changes require administrator mode.",
-          ]}
-        />
+        <aside className="flex min-w-0 flex-col gap-4">
+          <StartupDetailsPanel
+            item={selectedItem}
+            restoreRecords={scan?.restoreRecords ?? []}
+            onOpenFile={() => selectedItem && void revealPath(selectedItem.executableResolved || selectedItem.targetPath || "", "No resolved file target is available.")}
+            onOpenSource={() => selectedItem && void openStartupSource(selectedItem)}
+            onCopy={() => selectedItem && void copyCommand(selectedItem)}
+            onExport={() => selectedItem && void exportItem(selectedItem)}
+            onIgnore={() => selectedItem && void setIgnored(selectedItem, !selectedItem.isIgnored)}
+          />
+          <SafetyPanel
+            title="Startup Control Guardrails"
+            points={[
+              "Supported disable actions create restore metadata first.",
+              "Startup folder entries move into FileLocker-managed disabled storage.",
+              "Advanced hooks are scan-only unless a precise restore path exists.",
+              "Policy-managed and protected sources stay read-only.",
+            ]}
+          />
+        </aside>
       </div>
       <AlertDialog open={Boolean(pendingToggle)} onOpenChange={(open) => !open && setPendingToggle(null)}>
         <AlertDialogContent>
@@ -1207,7 +1393,118 @@ export function StartupManagerPage({ invoke, isAdministrator, onRestartAsAdminis
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={Boolean(pendingRemove)} onOpenChange={(open) => !open && setPendingRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove broken startup item?</AlertDialogTitle>
+            <AlertDialogDescription>
+              FileLocker will save restore metadata first, then remove {pendingRemove?.name ?? "this item"} from active startup. This is only available for entries classified as broken.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isScanning || startupToggleBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => pendingRemove && void removeBrokenItem(pendingRemove)} disabled={isScanning || startupToggleBusy}>
+              {startupToggleBusy ? "Removing" : "Remove Broken Item"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </MaintenanceFrame>
+  )
+}
+
+function StartupDetailsPanel({
+  item,
+  restoreRecords,
+  onOpenFile,
+  onOpenSource,
+  onCopy,
+  onExport,
+  onIgnore,
+}: {
+  item: StartupItem | null
+  restoreRecords: StartupRestoreRecord[]
+  onOpenFile: () => void
+  onOpenSource: () => void
+  onCopy: () => void
+  onExport: () => void
+  onIgnore: () => void
+}) {
+  const itemRestoreRecords = item ? restoreRecords.filter((record) => record.id === item.id) : []
+  const visibleRestoreRecords = itemRestoreRecords.length > 0 ? itemRestoreRecords : restoreRecords.slice(0, 4)
+  return (
+    <MaintenanceSection title="Startup Details" icon={Info}>
+      {item ? (
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className="font-display text-base font-semibold tracking-tight text-primary">{item.name}</div>
+            <div className="mt-1 text-sm text-secondary">{item.publisher || "Unknown publisher"}</div>
+          </div>
+          <div className="grid gap-2">
+            <StartupDetailRow label="Source" value={`${item.sourceType || item.source} / ${item.scope || "Unknown scope"}`} />
+            <StartupDetailRow label="Status" value={`${item.status} / ${item.confidence || "Unknown"} confidence`} />
+            <StartupDetailRow label="Risk" value={`${item.riskLevel || "Unknown"} risk / ${item.startupImpact || "Unknown"} impact`} />
+            <StartupDetailRow label="Signature" value={item.isMicrosoftSigned ? "Microsoft signed" : item.signatureStatus || "Unknown"} />
+            <StartupDetailRow label="Modified" value={item.lastModified || "Unknown"} />
+            <StartupDetailRow label="Command" value={item.commandRaw || item.command || "No command"} mono />
+            <StartupDetailRow label="Resolved" value={item.executableResolved || item.targetPath || "Unresolved"} mono />
+            <StartupDetailRow label="Source location" value={item.sourceLocation || item.location || "Unknown"} mono />
+            <StartupDetailRow label="Notes" value={item.notes || (item.isReadOnlyManaged ? "Read-only source." : "No notes.")} />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={onOpenFile}>
+              <FolderOpen data-icon="inline-start" />
+              File
+            </Button>
+            <Button variant="outline" size="sm" onClick={onOpenSource}>
+              <ExternalLink data-icon="inline-start" />
+              Source
+            </Button>
+            <Button variant="outline" size="sm" onClick={onCopy}>
+              <Copy data-icon="inline-start" />
+              Copy
+            </Button>
+            <Button variant="outline" size="sm" onClick={onExport}>
+              <FileJson data-icon="inline-start" />
+              Export
+            </Button>
+            <Button variant={item.isIgnored ? "secondary" : "outline"} size="sm" onClick={onIgnore}>
+              {item.isIgnored ? "Review" : "Ignore"}
+            </Button>
+          </div>
+          <div className="rounded-md border border-border/80 bg-background/35 px-3 py-2 text-sm text-secondary">
+            {restoreRecords.length} restore record{restoreRecords.length === 1 ? "" : "s"} available from FileLocker startup metadata.
+          </div>
+          <div className="flex flex-col gap-2">
+            {visibleRestoreRecords.map((record) => (
+              <div key={`${record.id}-${record.timestampUtc}`} className="rounded-md border border-border/80 bg-background/35 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 truncate text-sm font-semibold text-primary">{record.name}</div>
+                  <Badge variant={record.restoreStatus === "Available" ? "secondary" : "outline"}>{record.restoreStatus}</Badge>
+                </div>
+                <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{record.userAction || "Disable"} / {record.restoreMethod} / {record.timestampUtc || "Unknown time"}</div>
+                <div className="mt-1 truncate text-xs text-secondary">{record.location}</div>
+                {record.resolvedExecutable ? <div className="mt-1 truncate font-mono text-[11px] text-muted">{record.resolvedExecutable}</div> : null}
+              </div>
+            ))}
+            {restoreRecords.length > visibleRestoreRecords.length ? (
+              <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">+{restoreRecords.length - visibleRestoreRecords.length} more restore records</div>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="text-sm text-secondary">Select a startup entry to review details.</div>
+      )}
+    </MaintenanceSection>
+  )
+}
+
+function StartupDetailRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0 rounded-md border border-border/80 bg-background/35 px-3 py-2">
+      <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{label}</div>
+      <div className={cn("mt-1 break-words text-sm text-secondary", mono && "font-mono text-xs")}>{value}</div>
+    </div>
   )
 }
 

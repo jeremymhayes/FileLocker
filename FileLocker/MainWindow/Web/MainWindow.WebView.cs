@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -18,6 +19,8 @@ using WinRT.Interop;
 
 namespace FileLocker
 {
+    internal sealed record StartupSourceOpenPlan(string TargetKind, string Target);
+
     public sealed partial class MainWindow
     {
         private const string DevServerUrl = "http://127.0.0.1:5173";
@@ -268,6 +271,10 @@ namespace FileLocker
                 "maintenance.cleanRegistry" => RunBridgeWorkerAsync(() => CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
                 "maintenance.scanStartup" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanStartup()),
                 "maintenance.setStartupEnabled" => RunBridgeWorkerAsync(() => SetStartupEnabledFromBridge(ReadPayload<StartupToggleRequest>(request.Payload))),
+                "maintenance.setStartupIgnored" => RunBridgeWorkerAsync(() => SetStartupIgnoredFromBridge(ReadPayload<StartupIgnoreRequest>(request.Payload))),
+                "maintenance.exportStartupItem" => RunBridgeWorkerAsync(() => ExportStartupItemFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
+                "maintenance.openStartupSource" => RunBridgeWorkerAsync(() => OpenStartupSourceFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
+                "maintenance.removeBrokenStartupItem" => RunBridgeWorkerAsync(() => RemoveBrokenStartupItemFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
                 "maintenance.scanInstalledApps" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanInstalledApps()),
                 "maintenance.launchUninstaller" => RunBridgeWorkerAsync(() => LaunchUninstallerFromBridge(ReadPayload<UninstallerLaunchRequest>(request.Payload))),
                 "maintenance.scanAppLeftovers" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanAppLeftovers(ReadPayload<AppLeftoverRequest>(request.Payload).AppIds)),
@@ -501,6 +508,193 @@ namespace FileLocker
         private static StartupToggleResult SetStartupEnabledFromBridge(StartupToggleRequest request)
         {
             return StartupAppMaintenanceService.SetStartupEnabled(request.ItemId, request.Enabled);
+        }
+
+        private static StartupIgnoreResult SetStartupIgnoredFromBridge(StartupIgnoreRequest request)
+        {
+            return StartupAppMaintenanceService.SetStartupIgnored(request.ItemId, request.Ignored);
+        }
+
+        private StartupExportResult ExportStartupItemFromBridge(StartupItemActionRequest request)
+        {
+            return StartupAppMaintenanceService.ExportStartupItemDetails(request.ItemId, _preferences.IncludeFullPathsInExports);
+        }
+
+        private static StartupToggleResult RemoveBrokenStartupItemFromBridge(StartupItemActionRequest request)
+        {
+            return StartupAppMaintenanceService.RemoveBrokenStartupItem(request.ItemId, request.Confirmation);
+        }
+
+        private static object OpenStartupSourceFromBridge(StartupItemActionRequest request)
+        {
+            string itemId = request.ItemId?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(itemId))
+            {
+                throw new InvalidOperationException("A startup item is required.");
+            }
+
+            StartupItem item = StartupAppMaintenanceService.ScanStartup().items
+                .FirstOrDefault(candidate => string.Equals(candidate.id, itemId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("The selected startup item is no longer available.");
+            StartupSourceOpenPlan plan = CreateStartupSourceOpenPlan(item);
+            OpenStartupSourcePlan(plan);
+            return new
+            {
+                opened = true,
+                itemId = item.id,
+                targetKind = plan.TargetKind,
+                target = plan.Target
+            };
+        }
+
+        internal static StartupSourceOpenPlan CreateStartupSourceOpenPlan(StartupItem item)
+        {
+            string location = FirstNonBlank(item.location, item.sourceLocation);
+            string? fileTarget = TryGetExistingFileSystemRevealTarget(location);
+            if (!string.IsNullOrWhiteSpace(fileTarget))
+            {
+                return new StartupSourceOpenPlan("File system", fileTarget);
+            }
+
+            string? registryPath = NormalizeStartupRegistryEditorPath(location);
+            if (!string.IsNullOrWhiteSpace(registryPath))
+            {
+                return new StartupSourceOpenPlan("Registry", registryPath);
+            }
+
+            if (string.Equals(item.sourceType, "Scheduled Task", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("Task Scheduler", "taskschd.msc");
+            }
+
+            if (string.Equals(item.sourceType, "WMI", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("WMI Management", "wmimgmt.msc");
+            }
+
+            if (string.Equals(item.sourceType, "Packaged app", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("Startup Apps settings", "ms-settings:startupapps");
+            }
+
+            throw new InvalidOperationException("FileLocker cannot open this startup source location directly.");
+        }
+
+        internal static string? NormalizeStartupRegistryEditorPath(string? location)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return null;
+            }
+
+            string normalized = location.Trim().Replace('/', '\\');
+            if (normalized.IndexOfAny(['\r', '\n', '\0']) >= 0)
+            {
+                return null;
+            }
+
+            string viewLabel = string.Empty;
+            if (normalized.EndsWith(" (32-bit view)", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[..^" (32-bit view)".Length].TrimEnd();
+                viewLabel = "32-bit";
+            }
+            else if (normalized.EndsWith(" (64-bit view)", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[..^" (64-bit view)".Length].TrimEnd();
+                viewLabel = "64-bit";
+            }
+
+            (string Prefix, string Hive)[] hives =
+            [
+                ("HKCU\\", "HKEY_CURRENT_USER"),
+                ("HKLM\\", "HKEY_LOCAL_MACHINE"),
+                ("HKCR\\", "HKEY_CLASSES_ROOT"),
+                ("HKU\\", "HKEY_USERS"),
+                ("HKCC\\", "HKEY_CURRENT_CONFIG")
+            ];
+            foreach ((string prefix, string hive) in hives)
+            {
+                if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    string keyPath = normalized[prefix.Length..].Trim('\\');
+                    if (string.Equals(prefix, "HKLM\\", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(viewLabel, "32-bit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        keyPath = NormalizeMachineRegistry32BitViewPath(keyPath);
+                    }
+
+                    return string.IsNullOrWhiteSpace(keyPath)
+                        ? $"Computer\\{hive}"
+                        : $"Computer\\{hive}\\{keyPath}";
+                }
+            }
+
+            return null;
+        }
+
+        private static string NormalizeMachineRegistry32BitViewPath(string keyPath)
+        {
+            const string softwarePrefix = "Software\\";
+            const string wow6432Prefix = "Software\\WOW6432Node\\";
+            if (!keyPath.StartsWith(softwarePrefix, StringComparison.OrdinalIgnoreCase) ||
+                keyPath.StartsWith(wow6432Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return keyPath;
+            }
+
+            return $"{wow6432Prefix}{keyPath[softwarePrefix.Length..]}";
+        }
+
+        private static string FirstNonBlank(params string[] values)
+        {
+            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+        }
+
+        private static string? TryGetExistingFileSystemRevealTarget(string? location)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return null;
+            }
+
+            try
+            {
+                string fullPath = Path.GetFullPath(location.Trim());
+                if (Directory.Exists(fullPath))
+                {
+                    return fullPath;
+                }
+
+                if (File.Exists(fullPath))
+                {
+                    return Path.GetDirectoryName(fullPath) ?? fullPath;
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+
+            return null;
+        }
+
+        private static void OpenStartupSourcePlan(StartupSourceOpenPlan plan)
+        {
+            if (string.Equals(plan.TargetKind, "Registry", StringComparison.OrdinalIgnoreCase))
+            {
+                OpenRegistryEditorAtPath(plan.Target);
+                return;
+            }
+
+            OpenWithShell(plan.Target);
+        }
+
+        private static void OpenRegistryEditorAtPath(string registryPath)
+        {
+            using RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit", writable: true)
+                ?? throw new InvalidOperationException("Registry Editor state could not be prepared.");
+            key.SetValue("LastKey", registryPath, RegistryValueKind.String);
+            OpenWithShell("regedit.exe");
         }
 
         private static UninstallerLaunchResult LaunchUninstallerFromBridge(UninstallerLaunchRequest request)
@@ -2265,6 +2459,18 @@ namespace FileLocker
         {
             public string ItemId { get; set; } = string.Empty;
             public bool Enabled { get; set; }
+        }
+
+        private sealed class StartupIgnoreRequest
+        {
+            public string ItemId { get; set; } = string.Empty;
+            public bool Ignored { get; set; }
+        }
+
+        private sealed class StartupItemActionRequest
+        {
+            public string ItemId { get; set; } = string.Empty;
+            public string Confirmation { get; set; } = string.Empty;
         }
 
         private sealed class UninstallerLaunchRequest
