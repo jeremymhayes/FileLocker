@@ -15,7 +15,7 @@ Fixed Browse Files and Browse Folder failures that could happen when FileLocker 
 
 # What's New
 
-Custom Clean
+## Custom Clean
 
 Added grouped cleanup tabs for All, Windows, Browsers, Applications, Gaming, Developer Tools, Privacy, and Advanced.
 Added search, category filters, safety filters, and sorting by size, name, category, or safety.
@@ -25,7 +25,7 @@ Added safety labels for cleanup items, including Safe, Review, Advanced, Risky, 
 Added graceful unavailable and not-found states so unsupported or missing cleanup locations do not look like app failures.
 Added broader cleanup coverage for browser caches, app caches, launcher caches, logs, shader caches, recent-file traces, developer caches, and other common cleanup targets.
 
-Startup Manager
+## Startup Manager
 
 Added a startup impact summary with high, medium, and low impact counts.
 Added clearer tabs and filters for enabled, disabled, broken, advanced, and ignored startup entries.
@@ -36,7 +36,7 @@ Added export and copy actions for startup item details.
 Added ignore and return-to-review actions for startup entries the user does not want to keep seeing.
 Added confirmation-protected removal for broken startup entries that FileLocker can safely manage.
 
-Registry Fixer
+## Registry Fixer
 
 Added a clearer Registry Fixer screen with issue counts, selected items, last scan time, registry health, category tabs, severity filtering, and issue details.
 Added scanning for stale Application Paths entries.
@@ -46,7 +46,7 @@ Added scanning for invalid shared DLL references.
 Added scanning for invalid Windows help-file references.
 Kept startup and uninstall registry issue review in a safer details-first workflow.
 
-App Manager
+## App Manager
 
 Added summary cards for installed apps, visible apps, total known size, and large apps.
 Added search, app type filters, size filters, and sorting by size, name, publisher, or install date.
@@ -54,14 +54,14 @@ Added tabs for all apps, large apps, recently installed apps, Microsoft apps, St
 Added an app details panel with publisher, version, size, install date, install location, install source, uninstall command, registry entry, and description where available.
 Added quick actions to open install locations, copy app details, export the app list, and launch supported uninstallers.
 
-File Workflows
+## File Workflows
 
 Improved Browse Files and Browse Folder behavior when FileLocker is elevated.
 Added a native Windows shell dialog fallback for elevated file and folder selection.
 Kept the normal Windows picker behavior for non-elevated runs.
 Improved reliability for workflows that depend on selecting files or folders before encrypting, decrypting, hashing, deleting, or reviewing metadata.
 
-App Experience
+## App Experience
 
 Added clearer page subtitles for Custom Clean, Registry Fixer, Startup Manager, and App Manager.
 Improved System Care pages with calmer tables, summary cards, details panels, and action areas.
