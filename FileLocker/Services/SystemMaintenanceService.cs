@@ -21,8 +21,9 @@ internal static class SystemMaintenanceService
     private const uint SherbNoSound = 0x00000004;
     private const int MaxCleanupScanFiles = 100_000;
     private const int MaxCleanupOperationWarnings = 8;
+    private const int MaxRegistryClassKeys = 5_000;
     private static readonly TimeSpan DriveToolTimeout = TimeSpan.FromMinutes(120);
-    private static readonly string[] RegistryExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi"];
+    private static readonly string[] RegistryExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".ocx", ".cpl", ".scr", ".chm", ".hlp"];
 
     internal static MaintenanceDriveList GetDrives()
     {
@@ -189,6 +190,18 @@ internal static class SystemMaintenanceService
         ScanUninstallEntries(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Uninstall", issues, warnings);
         ScanUninstallEntries(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Uninstall", issues, warnings);
         ScanUninstallEntries(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", issues, warnings);
+        ScanApplicationPathEntries(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\App Paths", issues, warnings);
+        ScanApplicationPathEntries(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\App Paths", issues, warnings);
+        ScanApplicationPathEntries(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths", issues, warnings);
+        ScanComServerEntries(Registry.CurrentUser, "HKCU", @"Software\Classes\CLSID", issues, warnings);
+        ScanComServerEntries(Registry.LocalMachine, "HKLM", @"Software\Classes\CLSID", issues, warnings);
+        ScanComServerEntries(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Classes\CLSID", issues, warnings);
+        ScanFileExtensionEntries(Registry.CurrentUser, "HKCU", @"Software\Classes", issues, warnings);
+        ScanFileExtensionEntries(Registry.LocalMachine, "HKLM", @"Software\Classes", issues, warnings);
+        ScanSharedDllEntries(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\SharedDLLs", issues, warnings);
+        ScanSharedDllEntries(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\SharedDLLs", issues, warnings);
+        ScanHelpFileReferences(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\Help", issues, warnings);
+        ScanHelpFileReferences(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\Help", issues, warnings);
 
         RegistryIssue[] orderedIssues = issues
             .GroupBy(issue => issue.id, StringComparer.OrdinalIgnoreCase)
@@ -291,113 +304,180 @@ internal static class SystemMaintenanceService
 
     private static CleanupDefinition[] GetCleanupDefinitions()
     {
-        string windowsPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        string windowsTemp = string.IsNullOrWhiteSpace(windowsPath)
-            ? string.Empty
-            : Path.Combine(windowsPath, "Temp");
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string localLow = GetLocalLowPath(userProfile);
+        string systemDrive = GetSystemDriveRoot(windows);
+        string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        string[] chromiumProfiles = GetChromiumProfileDirectories(local, roaming);
+        string[] firefoxLocalProfiles = GetFirefoxProfileDirectories(local);
+        string[] firefoxRoamingProfiles = GetFirefoxProfileDirectories(roaming);
 
         return
         [
-            new CleanupDefinition(
-                "userTemp",
-                "Windows",
-                "User temporary files",
-                "Temporary files created by apps under the current Windows user.",
-                Path.GetFullPath(Path.GetTempPath()),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "recycleBin",
-                "Windows",
-                "Recycle Bin",
-                "Files already deleted through Windows and waiting in the Recycle Bin.",
-                string.Empty,
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "windowsTemp",
-                "Windows",
-                "Windows temporary files",
-                "System temporary files that are safe to attempt but may require elevation for protected items.",
-                windowsTemp,
-                SupportsDeletion: true,
-                RequiresAdministrator: true,
-                DefaultSelected: false),
-            new CleanupDefinition(
-                "userCrashDumps",
-                "Windows",
-                "User crash dumps",
-                "Crash dump files written by apps after failures.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CrashDumps"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: false),
-            new CleanupDefinition(
-                "windowsErrorReports",
-                "Windows",
-                "Windows error reports",
-                "Archived Windows Error Reporting files for the current user.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Windows", "WER"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: false),
-            new CleanupDefinition(
-                "edgeCache",
-                "Browser",
-                "Microsoft Edge cache",
-                "Cached web content from the default Edge profile. Close Edge for the most complete cleanup.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Edge", "User Data", "Default", "Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "edgeCodeCache",
-                "Browser",
-                "Microsoft Edge code cache",
-                "Compiled script cache from the default Edge profile.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Edge", "User Data", "Default", "Code Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "chromeCache",
-                "Browser",
-                "Google Chrome cache",
-                "Cached web content from the default Chrome profile. Close Chrome for the most complete cleanup.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data", "Default", "Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "chromeCodeCache",
-                "Browser",
-                "Google Chrome code cache",
-                "Compiled script cache from the default Chrome profile.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data", "Default", "Code Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: true),
-            new CleanupDefinition(
-                "discordCache",
-                "Applications",
-                "Discord cache",
-                "Local Discord cache files. Close Discord for the most complete cleanup.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "discord", "Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: false),
-            new CleanupDefinition(
-                "teamsCache",
-                "Applications",
-                "Microsoft Teams cache",
-                "Local Teams cache files from the classic desktop client.",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Microsoft", "Teams", "Cache"),
-                SupportsDeletion: true,
-                RequiresAdministrator: false,
-                DefaultSelected: false)
+            CleanupItem("userTemp", "Windows", "User Temporary Files", "Temporary files created by apps under the current Windows user.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Temporary files and folders in your user temp folder."], ["Personal files outside the temp folder."], "Safe to clean regularly.", [DirectoryTarget(Path.GetFullPath(Path.GetTempPath()))]),
+            CleanupItem("systemTemp", "Windows", "System Temporary Files", "System temporary files created by Windows and installers.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Temporary files under the Windows temp folder."], ["Live system files and protected Windows folders."], "Review before cleaning because protected files may be skipped.", [DirectoryTarget(CombinePath(windows, "Temp"))]),
+            CleanupItem("recycleBin", "Windows", "Recycle Bin", "Files already deleted through Windows and waiting in the Recycle Bin.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Recycle Bin contents."], ["Files that are not already in the Recycle Bin."], "Safe if you do not need to restore deleted files.", []),
+            CleanupItem("thumbnailCache", "Windows", "Thumbnail Cache", "Cached image and video thumbnails used by File Explorer previews.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Explorer thumbnail cache database files."], ["Your photos, videos, and documents."], "Safe to clean. Windows rebuilds thumbnails as needed.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "Explorer"), "thumbcache_*.db", recursive: false)]),
+            CleanupItem("iconCache", "Windows", "Icon Cache", "Cached icon databases used by File Explorer and the Start menu.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Explorer icon cache database files."], ["Apps, shortcuts, and pinned items."], "Safe to clean. Windows rebuilds icons as needed.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "Explorer"), "iconcache_*.db", recursive: false)]),
+            CleanupItem("windowsErrorReports", "Windows", "Windows Error Reports", "Archived Windows Error Reporting files for apps and system components.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Archived error report files."], ["Installed applications and personal files."], "Safe to clean after you no longer need crash diagnostics.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "WER")), DirectoryTarget(CombinePath(programData, "Microsoft", "Windows", "WER"))]),
+            CleanupItem("userCrashDumps", "Windows", "User Crash Dumps", "Crash dump files written by apps after failures.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["User-mode crash dump files."], ["Application settings and documents."], "Review if you are actively troubleshooting app crashes.", [DirectoryTarget(CombinePath(local, "CrashDumps"))]),
+            CleanupItem("systemMemoryDumps", "Windows", "System Memory Dumps", "Large crash dump files created by Windows after system failures.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Windows memory dump and minidump files."], ["Current system restore points and user data."], "Review if you are troubleshooting blue screens.", [FileTarget(CombinePath(windows, "MEMORY.DMP")), DirectoryTarget(CombinePath(windows, "Minidump"), "*.dmp", recursive: false)]),
+            UnsupportedCleanupItem("windowsUpdateCleanup", "Windows", "Windows Update Cleanup", "Old Windows update payloads that require Windows servicing APIs to remove safely.", "Advanced", "Use Windows Settings or DISM for component cleanup.", ["Superseded Windows update payloads."], ["Rollback and servicing state."]),
+            CleanupItem("windowsUpgradeLogs", "Windows", "Windows Upgrade Logs", "Logs left behind after Windows setup or feature updates.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Windows setup and upgrade log files."], ["Rollback files and previous Windows installations."], "Review after upgrades are complete and working.", [DirectoryTarget(CombinePath(windows, "Panther")), DirectoryTarget(CombinePath(systemDrive, "$WINDOWS.~BT", "Sources", "Panther"))]),
+            CleanupItem("deliveryOptimization", "Windows", "Delivery Optimization Files", "Peer download cache used by Windows Update delivery optimization.", "Safe", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Delivery Optimization cache files."], ["Installed updates and Windows components."], "Safe to clean; Windows may download needed content again.", [DirectoryTarget(CombinePath(programData, "Microsoft", "Windows", "DeliveryOptimization", "Cache"))]),
+            CleanupItem("directXShaderCache", "Windows", "DirectX Shader Cache", "Graphics shader cache rebuilt by games and graphics apps.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["DirectX and graphics shader cache files."], ["Games, saves, mods, and graphics drivers."], "Safe to clean; apps may rebuild shaders on next launch.", [DirectoryTarget(CombinePath(local, "D3DSCache")), DirectoryTarget(CombinePath(local, "NVIDIA", "DXCache")), DirectoryTarget(CombinePath(local, "NVIDIA", "GLCache"))]),
+            CleanupItem("microsoftStoreCache", "Windows", "Microsoft Store Cache", "Local Microsoft Store cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Microsoft Store local cache files."], ["Installed Store apps and app data."], "Safe to clean when Store is closed.", [DirectoryTarget(CombinePath(local, "Packages", "Microsoft.WindowsStore_8wekyb3d8bbwe", "LocalCache"))]),
+            CleanupItem("downloadedProgramFiles", "Windows", "Downloaded Program Files", "Legacy downloaded ActiveX and program files cache.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Legacy downloaded program cache files."], ["Modern app installs and personal downloads."], "Review on older systems that still use this cache.", [DirectoryTarget(CombinePath(windows, "Downloaded Program Files"))]),
+            CleanupItem("windowsLogFiles", "Windows", "Windows Log Files", "Windows setup and servicing logs.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Windows log files in bounded log folders."], ["Event logs and live system state."], "Review if you are actively diagnosing Windows issues.", [DirectoryTarget(CombinePath(windows, "Logs"), "*.log"), DirectoryTarget(CombinePath(windows, "Temp"), "*.log")]),
+            UnsupportedCleanupItem("dnsCache", "Windows", "DNS Cache", "Cached DNS entries maintained by Windows networking.", "Review", "This requires a flush command instead of file cleanup.", ["In-memory DNS resolver cache."], ["Network settings and saved Wi-Fi profiles."]),
+            UnsupportedCleanupItem("clipboardHistory", "Privacy", "Clipboard History", "Windows clipboard history and synced clipboard data.", "Privacy", "Windows does not expose a safe file-only cleanup path here.", ["Clipboard history entries."], ["Current clipboard contents and files."]),
+            CleanupItem("fontCache", "Windows", "Font Cache", "Windows font cache files rebuilt by the font cache service.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Font cache data files."], ["Installed fonts."], "Review because some files may be locked until services restart.", [DirectoryTarget(CombinePath(windows, "ServiceProfiles", "LocalService", "AppData", "Local", "FontCache"), "FontCache*.dat", recursive: false)]),
+            CleanupItem("prefetchFiles", "Windows", "Prefetch Files", "Application prefetch files used to speed up app launch.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Windows prefetch cache files."], ["Applications and user files."], "Review because Windows rebuilds this performance cache over time.", [DirectoryTarget(CombinePath(windows, "Prefetch"), "*.pf", recursive: false)]),
+
+            CleanupItem("browserCache", "Browsers", "Browser Cache", "Cached web content from supported browser profiles.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Web cache files from Edge, Chrome, Brave, Firefox, Opera, Vivaldi, and Chromium profiles."], ["Cookies, passwords, autofill, Local Storage, IndexedDB, and saved sessions."], "Safe to clean with browsers closed.", MergeTargets(TargetsForDirectories(chromiumProfiles, "Cache"), TargetsForDirectories(firefoxLocalProfiles, "cache2"))),
+            CleanupItem("browserCodeCache", "Browsers", "Code Cache", "Compiled JavaScript cache from Chromium-based browsers.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Chromium code cache files."], ["Browser history, cookies, passwords, and site data."], "Safe to clean with browsers closed.", TargetsForDirectories(chromiumProfiles, "Code Cache")),
+            CleanupItem("browserGpuCache", "Browsers", "GPU Cache", "Browser GPU process cache.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["GPU cache files from Chromium-based browsers."], ["Browser profiles and sign-in data."], "Safe to clean; browsers recreate it.", TargetsForDirectories(chromiumProfiles, "GPUCache")),
+            CleanupItem("browserShaderCache", "Browsers", "Shader Cache", "Browser graphics shader cache.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Shader and graphics cache folders."], ["Browser profile settings and site data."], "Safe to clean; graphics shaders may rebuild.", MergeTargets(TargetsForDirectories(chromiumProfiles, "ShaderCache"), TargetsForDirectories(chromiumProfiles, "GrShaderCache"), TargetsForDirectories(chromiumProfiles, "DawnCache"))),
+            CleanupItem("browserServiceWorkerCache", "Browsers", "Service Worker Cache", "Offline web app cache created by service workers.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Service worker cache storage."], ["Cookies, passwords, Local Storage, and IndexedDB."], "Review because some web apps may redownload offline assets.", TargetsForDirectories(chromiumProfiles, "Service Worker", "CacheStorage")),
+            CleanupItem("browserFavicons", "Browsers", "Favicons", "Cached website icons shown in browser tabs and history.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Favicon cache databases."], ["Browsing history, cookies, and saved passwords."], "Safe to clean; icons reload as sites are visited.", MergeTargets(TargetsForFiles(chromiumProfiles, "Favicons"), TargetsForFiles(firefoxRoamingProfiles, "favicons.sqlite"))),
+            CleanupItem("browserDownloadHistory", "Browsers", "Download History", "Download history stored in browser history databases.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Browser history databases that include download history."], ["Downloaded files on disk."], "Privacy cleanup. This may remove browser history records too.", MergeTargets(TargetsForFiles(chromiumProfiles, "History"), TargetsForFiles(firefoxRoamingProfiles, "places.sqlite"))),
+            CleanupItem("browserHistory", "Browsers", "Browsing History", "Visited-site history stored by supported browsers.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Browser history databases."], ["Bookmarks, passwords, autofill, Local Storage, and IndexedDB."], "Privacy cleanup. Close browsers before cleaning.", MergeTargets(TargetsForFiles(chromiumProfiles, "History"), TargetsForFiles(firefoxRoamingProfiles, "places.sqlite"))),
+            CleanupItem("browserCookies", "Browsers", "Cookies", "Browser cookies that keep you signed in to websites.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Cookie database files."], ["Saved passwords and autofill data."], "Privacy cleanup. This can sign you out of websites.", MergeTargets(TargetsForFiles(chromiumProfiles, "Network", "Cookies"), TargetsForFiles(chromiumProfiles, "Cookies"), TargetsForFiles(firefoxRoamingProfiles, "cookies.sqlite"))),
+            UnsupportedCleanupItem("browserSitePermissions", "Browsers", "Site Permissions", "Per-site browser permissions such as camera, location, and notifications.", "Privacy", "Resetting this safely requires browser-specific database edits.", ["Site permission records."], ["Cookies, passwords, and browser preferences."]),
+            UnsupportedCleanupItem("browserExtensionCache", "Browsers", "Extension Cache", "Temporary extension data from browser add-ons.", "Review", "Extension storage can include required extension state, so FileLocker leaves it untouched.", ["Extension cache where safely separable."], ["Extension code, settings, and user data."]),
+            CleanupItem("browserCrashReports", "Browsers", "Crash Reports", "Browser crash reports and crashpad uploads.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Browser crash reports."], ["Browser settings and browsing data."], "Safe after you no longer need browser crash diagnostics.", MergeTargets(TargetsForDirectories(chromiumProfiles, "Crashpad", "reports"), TargetsForDirectories(firefoxRoamingProfiles, "crashes"))),
+
+            CleanupItem("discordCache", "Applications", "Discord Cache", "Local Discord cache files. Close Discord for the most complete cleanup.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Discord cache, code cache, and GPU cache files."], ["Discord login data and settings."], "Safe to clean with Discord closed.", [DirectoryTarget(CombinePath(roaming, "discord", "Cache")), DirectoryTarget(CombinePath(roaming, "discord", "Code Cache")), DirectoryTarget(CombinePath(roaming, "discord", "GPUCache"))]),
+            CleanupItem("teamsCache", "Applications", "Microsoft Teams Cache", "Local Teams cache files from classic and new Teams.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Teams cache files."], ["Teams accounts and chat data stored in the cloud."], "Safe to clean with Teams closed.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Teams", "Cache")), DirectoryTarget(CombinePath(local, "Packages", "MSTeams_8wekyb3d8bbwe", "LocalCache", "Microsoft", "MSTeams"))]),
+            CleanupItem("slackCache", "Applications", "Slack Cache", "Slack desktop cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Slack cache, code cache, and GPU cache files."], ["Slack workspace sign-in and messages."], "Safe to clean with Slack closed.", [DirectoryTarget(CombinePath(roaming, "Slack", "Cache")), DirectoryTarget(CombinePath(roaming, "Slack", "Code Cache")), DirectoryTarget(CombinePath(roaming, "Slack", "GPUCache"))]),
+            CleanupItem("spotifyCache", "Applications", "Spotify Cache", "Spotify local cache and browser cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Spotify cache files."], ["Downloaded playlists and account settings where stored separately."], "Safe to clean with Spotify closed.", [DirectoryTarget(CombinePath(local, "Spotify", "Storage")), DirectoryTarget(CombinePath(local, "Spotify", "Browser", "Cache"))]),
+            CleanupItem("zoomLogs", "Applications", "Zoom Logs", "Zoom diagnostic log files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Zoom log files."], ["Meetings, recordings, and account settings."], "Safe after you no longer need Zoom diagnostics.", [DirectoryTarget(CombinePath(roaming, "Zoom", "logs"))]),
+            CleanupItem("obsLogs", "Applications", "OBS Logs", "OBS Studio log files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["OBS log files."], ["Scenes, profiles, recordings, and plugins."], "Safe after you no longer need OBS logs.", [DirectoryTarget(CombinePath(roaming, "obs-studio", "logs"))]),
+            CleanupItem("adobeReaderCache", "Applications", "Adobe Reader Cache", "Adobe Reader local cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Adobe Reader cache files."], ["PDF documents and Adobe account data."], "Safe to clean with Adobe Reader closed.", [DirectoryTarget(CombinePath(localLow, "Adobe", "Acrobat", "DC", "Cache")), DirectoryTarget(CombinePath(local, "Adobe", "Acrobat", "DC", "Cache"))]),
+            CleanupItem("officeRecent", "Applications", "Microsoft Office Recent Files", "Recent-document shortcuts shown by Microsoft Office.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Office recent document shortcuts."], ["Office documents themselves."], "Privacy cleanup. This does not delete documents.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Office", "Recent"))]),
+            CleanupItem("onedriveLogs", "Applications", "OneDrive Logs/Temp Sync Files", "OneDrive diagnostic logs and bounded temp sync cache.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["OneDrive logs and temp sync cache files."], ["Cloud files, placeholders, and sync settings."], "Review if OneDrive is not actively troubleshooting sync issues.", [DirectoryTarget(CombinePath(local, "Microsoft", "OneDrive", "logs")), DirectoryTarget(CombinePath(local, "Microsoft", "OneDrive", "setup", "logs")), DirectoryTarget(CombinePath(local, "Microsoft", "OneDrive", "Temp"))]),
+            CleanupItem("cloudflareWarpLogs", "Applications", "Cloudflare WARP Logs", "Cloudflare WARP diagnostic log files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Cloudflare WARP log files."], ["WARP settings and tunnel configuration."], "Safe after you no longer need WARP diagnostics.", [DirectoryTarget(CombinePath(programData, "Cloudflare", "warp", "logs")), DirectoryTarget(CombinePath(local, "Cloudflare", "Cloudflare WARP", "logs"))]),
+            CleanupItem("nvidiaCache", "Applications", "NVIDIA App/GeForce Cache", "NVIDIA graphics and app cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["NVIDIA graphics cache files."], ["Drivers, game profiles, and screenshots."], "Safe to clean; shaders may rebuild.", [DirectoryTarget(CombinePath(local, "NVIDIA", "DXCache")), DirectoryTarget(CombinePath(local, "NVIDIA", "GLCache")), DirectoryTarget(CombinePath(local, "NVIDIA Corporation", "NV_Cache"))]),
+            CleanupItem("amdCache", "Applications", "AMD Software Cache", "AMD graphics software cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["AMD graphics cache files."], ["Drivers and Radeon settings."], "Safe to clean; shaders may rebuild.", [DirectoryTarget(CombinePath(local, "AMD", "DxCache")), DirectoryTarget(CombinePath(local, "AMD", "DxcCache")), DirectoryTarget(CombinePath(local, "AMD", "GLCache"))]),
+            CleanupItem("intelDsaCache", "Applications", "Intel Driver Support Assistant Cache", "Intel Driver & Support Assistant cache and logs.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Intel DSA cache and log files."], ["Installed drivers."], "Safe after scans or updates are complete.", [DirectoryTarget(CombinePath(programData, "Intel", "DSA", "Logs")), DirectoryTarget(CombinePath(local, "Intel", "Driver & Support Assistant"))]),
+            CleanupItem("javaCache", "Applications", "Java Cache", "Java deployment cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Java deployment cache files."], ["Installed Java runtimes and applications."], "Safe to clean; Java apps may redownload cached content.", [DirectoryTarget(CombinePath(localLow, "Sun", "Java", "Deployment", "cache"))]),
+            UnsupportedCleanupItem("archiveRecentHistory", "Applications", "7-Zip/WinRAR Recent History", "Recent archive history stored by compression tools.", "Privacy", "This is stored in application settings or registry values, not a safe file-only cache.", ["Recent archive history."], ["Archives and app settings."]),
+            CleanupItem("notepadPlusPlusBackup", "Applications", "Notepad++ Backup/Session Files", "Notepad++ backup and session recovery files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Notepad++ backup and session files."], ["Saved documents and installed plugins."], "Review because this may remove unsaved recovery copies.", [DirectoryTarget(CombinePath(roaming, "Notepad++", "backup")), FileTarget(CombinePath(roaming, "Notepad++", "session.xml"))]),
+
+            CleanupItem("steamDownloadCache", "Gaming", "Steam Download Cache", "Steam partial download cache in common install locations.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Steam downloading cache folders."], ["Installed games, saves, mods, screenshots, and configs."], "Review while Steam is closed; active downloads may need to restart.", [DirectoryTarget(CombinePath(programFilesX86, "Steam", "steamapps", "downloading")), DirectoryTarget(CombinePath(programFiles, "Steam", "steamapps", "downloading"))]),
+            CleanupItem("steamShaderCache", "Gaming", "Steam Shader Cache", "Steam shader pre-cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Steam shader cache files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe to clean; Steam may rebuild shaders.", [DirectoryTarget(CombinePath(programFilesX86, "Steam", "steamapps", "shadercache")), DirectoryTarget(CombinePath(programFiles, "Steam", "steamapps", "shadercache"))]),
+            CleanupItem("epicWebCache", "Gaming", "Epic Games Launcher Web Cache", "Epic Games Launcher web cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Epic launcher web cache files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe to clean with Epic Games Launcher closed.", [DirectoryTarget(CombinePath(local, "EpicGamesLauncher", "Saved", "webcache")), DirectoryTarget(CombinePath(local, "EpicGamesLauncher", "Saved", "webcache_4147"))]),
+            CleanupItem("battleNetCache", "Gaming", "Battle.net Cache", "Battle.net launcher cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Battle.net cache files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe to clean with Battle.net closed.", [DirectoryTarget(CombinePath(programData, "Battle.net", "Cache")), DirectoryTarget(CombinePath(local, "Battle.net", "Cache"))]),
+            CleanupItem("eaAppCache", "Gaming", "EA App Cache", "EA desktop app cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["EA app cache files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe to clean with EA App closed.", [DirectoryTarget(CombinePath(local, "Electronic Arts", "EA Desktop", "cache")), DirectoryTarget(CombinePath(local, "EADesktop", "cache"))]),
+            CleanupItem("riotClientLogs", "Gaming", "Riot Client Logs", "Riot Client diagnostic log files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Riot Client log files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe after you no longer need Riot diagnostics.", [DirectoryTarget(CombinePath(local, "Riot Games", "Riot Client", "Logs"))]),
+            CleanupItem("ubisoftConnectCache", "Gaming", "Ubisoft Connect Cache", "Ubisoft Connect launcher cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Ubisoft launcher cache files."], ["Installed games, saves, mods, screenshots, and configs."], "Safe to clean with Ubisoft Connect closed.", [DirectoryTarget(CombinePath(local, "Ubisoft Game Launcher", "cache")), DirectoryTarget(CombinePath(programData, "Ubisoft", "Ubisoft Game Launcher", "cache"))]),
+            CleanupItem("minecraftLogs", "Gaming", "Minecraft Launcher Logs/Crash Reports", "Minecraft logs and crash reports.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Minecraft log and crash-report files."], ["Worlds, saves, resource packs, screenshots, and configs."], "Safe after you no longer need logs.", [DirectoryTarget(CombinePath(roaming, ".minecraft", "logs")), DirectoryTarget(CombinePath(roaming, ".minecraft", "crash-reports"))]),
+            CleanupItem("robloxLogsCache", "Gaming", "Roblox Logs/Cache", "Roblox local logs and cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Roblox logs and cache files."], ["Roblox Studio projects and user-created content."], "Safe to clean with Roblox closed.", [DirectoryTarget(CombinePath(local, "Roblox", "logs")), DirectoryTarget(CombinePath(local, "Roblox", "http")), DirectoryTarget(CombinePath(local, "Temp", "Roblox"))]),
+            CleanupItem("curseForgeOverwolfCache", "Gaming", "CurseForge/Overwolf Cache", "CurseForge and Overwolf cache files.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["CurseForge and Overwolf cache files."], ["Mods, worlds, profiles, screenshots, and configs."], "Safe to clean with launchers closed.", [DirectoryTarget(CombinePath(local, "Overwolf", "Cache")), DirectoryTarget(CombinePath(roaming, "CurseForge", "Cache"))]),
+
+            CleanupItem("vscodeCache", "Developer Tools", "VS Code Logs/Cache", "Visual Studio Code logs and cache files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["VS Code logs and cache files."], ["Projects, extensions, settings, and unsaved work."], "Review because VS Code may rebuild extension and workspace caches.", [DirectoryTarget(CombinePath(roaming, "Code", "logs")), DirectoryTarget(CombinePath(roaming, "Code", "Cache")), DirectoryTarget(CombinePath(roaming, "Code", "CachedData")), DirectoryTarget(CombinePath(roaming, "Code", "GPUCache"))]),
+            CleanupItem("cursorCache", "Developer Tools", "Cursor Logs/Cache", "Cursor editor logs and cache files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Cursor logs and cache files."], ["Projects, extensions, settings, and unsaved work."], "Review because Cursor may rebuild extension and workspace caches.", [DirectoryTarget(CombinePath(roaming, "Cursor", "logs")), DirectoryTarget(CombinePath(roaming, "Cursor", "Cache")), DirectoryTarget(CombinePath(roaming, "Cursor", "CachedData")), DirectoryTarget(CombinePath(roaming, "Cursor", "GPUCache"))]),
+            CleanupItem("visualStudioCache", "Developer Tools", "Visual Studio Logs/Component Cache", "Visual Studio logs and component model cache.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Visual Studio logs and component model cache folders."], ["Solutions, source code, workloads, and extensions."], "Review because Visual Studio may rebuild caches on next launch.", MergeTargets([DirectoryTarget(CombinePath(local, "Microsoft", "VisualStudio", "ComponentModelCache"))], TargetsForChildDirectories(CombinePath(local, "Microsoft", "VisualStudio"), "ComponentModelCache"), TargetsForChildDirectories(CombinePath(local, "Microsoft", "VisualStudio"), "Cache"))),
+            CleanupItem("jetbrainsCache", "Developer Tools", "JetBrains Logs/Cache", "JetBrains IDE logs and cache files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["JetBrains IDE logs and cache files."], ["Projects, settings, plugins, and indexes outside cache folders."], "Review because IDEs may rebuild indexes and caches.", MergeTargets(TargetsForChildDirectories(CombinePath(local, "JetBrains"), "log"), TargetsForChildDirectories(CombinePath(local, "JetBrains"), "caches"), TargetsForChildDirectories(CombinePath(roaming, "JetBrains"), "log"))),
+            CleanupItem("npmCache", "Developer Tools", "npm Cache", "npm package manager cache.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["npm package cache files."], ["Projects and package-lock files."], "Review because dependencies may need to download again.", [DirectoryTarget(CombinePath(local, "npm-cache"))]),
+            CleanupItem("yarnCache", "Developer Tools", "Yarn Cache", "Yarn package manager cache.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Yarn package cache files."], ["Projects and lockfiles."], "Review because dependencies may need to download again.", [DirectoryTarget(CombinePath(local, "Yarn", "Cache")), DirectoryTarget(CombinePath(userProfile, ".cache", "yarn"))]),
+            CleanupItem("pipCache", "Developer Tools", "pip Cache", "Python pip package cache.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["pip package cache files."], ["Python environments and projects."], "Review because packages may need to download again.", [DirectoryTarget(CombinePath(local, "pip", "Cache")), DirectoryTarget(CombinePath(userProfile, ".cache", "pip"))]),
+            CleanupItem("gradleCache", "Developer Tools", "Gradle Build Cache", "Gradle build cache files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Gradle build cache folders."], ["Gradle projects and wrapper files."], "Review because builds may take longer next time.", [DirectoryTarget(CombinePath(userProfile, ".gradle", "caches", "build-cache-1")), DirectoryTarget(CombinePath(userProfile, ".gradle", "caches", "modules-2", "files-2.1"))]),
+            CleanupItem("nugetCache", "Developer Tools", "NuGet Cache", "NuGet HTTP and plugin cache files.", "Review", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["NuGet HTTP and plugin cache files."], ["Project files and global packages."], "Review because packages may need to download again.", [DirectoryTarget(CombinePath(local, "NuGet", "v3-cache")), DirectoryTarget(CombinePath(local, "NuGet", "plugins-cache")), DirectoryTarget(CombinePath(local, "NuGet", "Scratch"))]),
+            UnsupportedCleanupItem("dockerBuildCache", "Developer Tools", "Docker Build Cache/Dangling Images", "Docker build cache and dangling images.", "Advanced", "Docker cleanup requires Docker Engine commands, not file deletion.", ["Docker build cache and dangling images."], ["Images, volumes, containers, and bind-mounted data."]),
+
+            CleanupItem("recentFiles", "Privacy", "Recent Files", "Recently opened file shortcuts shown by Windows.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Recent file shortcut entries."], ["Original files and folders."], "Privacy cleanup. This does not delete your documents.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Windows", "Recent"), "*.lnk", recursive: false)]),
+            CleanupItem("quickAccessHistory", "Privacy", "Quick Access History", "Quick Access and File Explorer automatic destination history.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Quick Access automatic and custom destination files."], ["Pinned items and original files where stored separately."], "Privacy cleanup. Recent suggestions may be rebuilt.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Windows", "Recent", "AutomaticDestinations")), DirectoryTarget(CombinePath(roaming, "Microsoft", "Windows", "Recent", "CustomDestinations"))]),
+            CleanupItem("jumpLists", "Privacy", "Jump Lists", "Windows taskbar and Start menu jump list history.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Jump list destination files."], ["Applications and original files."], "Privacy cleanup. Jump lists may repopulate as apps are used.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Windows", "Recent", "AutomaticDestinations")), DirectoryTarget(CombinePath(roaming, "Microsoft", "Windows", "Recent", "CustomDestinations"))]),
+            UnsupportedCleanupItem("runDialogHistory", "Privacy", "Run Dialog History", "Commands typed into the Windows Run dialog.", "Privacy", "Run dialog history is stored in registry values and is not cleaned by the file-only engine.", ["Run dialog command history."], ["Programs and files."]),
+            UnsupportedCleanupItem("windowsSearchHistory", "Privacy", "Windows Search History", "Search terms and search UI history.", "Privacy", "Windows Search history is not exposed as a safe file-only cleanup target.", ["Windows search history entries."], ["Search index and files."]),
+            UnsupportedCleanupItem("explorerAddressHistory", "Privacy", "Explorer Address Bar History", "Paths typed into File Explorer address bars.", "Privacy", "Explorer address history is stored in registry values and is not cleaned by the file-only engine.", ["Explorer address bar history."], ["Folders and pinned locations."]),
+            UnsupportedCleanupItem("networkShareHistory", "Privacy", "Network Share History", "Recently used network share history.", "Privacy", "Network share history is registry-backed and is not cleaned by the file-only engine.", ["Network share history."], ["Mapped drives and credentials."]),
+            CleanupItem("remoteDesktopCache", "Privacy", "Remote Desktop Cache", "Remote Desktop bitmap and connection cache files.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Remote Desktop cache files."], ["Saved RDP files and credentials."], "Privacy cleanup. Close Remote Desktop clients first.", [DirectoryTarget(CombinePath(local, "Microsoft", "Terminal Server Client", "Cache")), DirectoryTarget(CombinePath(local, "Microsoft", "Terminal Server Client", "Cache2"))]),
+            UnsupportedCleanupItem("mediaPlayerHistory", "Privacy", "Media Player History", "Media playback history from Windows media apps.", "Privacy", "Media history is app-specific and not safely available as a file-only cache.", ["Media playback history."], ["Media files and libraries."]),
+            CleanupItem("officeRecentDocuments", "Privacy", "Office Recent Documents", "Recent document shortcuts shown by Microsoft Office.", "Privacy", supportsDeletion: true, requiresAdministrator: false, defaultSelected: false, ["Office recent document shortcuts."], ["Office documents themselves."], "Privacy cleanup. This does not delete documents.", [DirectoryTarget(CombinePath(roaming, "Microsoft", "Office", "Recent"))]),
+
+            UnsupportedCleanupItem("windowsOld", "Advanced", "Windows.old / Previous Windows Installation", "Previous Windows installation files used for rollback.", "Advanced", "Use Windows Storage Settings for rollback-aware removal.", ["Previous Windows installation files."], ["Current Windows installation."]),
+            UnsupportedCleanupItem("oldRestorePoints", "Advanced", "Old System Restore Points", "Older restore points maintained by System Protection.", "Advanced", "Restore points require Windows system APIs, not file deletion.", ["Old restore point data."], ["Newest restore point and current system state."]),
+            UnsupportedCleanupItem("shadowCopies", "Advanced", "Shadow Copies", "Volume shadow copies used for restore and backup.", "Risky", "Shadow copies require explicit VSS commands and are not cleaned by FileLocker.", ["Volume shadow copies."], ["Current files and backups outside VSS."]),
+            UnsupportedCleanupItem("hibernationFile", "Advanced", "Hibernation File", "The hiberfil.sys file used by Windows hibernation and Fast Startup.", "Advanced", "This requires power configuration changes rather than file deletion.", ["Hibernation file."], ["Sleep settings unless changed separately."]),
+            UnsupportedCleanupItem("componentCleanup", "Advanced", "Windows Component Cleanup", "Windows component store cleanup.", "Advanced", "Use DISM or Windows Settings for servicing-safe cleanup.", ["Superseded component store payloads."], ["Current Windows components."]),
+            CleanupItem("softwareDistributionDownload", "Advanced", "SoftwareDistribution Download Cache", "Windows Update download cache.", "Advanced", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Windows Update downloaded payload cache."], ["Installed updates and component store state."], "Advanced. Use only when Windows Update is not actively running.", [DirectoryTarget(CombinePath(windows, "SoftwareDistribution", "Download"))]),
+            UnsupportedCleanupItem("driverStoreOldPackages", "Advanced", "DriverStore Old Packages", "Older driver packages in the Windows Driver Store.", "Risky", "DriverStore cleanup requires driver inventory APIs, not raw file deletion.", ["Old driver packages."], ["Current drivers and rollback state."]),
+            UnsupportedCleanupItem("installerOrphanCache", "Advanced", "Installer Orphan Cache", "Potential orphaned Windows Installer cache entries.", "Risky", "Windows Installer cache should not be cleaned by path guesses.", ["Confirmed orphaned installer cache files."], ["Installer repair and uninstall data."]),
+            UnsupportedCleanupItem("eventLogs", "Advanced", "Event Logs", "Windows Event Log files.", "Risky", "Event logs require event log APIs and are not deleted as files.", ["Event log records."], ["Current logging configuration."]),
+            UnsupportedCleanupItem("browserSavedPasswords", "Advanced", "Browser Saved Passwords", "Saved browser passwords.", "Risky", "FileLocker never deletes saved passwords by default.", ["Saved browser password stores."], ["Browser profiles and other site data."]),
+            UnsupportedCleanupItem("browserAutofill", "Advanced", "Browser Autofill Data", "Browser autofill profiles and form data.", "Risky", "Autofill data is intentionally left untouched.", ["Autofill databases."], ["Passwords, cookies, and bookmarks."]),
+            UnsupportedCleanupItem("cloudSyncPlaceholders", "Advanced", "Cloud Sync Placeholders", "Cloud storage placeholder files.", "Risky", "Placeholder cleanup must be handled by the sync provider.", ["Cloud sync placeholders."], ["Cloud files and sync state."])
         ];
+    }
+
+    private static CleanupDefinition CleanupItem(
+        string id,
+        string group,
+        string label,
+        string description,
+        string safetyLevel,
+        bool supportsDeletion,
+        bool requiresAdministrator,
+        bool defaultSelected,
+        string[] removes,
+        string[] keeps,
+        string recommendation,
+        CleanupTarget[] targets,
+        string? unavailableReason = null)
+    {
+        CleanupTarget[] normalizedTargets = targets
+            .Where(target => !string.IsNullOrWhiteSpace(target.Path))
+            .GroupBy(target => $"{target.Path}|{target.SearchPattern}|{target.Recursive}|{target.IsFile}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        return new CleanupDefinition(
+            id,
+            group,
+            label,
+            description,
+            safetyLevel,
+            normalizedTargets,
+            supportsDeletion,
+            requiresAdministrator,
+            defaultSelected,
+            removes,
+            keeps,
+            recommendation,
+            unavailableReason);
+    }
+
+    private static CleanupDefinition UnsupportedCleanupItem(
+        string id,
+        string group,
+        string label,
+        string description,
+        string safetyLevel,
+        string unavailableReason,
+        string[] removes,
+        string[] keeps)
+    {
+        return CleanupItem(
+            id,
+            group,
+            label,
+            description,
+            safetyLevel,
+            supportsDeletion: false,
+            requiresAdministrator: false,
+            defaultSelected: false,
+            removes,
+            keeps,
+            recommendation: unavailableReason,
+            targets: [],
+            unavailableReason);
     }
 
     private static CleanupCategory ScanCleanupCategory(CleanupDefinition definition)
@@ -407,49 +487,125 @@ internal static class SystemMaintenanceService
             return ScanRecycleBin(definition);
         }
 
-        if (string.IsNullOrWhiteSpace(definition.Path) || !Directory.Exists(definition.Path))
+        string primaryPath = definition.Targets.FirstOrDefault()?.Path ?? string.Empty;
+        string[] locations = FormatCleanupLocations(definition);
+        if (!definition.SupportsDeletion)
         {
-            return new CleanupCategory(
-                definition.Id,
-                definition.Group,
-                definition.Label,
-                definition.Description,
-                definition.Path,
-                0,
-                FormatFileSize(0),
-                0,
-                0,
-                false,
-                definition.RequiresAdministrator,
-                definition.DefaultSelected,
-                "Location unavailable",
-                [$"{definition.Label} could not be found."]);
+            return CreateCleanupCategory(
+                definition,
+                primaryPath,
+                sizeBytes: 0,
+                sizeDisplay: "Unknown size",
+                fileCount: 0,
+                skippedCount: 0,
+                isEnabled: false,
+                sizeKnown: false,
+                status: "Unavailable",
+                warnings: [],
+                locations,
+                unavailableReason: definition.UnavailableReason ?? "This cleaner is not supported by the current file-only cleanup engine.");
         }
 
-        DirectoryScanSummary summary = ScanDirectory(definition.Path);
+        DirectoryScanSummary summary = ScanCleanupTargets(definition);
+        if (!summary.LocationFound)
+        {
+            return CreateCleanupCategory(
+                definition,
+                primaryPath,
+                sizeBytes: 0,
+                sizeDisplay: "Unknown size",
+                fileCount: 0,
+                skippedCount: summary.SkippedCount,
+                isEnabled: false,
+                sizeKnown: false,
+                status: "Not found",
+                warnings: summary.Warnings,
+                locations,
+                unavailableReason: "No matching cleanup locations were found.");
+        }
+
+        return CreateCleanupCategory(
+            definition,
+            primaryPath,
+            summary.SizeBytes,
+            FormatFileSize(summary.SizeBytes),
+            summary.FileCount,
+            summary.SkippedCount,
+            isEnabled: summary.FileCount > 0,
+            sizeKnown: true,
+            status: summary.FileCount > 0 ? "Ready to clean" : "Already clean",
+            summary.Warnings,
+            locations,
+            unavailableReason: string.Empty);
+    }
+
+    private static CleanupCategory CreateCleanupCategory(
+        CleanupDefinition definition,
+        string path,
+        long sizeBytes,
+        string sizeDisplay,
+        int fileCount,
+        int skippedCount,
+        bool isEnabled,
+        bool sizeKnown,
+        string status,
+        string[] warnings,
+        string[] locations,
+        string unavailableReason)
+    {
         return new CleanupCategory(
             definition.Id,
             definition.Group,
             definition.Label,
             definition.Description,
-            definition.Path,
-            summary.SizeBytes,
-            FormatFileSize(summary.SizeBytes),
-            summary.FileCount,
-            summary.SkippedCount,
-            definition.SupportsDeletion,
+            path,
+            sizeBytes,
+            sizeDisplay,
+            fileCount,
+            skippedCount,
+            isEnabled,
             definition.RequiresAdministrator,
             definition.DefaultSelected,
-            summary.FileCount > 0 ? "Ready to clean" : "Already clean",
-            summary.Warnings);
+            status,
+            warnings,
+            definition.SafetyLevel,
+            sizeKnown,
+            locations,
+            definition.Removes,
+            definition.Keeps,
+            definition.Recommendation,
+            unavailableReason);
     }
 
-    private static DirectoryScanSummary ScanDirectory(string rootPath)
+    private static DirectoryScanSummary ScanCleanupTargets(CleanupDefinition definition)
     {
-        var warnings = new List<string>();
+        List<string> warnings = [];
+        IReadOnlyList<string> files = EnumerateCleanupFiles(definition, warnings, out int skippedCount, out bool locationFound);
         long sizeBytes = 0;
         int fileCount = 0;
-        int skippedCount = 0;
+
+        foreach (string file in files)
+        {
+            try
+            {
+                var info = new FileInfo(file);
+                sizeBytes += info.Exists ? info.Length : 0;
+                fileCount++;
+            }
+            catch
+            {
+                skippedCount++;
+            }
+        }
+
+        return new DirectoryScanSummary(sizeBytes, fileCount, skippedCount, warnings.ToArray(), locationFound);
+    }
+
+    private static IReadOnlyList<string> EnumerateCleanupFiles(CleanupDefinition definition, List<string> warnings, out int skippedCount, out bool locationFound)
+    {
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        skippedCount = 0;
+        locationFound = false;
         var options = new EnumerationOptions
         {
             IgnoreInaccessible = true,
@@ -458,35 +614,48 @@ internal static class SystemMaintenanceService
             AttributesToSkip = FileAttributes.System | FileAttributes.ReparsePoint
         };
 
-        try
+        foreach (CleanupTarget target in definition.Targets)
         {
-            foreach (string file in Directory.EnumerateFiles(rootPath, "*", options))
+            try
             {
-                if (fileCount >= MaxCleanupScanFiles)
+                string targetPath = Path.GetFullPath(target.Path);
+                if (target.IsFile)
                 {
-                    warnings.Add($"Scan stopped after {MaxCleanupScanFiles.ToString(CultureInfo.InvariantCulture)} files.");
-                    break;
+                    if (File.Exists(targetPath) && !IsReparsePoint(targetPath))
+                    {
+                        locationFound = true;
+                        files.Add(targetPath);
+                    }
+
+                    continue;
                 }
 
-                try
+                if (!Directory.Exists(targetPath) || IsReparsePoint(targetPath))
                 {
-                    var info = new FileInfo(file);
-                    sizeBytes += info.Exists ? info.Length : 0;
-                    fileCount++;
+                    continue;
                 }
-                catch
+
+                locationFound = true;
+                options.RecurseSubdirectories = target.Recursive;
+                foreach (string file in Directory.EnumerateFiles(targetPath, target.SearchPattern, options))
                 {
-                    skippedCount++;
+                    if (files.Count >= MaxCleanupScanFiles)
+                    {
+                        AddCleanupWarning(warnings, $"Scan stopped after {MaxCleanupScanFiles.ToString(CultureInfo.InvariantCulture)} files.");
+                        return files.ToArray();
+                    }
+
+                    files.Add(file);
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            AddCleanupWarning(warnings, ex.Message);
-            skippedCount++;
+            catch (Exception ex)
+            {
+                skippedCount++;
+                AddCleanupWarning(warnings, $"{target.Path}: {ex.Message}");
+            }
         }
 
-        return new DirectoryScanSummary(sizeBytes, fileCount, skippedCount, warnings.ToArray());
+        return files.ToArray();
     }
 
     private static CleanupCategory ScanRecycleBin(CleanupDefinition definition)
@@ -499,114 +668,287 @@ internal static class SystemMaintenanceService
         int result = SHQueryRecycleBin(null, ref info);
         if (result != 0)
         {
-            return new CleanupCategory(
-                definition.Id,
-                definition.Group,
-                definition.Label,
-                definition.Description,
-                definition.Path,
-                0,
-                FormatFileSize(0),
-                0,
-                1,
-                false,
-                definition.RequiresAdministrator,
-                definition.DefaultSelected,
-                "Unable to query",
-                [$"Recycle Bin query failed with HRESULT 0x{result:X8}."]);
+            return CreateCleanupCategory(
+                definition,
+                string.Empty,
+                sizeBytes: 0,
+                sizeDisplay: "Unknown size",
+                fileCount: 0,
+                skippedCount: 1,
+                isEnabled: false,
+                sizeKnown: false,
+                status: "Unable to query",
+                warnings: [$"Recycle Bin query failed with HRESULT 0x{result:X8}."],
+                locations: ["Recycle Bin"],
+                unavailableReason: "Recycle Bin could not be queried.");
         }
 
-        return new CleanupCategory(
-            definition.Id,
-            definition.Group,
-            definition.Label,
-            definition.Description,
-            definition.Path,
+        return CreateCleanupCategory(
+            definition,
+            string.Empty,
             info.i64Size,
             FormatFileSize(info.i64Size),
             (int)Math.Min(info.i64NumItems, int.MaxValue),
-            0,
-            definition.SupportsDeletion,
-            definition.RequiresAdministrator,
-            definition.DefaultSelected,
-            info.i64NumItems > 0 ? "Ready to clean" : "Already clean",
-            []);
+            skippedCount: 0,
+            isEnabled: info.i64NumItems > 0,
+            sizeKnown: true,
+            status: info.i64NumItems > 0 ? "Ready to clean" : "Already clean",
+            warnings: [],
+            locations: ["Recycle Bin"],
+            unavailableReason: string.Empty);
     }
 
     private static CleanupDeleteSummary DeleteDirectoryContents(CleanupDefinition definition)
     {
-        if (string.IsNullOrWhiteSpace(definition.Path) || !Directory.Exists(definition.Path))
+        if (!definition.SupportsDeletion)
         {
-            return new CleanupDeleteSummary(0, 0, 0, [$"{definition.Label} could not be found."]);
-        }
-
-        string approvedRoot = Path.GetFullPath(definition.Path);
-        if (!IsApprovedCleanupRoot(definition.Id, approvedRoot))
-        {
-            return new CleanupDeleteSummary(0, 0, 1, [$"{definition.Label} is not an approved cleanup location."]);
-        }
-
-        if (IsReparsePoint(approvedRoot))
-        {
-            return new CleanupDeleteSummary(0, 0, 1, [$"{definition.Label} is a reparse point and was skipped."]);
+            return new CleanupDeleteSummary(0, 0, 1, [$"{definition.Label} is not supported by the current cleanup engine."]);
         }
 
         long freedBytes = 0;
         int deletedFiles = 0;
         int skippedItems = 0;
-        var warnings = new List<string>();
-        var options = new EnumerationOptions
-        {
-            IgnoreInaccessible = true,
-            RecurseSubdirectories = true,
-            ReturnSpecialDirectories = false,
-            AttributesToSkip = FileAttributes.ReparsePoint
-        };
+        List<string> warnings = [];
+        IReadOnlyList<string> files = EnumerateCleanupFiles(definition, warnings, out int scanSkipped, out bool locationFound);
+        skippedItems += scanSkipped;
 
-        try
+        if (!locationFound)
         {
-            foreach (string file in Directory.EnumerateFiles(approvedRoot, "*", options))
+            return new CleanupDeleteSummary(0, 0, skippedItems, warnings.ToArray());
+        }
+
+        foreach (string file in files)
+        {
+            try
             {
-                try
-                {
-                    var info = new FileInfo(file);
-                    long size = info.Exists ? info.Length : 0;
-                    FileCleanupService.ClearReadOnlyAttribute(file);
-                    File.Delete(file);
-                    freedBytes += size;
-                    deletedFiles++;
-                }
-                catch (Exception ex)
+                if (!IsApprovedCleanupPath(definition.Id, file))
                 {
                     skippedItems++;
-                    AddCleanupWarning(warnings, $"{file}: {ex.Message}");
+                    AddCleanupWarning(warnings, $"{file}: not an approved cleanup path.");
+                    continue;
                 }
-            }
 
-            foreach (string directory in Directory.EnumerateDirectories(approvedRoot, "*", options).OrderByDescending(path => path.Length))
+                var info = new FileInfo(file);
+                long size = info.Exists ? info.Length : 0;
+                FileCleanupService.ClearReadOnlyAttribute(file);
+                File.Delete(file);
+                freedBytes += size;
+                deletedFiles++;
+            }
+            catch (Exception ex)
             {
-                try
+                skippedItems++;
+                AddCleanupWarning(warnings, $"{file}: {ex.Message}");
+            }
+        }
+
+        DeleteEmptyCleanupDirectories(definition, warnings, ref skippedItems);
+        return new CleanupDeleteSummary(freedBytes, deletedFiles, skippedItems, warnings.ToArray());
+    }
+
+    private static void DeleteEmptyCleanupDirectories(CleanupDefinition definition, List<string> warnings, ref int skippedItems)
+    {
+        foreach (CleanupTarget target in definition.Targets.Where(target => !target.IsFile && target.Recursive && string.Equals(target.SearchPattern, "*", StringComparison.Ordinal)))
+        {
+            try
+            {
+                string root = Path.GetFullPath(target.Path);
+                if (!Directory.Exists(root) || IsReparsePoint(root))
                 {
-                    if (!string.Equals(Path.GetFullPath(directory), approvedRoot, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                }
+
+                var options = new EnumerationOptions
+                {
+                    IgnoreInaccessible = true,
+                    RecurseSubdirectories = true,
+                    ReturnSpecialDirectories = false,
+                    AttributesToSkip = FileAttributes.ReparsePoint
+                };
+                foreach (string directory in Directory.EnumerateDirectories(root, "*", options).OrderByDescending(path => path.Length))
+                {
+                    try
                     {
-                        FileCleanupService.ClearReadOnlyAttribute(directory);
-                        Directory.Delete(directory, recursive: false);
+                        if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                        {
+                            Directory.Delete(directory, recursive: false);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        skippedItems++;
+                        AddCleanupWarning(warnings, $"{directory}: {ex.Message}");
                     }
                 }
-                catch (Exception ex)
-                {
-                    skippedItems++;
-                    AddCleanupWarning(warnings, $"{directory}: {ex.Message}");
-                }
+            }
+            catch (Exception ex)
+            {
+                skippedItems++;
+                AddCleanupWarning(warnings, $"{target.Path}: {ex.Message}");
             }
         }
-        catch (Exception ex)
+    }
+
+    private static CleanupTarget DirectoryTarget(string path, string searchPattern = "*", bool recursive = true)
+    {
+        return new CleanupTarget(path, string.IsNullOrWhiteSpace(searchPattern) ? "*" : searchPattern, recursive, IsFile: false);
+    }
+
+    private static CleanupTarget FileTarget(string path)
+    {
+        return new CleanupTarget(path, "*", Recursive: false, IsFile: true);
+    }
+
+    private static CleanupTarget[] MergeTargets(params CleanupTarget[][] targetGroups)
+    {
+        return targetGroups
+            .SelectMany(group => group)
+            .Where(target => !string.IsNullOrWhiteSpace(target.Path))
+            .GroupBy(target => $"{target.Path}|{target.SearchPattern}|{target.Recursive}|{target.IsFile}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static CleanupTarget[] TargetsForDirectories(IEnumerable<string> roots, params string[] relativeParts)
+    {
+        return roots
+            .Select(root => DirectoryTarget(CombinePath(root, relativeParts)))
+            .ToArray();
+    }
+
+    private static CleanupTarget[] TargetsForFiles(IEnumerable<string> roots, params string[] relativeParts)
+    {
+        return roots
+            .Select(root => FileTarget(CombinePath(root, relativeParts)))
+            .ToArray();
+    }
+
+    private static CleanupTarget[] TargetsForChildDirectories(string root, string childDirectoryName)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
         {
-            AddCleanupWarning(warnings, ex.Message);
-            skippedItems++;
+            return [];
         }
 
-        return new CleanupDeleteSummary(freedBytes, deletedFiles, skippedItems, warnings.ToArray());
+        var targets = new List<CleanupTarget>();
+        foreach (string child in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
+        {
+            string target = CombinePath(child, childDirectoryName);
+            if (Directory.Exists(target))
+            {
+                targets.Add(DirectoryTarget(target));
+            }
+        }
+
+        return targets.ToArray();
+    }
+
+    private static string[] GetChromiumProfileDirectories(string local, string roaming)
+    {
+        string[] userDataRoots =
+        [
+            CombinePath(local, "Microsoft", "Edge", "User Data"),
+            CombinePath(local, "Google", "Chrome", "User Data"),
+            CombinePath(local, "BraveSoftware", "Brave-Browser", "User Data"),
+            CombinePath(local, "Chromium", "User Data"),
+            CombinePath(local, "Vivaldi", "User Data")
+        ];
+        string[] operaProfiles =
+        [
+            CombinePath(roaming, "Opera Software", "Opera Stable"),
+            CombinePath(roaming, "Opera Software", "Opera GX Stable")
+        ];
+
+        var profiles = new List<string>();
+        foreach (string root in userDataRoots.Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            if (!Directory.Exists(root))
+            {
+                profiles.Add(CombinePath(root, "Default"));
+                continue;
+            }
+
+            string[] profileDirectories = Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
+                .Where(path =>
+                {
+                    string name = Path.GetFileName(path);
+                    return name.Equals("Default", StringComparison.OrdinalIgnoreCase) ||
+                        name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase);
+                })
+                .ToArray();
+            profiles.AddRange(profileDirectories.Length > 0 ? profileDirectories : [CombinePath(root, "Default")]);
+        }
+
+        profiles.AddRange(operaProfiles.Where(path => !string.IsNullOrWhiteSpace(path)));
+        return profiles.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static string[] GetFirefoxProfileDirectories(string root)
+    {
+        string profilesRoot = CombinePath(root, "Mozilla", "Firefox", "Profiles");
+        if (string.IsNullOrWhiteSpace(profilesRoot) || !Directory.Exists(profilesRoot))
+        {
+            return [CombinePath(profilesRoot, "default-release")];
+        }
+
+        return Directory.EnumerateDirectories(profilesRoot, "*", SearchOption.TopDirectoryOnly)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string[] FormatCleanupLocations(CleanupDefinition definition)
+    {
+        if (definition.Targets.Length == 0)
+        {
+            return [];
+        }
+
+        return definition.Targets
+            .Select(target =>
+            {
+                if (target.IsFile || string.Equals(target.SearchPattern, "*", StringComparison.Ordinal))
+                {
+                    return target.Path;
+                }
+
+                return CombinePath(target.Path, target.SearchPattern);
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string CombinePath(string root, params string[] parts)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return string.Empty;
+        }
+
+        string path = root;
+        foreach (string part in parts)
+        {
+            if (!string.IsNullOrWhiteSpace(part))
+            {
+                path = Path.Combine(path, part);
+            }
+        }
+
+        return path;
+    }
+
+    private static string GetLocalLowPath(string userProfile)
+    {
+        return string.IsNullOrWhiteSpace(userProfile)
+            ? string.Empty
+            : Path.Combine(userProfile, "AppData", "LocalLow");
+    }
+
+    private static string GetSystemDriveRoot(string windowsPath)
+    {
+        string? root = string.IsNullOrWhiteSpace(windowsPath)
+            ? Path.GetPathRoot(Environment.SystemDirectory)
+            : Path.GetPathRoot(windowsPath);
+        return string.IsNullOrWhiteSpace(root) ? string.Empty : root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
     }
 
     private static void AddCleanupWarning(List<string> warnings, string message)
@@ -646,17 +988,44 @@ internal static class SystemMaintenanceService
         return new CleanupDeleteSummary(before.sizeBytes, before.fileCount, 0, []);
     }
 
-    private static bool IsApprovedCleanupRoot(string categoryId, string path)
+    private static bool IsApprovedCleanupPath(string categoryId, string path)
     {
-        string normalized = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string normalized = Path.GetFullPath(path);
         CleanupDefinition? definition = GetCleanupDefinitions()
             .FirstOrDefault(item => string.Equals(item.Id, categoryId, StringComparison.OrdinalIgnoreCase));
-        string expected = string.IsNullOrWhiteSpace(definition?.Path)
-            ? string.Empty
-            : Path.GetFullPath(definition.Path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (definition == null)
+        {
+            return false;
+        }
 
-        return !string.IsNullOrWhiteSpace(expected) &&
-               string.Equals(normalized, expected, StringComparison.OrdinalIgnoreCase);
+        foreach (CleanupTarget target in definition.Targets)
+        {
+            if (string.IsNullOrWhiteSpace(target.Path))
+            {
+                continue;
+            }
+
+            string expected = Path.GetFullPath(target.Path);
+            if (target.IsFile)
+            {
+                if (string.Equals(normalized, expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            string normalizedRoot = expected.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(normalized.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), normalizedRoot, StringComparison.OrdinalIgnoreCase) ||
+                normalized.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                normalized.StartsWith(normalizedRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     internal static string NormalizeDriveRoot(string? driveRoot)
@@ -772,12 +1141,14 @@ internal static class SystemMaintenanceService
                 issues.Add(CreateRegistryIssue(
                     hive,
                     keyPath,
-                    "Startup entry",
+                    "Invalid File or Folder",
                     displayName,
                     targetPath,
                     "Startup entry points to a missing file.",
                     valueName,
-                    subKeyName: null));
+                    subKeyName: null,
+                    severity: "High",
+                    category: "Startup"));
             }
         }
         catch (Exception ex)
@@ -801,18 +1172,289 @@ internal static class SystemMaintenanceService
                 try
                 {
                     using RegistryKey? subKey = key.OpenSubKey(subKeyName, writable: false);
-                    string displayName = subKey?.GetValue("DisplayName")?.ToString() ?? subKeyName;
-                    string? uninstallTarget = ExtractExecutablePath(subKey?.GetValue("UninstallString")?.ToString());
-                    string? displayTarget = ExtractExecutablePath(subKey?.GetValue("DisplayIcon")?.ToString());
-                    string? installLocation = RegistryPathNormalizer.Normalize(subKey?.GetValue("InstallLocation")?.ToString());
-                    string? targetPath = uninstallTarget ?? displayTarget;
-
-                    if (string.IsNullOrWhiteSpace(targetPath) || !IsMissingPath(targetPath))
+                    if (subKey == null || RegistryIntValue(subKey, "SystemComponent") == 1)
                     {
                         continue;
                     }
 
-                    if (!string.IsNullOrWhiteSpace(installLocation) && !IsMissingPath(installLocation))
+                    string displayName = RegistryStringValue(subKey, "DisplayName");
+                    string uninstallCommand = RegistryStringValue(subKey, "UninstallString", doNotExpandEnvironmentNames: true);
+                    string quietUninstallCommand = RegistryStringValue(subKey, "QuietUninstallString", doNotExpandEnvironmentNames: true);
+                    string displayIcon = RegistryStringValue(subKey, "DisplayIcon", doNotExpandEnvironmentNames: true);
+                    string? uninstallTarget = ExtractExecutablePath(uninstallCommand);
+                    string? quietUninstallTarget = ExtractExecutablePath(quietUninstallCommand);
+                    string? displayTarget = ExtractExecutablePath(displayIcon);
+                    string? installLocation = RegistryPathNormalizer.Normalize(RegistryStringValue(subKey, "InstallLocation", doNotExpandEnvironmentNames: true));
+                    string friendlyName = string.IsNullOrWhiteSpace(displayName) ? subKeyName : displayName;
+
+                    if (string.IsNullOrWhiteSpace(displayName) && string.IsNullOrWhiteSpace(uninstallCommand) && string.IsNullOrWhiteSpace(quietUninstallCommand))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Orphaned Registry Key",
+                            friendlyName,
+                            "Missing display name and uninstall command",
+                            "Uninstall registry key has no visible application metadata and no uninstall command.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "Low",
+                            category: "Uninstall"));
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(displayName) && string.IsNullOrWhiteSpace(uninstallCommand) && string.IsNullOrWhiteSpace(quietUninstallCommand) &&
+                        string.IsNullOrWhiteSpace(displayIcon) && string.IsNullOrWhiteSpace(installLocation))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Invalid Uninstall Entry",
+                            friendlyName,
+                            "Missing uninstall string",
+                            "Uninstall entry is incomplete and cannot launch a visible uninstaller.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "High",
+                            category: "Uninstall"));
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(uninstallTarget) && IsMissingPath(uninstallTarget))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Invalid Uninstall Entry",
+                            friendlyName,
+                            uninstallTarget,
+                            "Uninstall command points to a missing application file.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "High",
+                            category: "Uninstall"));
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(quietUninstallTarget) && IsMissingPath(quietUninstallTarget))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Invalid Uninstall Entry",
+                            friendlyName,
+                            quietUninstallTarget,
+                            "Quiet uninstall command points to a missing application file.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "High",
+                            category: "Uninstall"));
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(displayTarget) && IsMissingPath(displayTarget) &&
+                        (string.IsNullOrWhiteSpace(installLocation) || IsMissingPath(installLocation)))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Invalid File or Folder",
+                            friendlyName,
+                            displayTarget,
+                            "Uninstall entry references a missing display icon or application folder.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "High",
+                            category: "Uninstall"));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"{hive}\\{keyPath}\\{subKeyName}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
+    }
+
+    private static void ScanApplicationPathEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
+    {
+        try
+        {
+            using RegistryKey? key = root.OpenSubKey(keyPath, writable: false);
+            if (key == null)
+            {
+                return;
+            }
+
+            foreach (string subKeyName in key.GetSubKeyNames())
+            {
+                try
+                {
+                    using RegistryKey? subKey = key.OpenSubKey(subKeyName, writable: false);
+                    if (subKey == null)
+                    {
+                        continue;
+                    }
+
+                    string defaultCommand = RegistryStringValue(subKey, string.Empty, doNotExpandEnvironmentNames: true);
+                    string? defaultTarget = ExtractExecutablePath(defaultCommand);
+                    if (!string.IsNullOrWhiteSpace(defaultTarget) && IsMissingPath(defaultTarget))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            keyPath,
+                            "Invalid Application Path",
+                            subKeyName,
+                            defaultTarget,
+                            "Application Paths entry points to a missing executable.",
+                            valueName: null,
+                            subKeyName,
+                            severity: "Medium",
+                            category: "Application Paths"));
+                        continue;
+                    }
+
+                    string? pathValue = RegistryPathNormalizer.Normalize(RegistryStringValue(subKey, "Path", doNotExpandEnvironmentNames: true));
+                    if (!string.IsNullOrWhiteSpace(pathValue) && IsMissingPath(pathValue))
+                    {
+                        issues.Add(CreateRegistryIssue(
+                            hive,
+                            $@"{keyPath}\{subKeyName}",
+                            "Invalid Application Path",
+                            subKeyName,
+                            pathValue,
+                            "Application Paths search directory does not exist.",
+                            valueName: "Path",
+                            subKeyName: null,
+                            severity: "Medium",
+                            category: "Application Paths"));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"{hive}\\{keyPath}\\{subKeyName}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
+    }
+
+    private static void ScanComServerEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
+    {
+        try
+        {
+            using RegistryKey? clsidKey = root.OpenSubKey(keyPath, writable: false);
+            if (clsidKey == null)
+            {
+                return;
+            }
+
+            foreach (string classId in clsidKey.GetSubKeyNames().Take(MaxRegistryClassKeys))
+            {
+                try
+                {
+                    using RegistryKey? classKey = clsidKey.OpenSubKey(classId, writable: false);
+                    if (classKey == null)
+                    {
+                        continue;
+                    }
+
+                    string displayName = RegistryStringValue(classKey, string.Empty);
+                    string friendlyName = string.IsNullOrWhiteSpace(displayName) ? classId : displayName;
+                    ScanComServerSubKey(root, hive, keyPath, classId, friendlyName, "InprocServer32", issues);
+                    ScanComServerSubKey(root, hive, keyPath, classId, friendlyName, "LocalServer32", issues);
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"{hive}\\{keyPath}\\{classId}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
+    }
+
+    private static void ScanComServerSubKey(
+        RegistryKey root,
+        string hive,
+        string clsidRootPath,
+        string classId,
+        string displayName,
+        string serverSubKeyName,
+        List<RegistryIssue> issues)
+    {
+        string classKeyPath = $@"{clsidRootPath}\{classId}";
+        using RegistryKey? serverKey = root.OpenSubKey($@"{classKeyPath}\{serverSubKeyName}", writable: false);
+        string? targetPath = ExtractExecutablePath(RegistryStringValue(serverKey, string.Empty, doNotExpandEnvironmentNames: true));
+        if (string.IsNullOrWhiteSpace(targetPath) || !IsMissingPath(targetPath))
+        {
+            return;
+        }
+
+        issues.Add(CreateRegistryIssue(
+            hive,
+            classKeyPath,
+            "Invalid ActiveX / COM",
+            displayName,
+            targetPath,
+            $"{serverSubKeyName} server path points to a missing file.",
+            valueName: null,
+            subKeyName: serverSubKeyName,
+            severity: "Medium",
+            category: "ActiveX / COM"));
+    }
+
+    private static void ScanFileExtensionEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
+    {
+        try
+        {
+            using RegistryKey? classesKey = root.OpenSubKey(keyPath, writable: false);
+            if (classesKey == null)
+            {
+                return;
+            }
+
+            foreach (string extension in classesKey.GetSubKeyNames().Where(name => name.StartsWith(".", StringComparison.Ordinal)).Take(MaxRegistryClassKeys))
+            {
+                try
+                {
+                    using RegistryKey? extensionKey = classesKey.OpenSubKey(extension, writable: false);
+                    if (extensionKey == null)
+                    {
+                        continue;
+                    }
+
+                    string progId = RegistryStringValue(extensionKey, string.Empty);
+                    if (string.IsNullOrWhiteSpace(progId))
+                    {
+                        if (extensionKey.GetValueNames().Length == 0 && extensionKey.GetSubKeyNames().Length == 0)
+                        {
+                            issues.Add(CreateRegistryIssue(
+                                hive,
+                                keyPath,
+                                "Unused File Extension",
+                                extension,
+                                "No application associated",
+                                "File extension registration is empty and has no associated program.",
+                                valueName: null,
+                                subKeyName: extension,
+                                severity: "Low",
+                                category: "File Types"));
+                        }
+
+                        continue;
+                    }
+
+                    if (RegistryClassKeyExists(progId))
                     {
                         continue;
                     }
@@ -820,17 +1462,93 @@ internal static class SystemMaintenanceService
                     issues.Add(CreateRegistryIssue(
                         hive,
                         keyPath,
-                        "Uninstall entry",
-                        displayName,
-                        targetPath,
-                        "Uninstall entry points to a missing application path.",
+                        "Unused File Extension",
+                        extension,
+                        progId,
+                        "File extension points to a missing ProgID registration.",
                         valueName: null,
-                        subKeyName));
+                        subKeyName: extension,
+                        severity: "Medium",
+                        category: "File Types"));
                 }
                 catch (Exception ex)
                 {
-                    warnings.Add($"{hive}\\{keyPath}\\{subKeyName}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+                    warnings.Add($"{hive}\\{keyPath}\\{extension}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
                 }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
+    }
+
+    private static void ScanSharedDllEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
+    {
+        try
+        {
+            using RegistryKey? key = root.OpenSubKey(keyPath, writable: false);
+            if (key == null)
+            {
+                return;
+            }
+
+            foreach (string valueName in key.GetValueNames())
+            {
+                string? targetPath = RegistryPathNormalizer.Normalize(valueName);
+                if (string.IsNullOrWhiteSpace(targetPath) || !HasRegistryPathExtension(targetPath) || !IsMissingPath(targetPath))
+                {
+                    continue;
+                }
+
+                issues.Add(CreateRegistryIssue(
+                    hive,
+                    keyPath,
+                    "Missing Shared DLL",
+                    Path.GetFileName(targetPath),
+                    targetPath,
+                    "SharedDLLs reference points to a file that no longer exists.",
+                    valueName,
+                    subKeyName: null,
+                    severity: "Low",
+                    category: "Other"));
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"{hive}\\{keyPath}: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
+    }
+
+    private static void ScanHelpFileReferences(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
+    {
+        try
+        {
+            using RegistryKey? key = root.OpenSubKey(keyPath, writable: false);
+            if (key == null)
+            {
+                return;
+            }
+
+            foreach (string valueName in key.GetValueNames())
+            {
+                string? helpPath = ResolveHelpReferencePath(valueName, key.GetValue(valueName)?.ToString());
+                if (string.IsNullOrWhiteSpace(helpPath) || !IsMissingPath(helpPath))
+                {
+                    continue;
+                }
+
+                issues.Add(CreateRegistryIssue(
+                    hive,
+                    keyPath,
+                    "Invalid Help File Reference",
+                    string.IsNullOrWhiteSpace(valueName) ? Path.GetFileName(helpPath) : valueName,
+                    helpPath,
+                    "Help file registration points to a missing .hlp or .chm file.",
+                    valueName,
+                    subKeyName: null,
+                    severity: "Low",
+                    category: "Other"));
             }
         }
         catch (Exception ex)
@@ -847,7 +1565,10 @@ internal static class SystemMaintenanceService
         string targetPath,
         string reason,
         string? valueName,
-        string? subKeyName)
+        string? subKeyName,
+        string severity = "Medium",
+        string? category = null,
+        bool canClean = true)
     {
         string id = CreateRegistryIssueId(hive, keyPath, valueName, subKeyName, kind);
         return new RegistryIssue(
@@ -860,8 +1581,9 @@ internal static class SystemMaintenanceService
             displayName,
             targetPath,
             reason,
-            "Medium",
-            true);
+            severity,
+            canClean,
+            string.IsNullOrWhiteSpace(category) ? kind : category);
     }
 
     private static string CreateRegistryIssueId(string hive, string keyPath, string? valueName, string? subKeyName, string kind)
@@ -869,6 +1591,114 @@ internal static class SystemMaintenanceService
         string raw = string.Join("|", hive, keyPath, valueName ?? string.Empty, subKeyName ?? string.Empty, kind);
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant();
+    }
+
+    private static string RegistryStringValue(RegistryKey? key, string name, bool doNotExpandEnvironmentNames = false)
+    {
+        if (key == null)
+        {
+            return string.Empty;
+        }
+
+        RegistryValueOptions options = doNotExpandEnvironmentNames
+            ? RegistryValueOptions.DoNotExpandEnvironmentNames
+            : RegistryValueOptions.None;
+        object? value = key.GetValue(name, defaultValue: null, options);
+        return value switch
+        {
+            string stringValue => stringValue.Trim(),
+            string[] strings => string.Join(";", strings).Trim(),
+            _ => value?.ToString()?.Trim() ?? string.Empty
+        };
+    }
+
+    private static int RegistryIntValue(RegistryKey key, string name)
+    {
+        object? value = key.GetValue(name);
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue when longValue <= int.MaxValue && longValue >= int.MinValue => (int)longValue,
+            string stringValue when int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) => parsed,
+            _ => 0
+        };
+    }
+
+    private static bool RegistryClassKeyExists(string progId)
+    {
+        string normalized = progId.Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || normalized.Contains('\\'))
+        {
+            return true;
+        }
+
+        return RegistrySubKeyExists(Registry.CurrentUser, $@"Software\Classes\{normalized}") ||
+            RegistrySubKeyExists(Registry.LocalMachine, $@"Software\Classes\{normalized}") ||
+            RegistrySubKeyExists(Registry.LocalMachine, $@"Software\WOW6432Node\Classes\{normalized}");
+    }
+
+    private static bool RegistrySubKeyExists(RegistryKey root, string keyPath)
+    {
+        using RegistryKey? key = root.OpenSubKey(keyPath, writable: false);
+        return key != null;
+    }
+
+    private static bool HasRegistryPathExtension(string path)
+    {
+        try
+        {
+            string extension = Path.GetExtension(path);
+            return RegistryExecutableExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? ResolveHelpReferencePath(string valueName, string? rawValue)
+    {
+        try
+        {
+            string normalizedValue = RegistryPathNormalizer.Normalize(rawValue) ?? string.Empty;
+            string normalizedName = RegistryPathNormalizer.Normalize(valueName) ?? valueName;
+
+            if (IsHelpFilePath(normalizedValue))
+            {
+                return normalizedValue;
+            }
+
+            if (!IsHelpFilePath(normalizedName))
+            {
+                return null;
+            }
+
+            if (Path.IsPathRooted(normalizedName))
+            {
+                return normalizedName;
+            }
+
+            if (string.IsNullOrWhiteSpace(normalizedValue) || !Path.IsPathRooted(normalizedValue))
+            {
+                return null;
+            }
+
+            string directory = IsHelpFilePath(normalizedValue)
+                ? Path.GetDirectoryName(normalizedValue) ?? string.Empty
+                : normalizedValue;
+            return string.IsNullOrWhiteSpace(directory) ? null : Path.Combine(directory, normalizedName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsHelpFilePath(string path)
+    {
+        string extension = Path.GetExtension(path);
+        return extension.Equals(".hlp", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".chm", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ExtractExecutablePath(string? command)
@@ -976,7 +1806,7 @@ internal static class SystemMaintenanceService
         RegistryKey root = GetRegistryRoot(issue.hive);
         string hiveName = GetRegistryHiveName(issue.hive);
 
-        if (!string.IsNullOrWhiteSpace(issue.valueName))
+        if (issue.valueName != null)
         {
             using RegistryKey? key = root.OpenSubKey(issue.keyPath, writable: false);
             object? value = key?.GetValue(issue.valueName);
@@ -1047,7 +1877,7 @@ internal static class SystemMaintenanceService
     {
         RegistryKey root = GetRegistryRoot(issue.hive);
 
-        if (!string.IsNullOrWhiteSpace(issue.valueName))
+        if (issue.valueName != null)
         {
             using RegistryKey? key = root.OpenSubKey(issue.keyPath, writable: true);
             key?.DeleteValue(issue.valueName, throwOnMissingValue: false);
@@ -1119,12 +1949,19 @@ internal static class SystemMaintenanceService
         string Group,
         string Label,
         string Description,
-        string Path,
+        string SafetyLevel,
+        CleanupTarget[] Targets,
         bool SupportsDeletion,
         bool RequiresAdministrator,
-        bool DefaultSelected);
+        bool DefaultSelected,
+        string[] Removes,
+        string[] Keeps,
+        string Recommendation,
+        string? UnavailableReason);
 
-    private sealed record DirectoryScanSummary(long SizeBytes, int FileCount, int SkippedCount, string[] Warnings);
+    private sealed record CleanupTarget(string Path, string SearchPattern, bool Recursive, bool IsFile);
+
+    private sealed record DirectoryScanSummary(long SizeBytes, int FileCount, int SkippedCount, string[] Warnings, bool LocationFound);
 
     private sealed record CleanupDeleteSummary(long FreedBytes, int DeletedFiles, int SkippedItems, string[] Warnings);
 
@@ -1159,7 +1996,14 @@ internal sealed record CleanupCategory(
     bool requiresAdministrator,
     bool defaultSelected,
     string status,
-    string[] warnings);
+    string[] warnings,
+    string safetyLevel,
+    bool sizeKnown,
+    string[] locations,
+    string[] removes,
+    string[] keeps,
+    string recommendation,
+    string unavailableReason);
 
 internal sealed record CleanupScanResult(
     CleanupCategory[] categories,
@@ -1196,7 +2040,8 @@ internal sealed record RegistryIssue(
     string targetPath,
     string reason,
     string severity,
-    bool canClean);
+    bool canClean,
+    string category);
 
 internal sealed record RegistryScanResult(
     RegistryIssue[] issues,

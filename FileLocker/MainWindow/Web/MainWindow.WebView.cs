@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -709,6 +710,24 @@ namespace FileLocker
 
         private async Task<object?> PickFilesAsync()
         {
+            if (IsRunningAsAdministrator())
+            {
+                return PickFilesWithShellDialog();
+            }
+
+            try
+            {
+                return await PickFilesWithWinRtPickerAsync();
+            }
+            catch (Exception ex) when (ShouldUseClassicPickerFallback(ex))
+            {
+                Debug.WriteLine($"WinRT file picker failed; using classic dialog. {SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Picker failed."))}");
+                return PickFilesWithShellDialog();
+            }
+        }
+
+        private async Task<object?> PickFilesWithWinRtPickerAsync()
+        {
             var picker = new FileOpenPicker
             {
                 SuggestedStartLocation = PickerLocationId.DocumentsLibrary
@@ -724,6 +743,24 @@ namespace FileLocker
 
         private async Task<object?> PickFolderAsync()
         {
+            if (IsRunningAsAdministrator())
+            {
+                return PickFolderWithShellDialog();
+            }
+
+            try
+            {
+                return await PickFolderWithWinRtPickerAsync();
+            }
+            catch (Exception ex) when (ShouldUseClassicPickerFallback(ex))
+            {
+                Debug.WriteLine($"WinRT folder picker failed; using classic dialog. {SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Picker failed."))}");
+                return PickFolderWithShellDialog();
+            }
+        }
+
+        private async Task<object?> PickFolderWithWinRtPickerAsync()
+        {
             var picker = new FolderPicker
             {
                 SuggestedStartLocation = PickerLocationId.DocumentsLibrary
@@ -735,6 +772,205 @@ namespace FileLocker
             {
                 path = folder?.Path ?? string.Empty
             };
+        }
+
+        private object PickFilesWithShellDialog()
+        {
+            string[] paths = ShowShellOpenDialog("Select files", FileOpenOptions.AllowMultiSelect | FileOpenOptions.FileMustExist | FileOpenOptions.PathMustExist);
+            return new
+            {
+                paths
+            };
+        }
+
+        private object PickFolderWithShellDialog()
+        {
+            string[] paths = ShowShellOpenDialog("Select folder", FileOpenOptions.PickFolders | FileOpenOptions.PathMustExist);
+            return new
+            {
+                path = paths.FirstOrDefault() ?? string.Empty
+            };
+        }
+
+        private static bool ShouldUseClassicPickerFallback(Exception ex)
+        {
+            return ex is InvalidOperationException || ex is UnauthorizedAccessException || ex.HResult != 0;
+        }
+
+        private string[] ShowShellOpenDialog(string title, FileOpenOptions options)
+        {
+            Type dialogType = Type.GetTypeFromCLSID(FileOpenDialogClsid)
+                ?? throw new InvalidOperationException("Windows shell file dialog is not available.");
+            var dialog = (IFileOpenDialog)Activator.CreateInstance(dialogType)!;
+            try
+            {
+                dialog.GetOptions(out FileOpenOptions currentOptions);
+                dialog.SetOptions(currentOptions | options | FileOpenOptions.ForceFileSystem | FileOpenOptions.NoChangeDir);
+                dialog.SetTitle(title);
+
+                int hr = dialog.Show(WindowNative.GetWindowHandle(this));
+                if (hr == HResultCancelled)
+                {
+                    return Array.Empty<string>();
+                }
+
+                Marshal.ThrowExceptionForHR(hr);
+
+                if (options.HasFlag(FileOpenOptions.AllowMultiSelect))
+                {
+                    dialog.GetResults(out IShellItemArray results);
+                    return GetShellItemArrayPaths(results);
+                }
+
+                dialog.GetResult(out IShellItem item);
+                try
+                {
+                    string? path = GetShellItemPath(item);
+                    return string.IsNullOrWhiteSpace(path) ? Array.Empty<string>() : [path];
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(item);
+                }
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(dialog);
+            }
+        }
+
+        private static string[] GetShellItemArrayPaths(IShellItemArray results)
+        {
+            try
+            {
+                results.GetCount(out uint count);
+                var paths = new List<string>();
+                for (uint index = 0; index < count; index++)
+                {
+                    results.GetItemAt(index, out IShellItem item);
+                    try
+                    {
+                        string? path = GetShellItemPath(item);
+                        if (!string.IsNullOrWhiteSpace(path))
+                        {
+                            paths.Add(path);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FinalReleaseComObject(item);
+                    }
+                }
+
+                return paths.ToArray();
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(results);
+            }
+        }
+
+        private static string? GetShellItemPath(IShellItem item)
+        {
+            item.GetDisplayName(SigDnFileSystemPath, out IntPtr pathPointer);
+            try
+            {
+                return Marshal.PtrToStringUni(pathPointer);
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pathPointer);
+            }
+        }
+
+        private const int HResultCancelled = unchecked((int)0x800704C7);
+        private const uint SigDnFileSystemPath = 0x80058000;
+        private static readonly Guid FileOpenDialogClsid = new("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7");
+
+        [Flags]
+        private enum FileOpenOptions : uint
+        {
+            NoChangeDir = 0x00000008,
+            PickFolders = 0x00000020,
+            ForceFileSystem = 0x00000040,
+            AllowMultiSelect = 0x00000200,
+            PathMustExist = 0x00000800,
+            FileMustExist = 0x00001000
+        }
+
+        [ComImport]
+        [Guid("d57c7288-d4ad-4768-be02-9d969532d960")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IFileOpenDialog
+        {
+            [PreserveSig]
+            int Show(IntPtr parent);
+            void SetFileTypes(uint fileTypes, [MarshalAs(UnmanagedType.LPArray)] ComDlgFilterSpec[] filterSpec);
+            void SetFileTypeIndex(uint fileType);
+            void GetFileTypeIndex(out uint fileType);
+            void Advise(IntPtr events, out uint cookie);
+            void Unadvise(uint cookie);
+            void SetOptions(FileOpenOptions options);
+            void GetOptions(out FileOpenOptions options);
+            void SetDefaultFolder(IShellItem item);
+            void SetFolder(IShellItem item);
+            void GetFolder(out IShellItem item);
+            void GetCurrentSelection(out IShellItem item);
+            void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+            void GetFileName(out IntPtr name);
+            void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+            void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+            void GetResult(out IShellItem item);
+            void AddPlace(IShellItem item, uint place);
+            void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string defaultExtension);
+            void Close(int result);
+            void SetClientGuid(ref Guid guid);
+            void ClearClientData();
+            void SetFilter(IntPtr filter);
+            void GetResults(out IShellItemArray results);
+            void GetSelectedItems(out IShellItemArray items);
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ComDlgFilterSpec
+        {
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string Name;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string Spec;
+        }
+
+        [ComImport]
+        [Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItem
+        {
+            void BindToHandler(IntPtr bindContext, ref Guid handlerId, ref Guid interfaceId, out IntPtr result);
+            void GetParent(out IShellItem parent);
+            void GetDisplayName(uint name, out IntPtr displayName);
+            void GetAttributes(uint attributesMask, out uint attributes);
+            void Compare(IShellItem item, uint hint, out int order);
+        }
+
+        [ComImport]
+        [Guid("b63ea76d-1f85-456f-a19c-48159efa858b")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItemArray
+        {
+            void BindToHandler(IntPtr bindContext, ref Guid handlerId, ref Guid interfaceId, out IntPtr result);
+            void GetPropertyStore(int flags, ref Guid interfaceId, out IntPtr propertyStore);
+            void GetPropertyDescriptionList(ref PropertyKey keyType, ref Guid interfaceId, out IntPtr descriptionList);
+            void GetAttributes(int attributeFlags, uint attributeMask, out uint attributes);
+            void GetCount(out uint count);
+            void GetItemAt(uint index, out IShellItem item);
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct PropertyKey
+        {
+            public Guid FormatId;
+            public uint PropertyId;
         }
 
         private Task<object?> RevealPathAsync(RevealPathRequest request)

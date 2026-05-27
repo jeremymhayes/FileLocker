@@ -613,24 +613,20 @@ function removeTarget(path: string) {
                 <SectionBody className="px-4 py-3">
                   <div
                     className={cn(
-                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      "flex min-h-[130px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
                       isRunning && "cursor-not-allowed opacity-70"
                     )}
                     role="group"
                     aria-label="Encrypt file drop zone"
-                    aria-describedby="encrypt-drop-zone-description"
                     aria-disabled={isRunning}
                     onDragOver={handleTargetDragOver}
                     onDrop={handleTargetDrop}
                   >
-                    <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
-                      <UploadCloud className="size-5" aria-hidden />
+                    <div className="flex size-7 items-center justify-center rounded-md bg-accent/10 text-accent">
+                      <UploadCloud className="size-4" aria-hidden />
                     </div>
-                    <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop files or folders to encrypt</h3>
-                    <p id="encrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
-                      Choose files manually or bring in whole folders, then decide whether locked output stays beside the source or goes to a separate destination.
-                    </p>
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <h3 className="mt-2.5 font-display text-base font-semibold tracking-tight text-primary">Drop files or folders to encrypt</h3>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
@@ -640,7 +636,6 @@ function removeTarget(path: string) {
                         Browse Folder
                       </Button>
                     </div>
-                    <p className="mt-3 text-xs text-secondary">Supports files, folders, and batch encryption.</p>
                   </div>
                 </SectionBody>
               </Section>
@@ -769,16 +764,9 @@ function removeTarget(path: string) {
                     </div>
                   </div>
 
-                  <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                      <div>
-                        <div className="font-display text-[1rem] font-semibold tracking-tight text-amber-300">Important</div>
-                        <p className="mt-1 text-sm leading-snug text-secondary">
-                          FileLocker uses local encryption. Your password is never stored or transmitted, and you are solely responsible for keeping it safe.
-                        </p>
-                      </div>
-                    </div>
+                  <div className="app-inline-notice app-inline-notice-warning">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                    <span>Your password is never stored or transmitted. You are solely responsible for keeping it safe.</span>
                   </div>
                 </SectionBody>
               </Section>
@@ -936,16 +924,10 @@ function removeTarget(path: string) {
                 </SectionFooter>
               </Section>
 
-              <Section className="overflow-hidden rounded-md border border-amber-500/35 bg-transparent py-0 shadow-none ring-0">
-                <SectionBody className="px-4 py-3">
-                  <div className="flex items-start gap-2.5">
-                    <ShieldAlert className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                    <p className="text-sm leading-snug text-secondary">
-                      Delete originals stays off by default. If you enable it, verify your password and output location first.
-                    </p>
-                  </div>
-                </SectionBody>
-              </Section>
+              <div className="app-inline-notice app-inline-notice-warning">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                <p className="text-sm leading-snug text-secondary">Delete originals stays off by default. If you enable it, verify your password and output location first.</p>
+              </div>
             </aside>
           </div>
         </div>
@@ -1034,24 +1016,20 @@ function removeTarget(path: string) {
                 <SectionBody className="px-4 py-3">
                   <div
                     className={cn(
-                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      "flex min-h-[130px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
                       isRunning && "cursor-not-allowed opacity-70"
                     )}
                     role="group"
                     aria-label="Decrypt file drop zone"
-                    aria-describedby="decrypt-drop-zone-description"
                     aria-disabled={isRunning}
                     onDragOver={handleTargetDragOver}
                     onDrop={handleTargetDrop}
                   >
-                    <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
-                      <UploadCloud className="size-5" aria-hidden />
+                    <div className="flex size-7 items-center justify-center rounded-md bg-accent/10 text-accent">
+                      <UploadCloud className="size-4" aria-hidden />
                     </div>
-                    <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop encrypted files to decrypt</h3>
-                    <p id="decrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
-                      Choose locked files manually or bring in a folder, then restore original contents with the password or recovery material you already trust.
-                    </p>
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <h3 className="mt-2.5 font-display text-base font-semibold tracking-tight text-primary">Drop encrypted files to decrypt</h3>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
@@ -1061,7 +1039,6 @@ function removeTarget(path: string) {
                         Browse Folder
                       </Button>
                     </div>
-                    <p className="mt-3 text-xs text-secondary">Supports FileLocker encrypted files and batch decryption.</p>
                   </div>
                 </SectionBody>
               </Section>
@@ -1170,16 +1147,9 @@ function removeTarget(path: string) {
                     Enter the password used when these files were encrypted. If this job also uses a recovery key or keyfile, you can add them below.
                   </p>
 
-                  <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                      <div>
-                        <div className="font-display text-[1rem] font-semibold tracking-tight text-amber-300">Important</div>
-                        <p className="mt-1 text-sm leading-snug text-secondary">
-                          FileLocker cannot recover files if the password is incorrect or lost.
-                        </p>
-                      </div>
-                    </div>
+                  <div className="app-inline-notice app-inline-notice-warning">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                    <span>FileLocker cannot recover files if the password is incorrect or lost.</span>
                   </div>
                 </SectionBody>
               </Section>
@@ -1295,16 +1265,10 @@ function removeTarget(path: string) {
                 </SectionFooter>
               </Section>
 
-              <Section className="overflow-hidden rounded-md border border-amber-500/35 bg-transparent py-0 shadow-none ring-0">
-                <SectionBody className="px-4 py-3">
-                  <div className="flex items-start gap-2.5">
-                    <ShieldAlert className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                    <p className="text-sm leading-snug text-secondary">
-                      If you turn on encrypted-file removal, confirm your password and output location first so you do not lose the only copy you can still open.
-                    </p>
-                  </div>
-                </SectionBody>
-              </Section>
+              <div className="app-inline-notice app-inline-notice-warning">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                <p className="text-sm leading-snug text-secondary">If you turn on encrypted-file removal, confirm your password and output location first so you do not lose the only copy you can still open.</p>
+              </div>
             </aside>
           </div>
         </div>

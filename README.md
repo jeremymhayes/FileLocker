@@ -51,22 +51,21 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current version | `1.2.0.0` |
-| Installer | `FileLocker-Setup-1.2.0.0.exe` |
+| Current version | `1.2.1.0` |
+| Installer | `FileLocker-Setup-1.2.1.0.exe` |
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
 | Updates | Optional checks against GitHub Releases |
 | Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
 
-## New In 1.2.0.0
+## New In 1.2.1.0
 
-- Added **Startup Manager** to review startup entries and disable or restore supported entries safely.
-- Added **App Manager** to review installed apps, reveal published install locations, and launch vendor uninstallers after confirmation.
-- Added app leftover cleanup for approved AppData and ProgramData cache, log, temp, and stale app folders.
-- Improved file-operation progress so the current run stays separate from previous activity.
-- Improved error handling so maintenance failures remain visible on the page instead of disappearing after a notification.
-- Improved release validation, installer metadata consistency, and checksum reporting.
+- Refreshed **Startup Manager**, **App Manager**, and **Registry Fixer** with clearer tables, details panels, and safer action flows.
+- Rebuilt **Custom Clean** into a friendlier cleanup screen with real scan results, safety labels, filters, and select-all controls.
+- Expanded Custom Clean coverage for Windows, browser, app, gaming, developer, privacy, and advanced cleanup categories.
+- Improved elevated file and folder browsing so administrator mode can still open selection dialogs.
+- Kept risky cleanup areas review-first instead of selecting privacy, developer, advanced, or sign-out items by default.
 
 ## What You Can Do In The App
 
@@ -125,7 +124,7 @@ The app keeps a strong boundary between the interface and the file-handling logi
 ## Download And Install
 
 1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download `FileLocker-Setup-1.2.0.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
+2. Download `FileLocker-Setup-1.2.1.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
 3. Run the installer.
 4. Launch FileLocker from the Start Menu or desktop shortcut.
 
@@ -236,7 +235,7 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
-- [FileLocker 1.2.0.0 release notes](RELEASE_NOTES_1.2.0.0.md)
+- [FileLocker 1.2.1.0 release notes](RELEASE_NOTES_1.2.1.0.md)
 
 ## Project Documents
 

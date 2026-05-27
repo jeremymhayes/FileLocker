@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Bell, Download } from "lucide-react"
+import { Bell, Download, ShieldAlert, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell } from "@/components/layout/AppShell"
 import { PageHeader } from "@/components/layout/PageHeader"
@@ -36,12 +36,12 @@ const pageTitles: Record<PageKey, { title: string; description?: string }> = {
   encode: { title: "Encode Text" },
   metadata: { title: "Metadata Scrambler" },
   "secure-delete": { title: "Secure Delete" },
-  "custom-clean": { title: "Custom Clean" },
+  "custom-clean": { title: "Custom Clean", description: "Remove unnecessary files and free up disk space." },
   "partition-cleaner": { title: "Partition Cleaner" },
   "drive-optimizer": { title: "Drive Optimizer" },
-  "registry-fixer": { title: "Registry Fixer" },
-  "startup-manager": { title: "Startup Manager" },
-  "app-manager": { title: "App Manager" },
+  "registry-fixer": { title: "Registry Fixer", description: "Scan and fix registry issues to improve system stability and performance." },
+  "startup-manager": { title: "Startup Manager", description: "Manage programs that run automatically when Windows starts." },
+  "app-manager": { title: "App Manager", description: "View installed apps, sort by size or publisher, and remove apps you no longer need." },
   settings: { title: "Settings" },
   about: { title: "About" },
   "security-guide": { title: "Security Guide" },
@@ -278,11 +278,21 @@ export function App() {
             title={pageMeta.title}
             description={pageMeta.description}
             actions={
-              <>
+              activePage === "startup-manager" ? (
+                <Button
+                  variant={initialState.app.isAdministrator ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={() => !initialState.app.isAdministrator && void restartAsAdministrator("startup-manager")}
+                  disabled={initialState.app.isAdministrator}
+                >
+                  {initialState.app.isAdministrator ? <ShieldCheck data-icon="inline-start" /> : <ShieldAlert data-icon="inline-start" />}
+                  {initialState.app.isAdministrator ? "Administrator Mode" : "Restart as Administrator"}
+                </Button>
+              ) : activePage === "app-manager" || activePage === "custom-clean" ? null : (
                 <Button variant="ghost" size="icon" aria-label="Check notifications" onClick={checkNotifications} disabled={isCheckingNotifications}>
                   <Bell className="size-5" aria-hidden />
                 </Button>
-              </>
+              )
             }
           />
         ) : null}

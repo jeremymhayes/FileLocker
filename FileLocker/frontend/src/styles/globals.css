@@ -364,15 +364,10 @@ select {
   }
 }
 
-/* ─── Dashboard revamp ─────────────────────────────────────────────────────
-   Custom CSS for elements that require complex backgrounds, animations,
-   or layout that Tailwind utilities cannot express cleanly.
+/* ─── Dashboard components ─────────────────────────────────────────────────
+   Custom CSS for elements that require layout or transitions that Tailwind
+   utilities cannot express cleanly.
    ─────────────────────────────────────────────────────────────────────── */
-
-@keyframes dashHeroDrift {
-  0%, 100% { transform: translateX(-52%) translateY(0); opacity: 0.55; }
-  50%       { transform: translateX(-48%) translateY(-6px); opacity: 0.75; }
-}
 
 @keyframes dashSortPop {
   from { opacity: 0; transform: translateY(-4px); }
@@ -382,48 +377,18 @@ select {
 @layer components {
   /* Hero drop zone */
   .dash-hero {
-    position: relative;
-    border-radius: 14px;
-    background:
-      radial-gradient(ellipse 60% 80% at 50% 0%, rgba(93, 141, 255, 0.10), transparent 65%),
-      linear-gradient(180deg, rgba(21, 31, 48, 0.85), rgba(13, 20, 32, 0.6));
-    border: 1px solid rgba(94, 139, 255, 0.22);
-    overflow: hidden;
-    isolation: isolate;
+    border-radius: 8px;
+    border: 1px dashed var(--border-accent);
+    background: var(--bg-dropzone);
     transition: border-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1), transform 200ms;
-  }
-
-  /* Dot-grid overlay */
-  .dash-hero::before {
-    content: "";
-    position: absolute; inset: 0;
-    background-image: radial-gradient(rgba(150, 173, 205, 0.10) 1px, transparent 1.4px);
-    background-size: 18px 18px;
-    mask-image: radial-gradient(ellipse 70% 90% at 50% 50%, black 30%, transparent 85%);
-    z-index: 0;
-    pointer-events: none;
-  }
-
-  /* Ambient glow that drifts */
-  .dash-hero::after {
-    content: "";
-    position: absolute;
-    top: -40%; left: 50%;
-    width: 90%; height: 140%;
-    background: radial-gradient(closest-side, rgba(93, 141, 255, 0.18), transparent 70%);
-    transform: translateX(-50%);
-    filter: blur(20px);
-    z-index: 0;
-    opacity: 0.6;
-    animation: dashHeroDrift 14s ease-in-out infinite;
-    pointer-events: none;
   }
 
   .dash-hero.is-dragging {
     border-color: var(--accent-blue);
+    border-style: solid;
     transform: scale(1.005);
+    background: var(--bg-surface-hover);
   }
-  .dash-hero.is-dragging::after { opacity: 1; }
 
   /* Sort dropdown popover */
   .dash-sort-pop {

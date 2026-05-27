@@ -566,7 +566,7 @@ function ActivitySection({
       </div>
 
       {privacyModeEnabled || items.length === 0 ? (
-        <div className="flex min-h-[5rem] items-center justify-center rounded-xl border border-border bg-bg-surface/40 text-sm text-muted">
+        <div className="flex min-h-[5rem] items-center justify-center border-y border-border text-sm text-muted">
           {privacyModeEnabled ? "Activity recording is off" : "No activity yet — run a workflow to populate this list"}
         </div>
       ) : (
@@ -594,7 +594,7 @@ function StorageSavedCard({ dashboard }: { dashboard: DashboardState }) {
   const hasTrackedStorage = trackedFiles > 0 || breakdown.length > 0
 
   return (
-    <div className="rounded-xl border border-border bg-gradient-to-b from-bg-surface to-bg-base p-4">
+    <div className="px-4 py-3">
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
           <div className="font-display text-[14.5px] font-semibold text-primary leading-[1.3] mb-1">Storage saved</div>
@@ -714,7 +714,7 @@ function CustomCleanCard({
       ]
 
   return (
-    <div className="rounded-xl border border-border bg-gradient-to-b from-bg-surface to-bg-base p-4">
+    <div className="px-4 py-3">
       <div className="flex items-start justify-between gap-3 mb-1">
         <div>
           <div className="font-display text-[14.5px] font-semibold text-primary leading-[1.3] mb-1">Custom Clean</div>
@@ -804,7 +804,7 @@ function WeekPanel({ dashboard }: { dashboard: DashboardState }) {
   const failed = dashboard.failedOperationsThisWeekCount ?? buckets.reduce((a, b) => a + b.failedCount, 0)
 
   return (
-    <div className="rounded-xl border border-border bg-gradient-to-b from-bg-surface to-bg-base p-4">
+    <div className="px-4 py-3">
       <div className="flex items-start justify-between gap-3 mb-1">
         <div>
           <div className="font-display text-[14.5px] font-semibold text-primary leading-[1.3] mb-1">This week</div>
@@ -890,17 +890,11 @@ function Hero({
         {/* Lock icon */}
         <div
           className={cn(
-            "flex items-center justify-center shrink-0",
-            compact ? "size-10 rounded-xl" : "size-16 rounded-2xl"
+            "flex items-center justify-center shrink-0 border border-border-strong bg-accent/10 text-accent",
+            compact ? "size-10 rounded-lg" : "size-14 rounded-xl"
           )}
-          style={{
-            background: "linear-gradient(180deg, rgba(93,141,255,0.22), rgba(93,141,255,0.10))",
-            border: "1px solid rgba(93,141,255,0.4)",
-            boxShadow: "0 4px 24px -8px rgba(93,141,255,0.55), inset 0 1px 0 rgba(255,255,255,0.08)",
-            color: "var(--accent-blue)",
-          }}
         >
-          <LockKeyhole className={compact ? "size-5" : "size-8"} aria-hidden />
+          <LockKeyhole className={compact ? "size-5" : "size-7"} aria-hidden />
         </div>
 
         {/* Text */}
@@ -975,7 +969,7 @@ function QueueCard({
   const pwOk = password && password === confirmPassword
 
   return (
-    <div className="rounded-xl border border-border bg-gradient-to-b from-bg-surface to-bg-base p-4">
+    <div className="px-4 py-3">
       {/* Header */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
@@ -1331,10 +1325,16 @@ export function DashboardPage({
         </div>
 
         {/* ── Aside ── */}
-        <aside className="flex flex-col gap-3.5 min-w-0">
-          <StorageSavedCard dashboard={dashboard} />
-          <CustomCleanCard invoke={invoke} onNavigate={onNavigate} />
-          <WeekPanel dashboard={dashboard} />
+        <aside className="flex flex-col min-w-0 border-t border-border">
+          <div className="border-b border-border">
+            <StorageSavedCard dashboard={dashboard} />
+          </div>
+          <div className="border-b border-border">
+            <CustomCleanCard invoke={invoke} onNavigate={onNavigate} />
+          </div>
+          <div className="border-b border-border">
+            <WeekPanel dashboard={dashboard} />
+          </div>
         </aside>
       </div>
     </div>
