@@ -1,10 +1,10 @@
 FileLocker V1.2.1.0 Latest
 
-FileLocker 1.2.1.0
+# FileLocker 1.2.1.0
 
 FileLocker 1.2.1.0 is a System Care update focused on clearer cleanup decisions, safer startup and registry review, better installed-app management, and more reliable file browsing when FileLocker is running as administrator.
 
-Highlights
+# Highlights
 
 Rebuilt Custom Clean into a modern cleanup dashboard with space recoverable, items found, selected cleanup, last cleaned status, and safety/risk status visible at a glance.
 Expanded Custom Clean with more Windows, browser, application, gaming, developer, privacy, and advanced cleanup categories.
@@ -13,7 +13,7 @@ Improved Registry Fixer so it can find more issue types, including Application P
 Improved App Manager with clearer installed-app summaries, filtering, sorting, details, export, and uninstall actions.
 Fixed Browse Files and Browse Folder failures that could happen when FileLocker was running as administrator.
 
-What's New
+# What's New
 
 Custom Clean
 
@@ -68,7 +68,7 @@ Improved System Care pages with calmer tables, summary cards, details panels, an
 Improved selected-row highlights, status badges, filters, and empty states across System Care screens.
 Improved administrator-mode feedback for startup management.
 
-Fixes
+# Fixes
 
 Fixed elevated Browse Files and Browse Folder requests that could fail with "The request could not be completed."
 Fixed Custom Clean selection friction by adding visible select-all controls.
@@ -77,7 +77,7 @@ Fixed missing cleanup paths so they display as not found instead of looking like
 Fixed Registry Fixer coverage so registry scans are not limited to simple missing-file pointers.
 Fixed startup source actions so supported registry, file, task, WMI, and settings locations can be opened directly from the details panel.
 
-Security and Reliability
+# Security and Reliability
 
 FileLocker remains local-first. Settings, history, update state, cleanup metadata, startup restore data, and WebView profile data stay under local FileLocker app data locations.
 Custom Clean uses real scan results instead of hardcoded cleanup sizes.
@@ -89,7 +89,7 @@ Broken startup entry removal requires confirmation.
 App uninstall actions require confirmation and do not run silent uninstall commands.
 System cleanup and registry repair actions stay bounded to safer, explicit targets instead of guessing at broad system locations.
 
-Known Limitations
+# Known Limitations
 
 FileLocker cannot recover encrypted files if the password, recovery key, or keyfile is lost.
 Secure delete is best-effort. On SSDs, wear leveling and device-level remapping can make complete physical removal harder to guarantee.
@@ -98,7 +98,7 @@ Vendor uninstallers are controlled by the app publisher after FileLocker launche
 Custom Clean is intentionally conservative. Some advanced Windows cleanup areas are shown as unavailable or review-only when FileLocker cannot safely clean them through file-based cleanup.
 Some cleanup results can show unknown size when Windows does not expose a safe or complete file count before cleanup.
 
-Install and Update Notes
+# Install and Update Notes
 
 Download FileLocker-Setup-1.2.1.0.exe from the FileLocker 1.2.1.0 GitHub release when it is published.
 Close FileLocker before installing the update.
@@ -106,7 +106,7 @@ The installer may request administrator approval.
 Existing local settings, history, update preferences, cleanup metadata, startup restore data, and WebView2 profile data remain under local FileLocker app data locations.
 After updating, open FileLocker and confirm the app reports version 1.2.1.0.
 
-Checksums
+# Checksums
 
 Use the checksum below to verify the installer you downloaded matches the published release file.
 
