@@ -2,7 +2,7 @@
 
 ## Getting Help
 
-Use the GitHub issue tracker for reproducible bugs, release problems, installer problems, and feature requests.
+Use the GitHub issue tracker for reproducible bugs, release problems, setup/update problems, and feature requests.
 
 Before opening an issue:
 
@@ -24,11 +24,11 @@ For bug reports, include:
 - Reproduction steps using safe sample data.
 - Relevant error text.
 
-For release or installer issues, include:
+For release or setup/update issues, include:
 
-- Installer filename.
+- Setup installer filename, such as `FileLocker-Setup-1.2.2.1.exe`.
 - SHA-256 value if you checked it.
-- Whether Windows SmartScreen, antivirus, or administrator elevation blocked the installer.
+- Whether Windows SmartScreen, antivirus, or administrator elevation blocked setup.
 - Whether FileLocker opens after install.
 
 ## Security Issues

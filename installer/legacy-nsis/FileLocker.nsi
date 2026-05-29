@@ -1,3 +1,7 @@
+; Legacy FileLocker NSIS installer script.
+; Active packaging and updates use Inno Setup. This file is kept only for
+; historical reference and should not be used for new releases.
+
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "x64.nsh"
@@ -15,14 +19,14 @@
 !endif
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.2.2.0"
+  !define APP_VERSION "1.2.2.1"
 !endif
 
 !ifndef APP_FILE_VERSION
   !define APP_FILE_VERSION "${APP_VERSION}"
 !endif
 
-; Default publish folder used by scripts\Build-Installer.ps1.
+; Legacy default publish folder used by the old NSIS wrapper.
 !ifndef PUBLISH_DIR
   !define PUBLISH_DIR "..\artifacts\nsis\publish"
 !endif

@@ -273,15 +273,15 @@ namespace FileLocker
             try
             {
                 _isDownloadingUpdate = true;
-                SetAboutUpdateStatusText($"Updates: downloading {release.DisplayVersion}...");
-                SetStatus($"Downloading FileLocker {release.DisplayVersion} update...");
-
-                string installerPath = await UpdateService.DownloadInstallerAsync(release, CancellationToken.None);
+                SetAboutUpdateStatusText($"Updates: downloading installer for {release.DisplayVersion}...");
+                SetStatus($"Downloading and verifying FileLocker {release.DisplayVersion} installer...");
 
                 _updateSettings.SkippedVersion = null;
                 UpdateService.SaveSettings(_updateSettings);
 
-                SetAboutUpdateStatusText($"Updates: ready to install {release.DisplayVersion}");
+                string installerPath = await UpdateService.DownloadInstallerAsync(release, CancellationToken.None);
+
+                SetAboutUpdateStatusText($"Updates: launching installer for {release.DisplayVersion}");
                 SetStatus($"Launching FileLocker {release.DisplayVersion} installer...");
                 LaunchInstallerAndExit(installerPath);
             }
@@ -294,12 +294,6 @@ namespace FileLocker
             {
                 _isDownloadingUpdate = false;
             }
-        }
-
-        private void LaunchInstallerAndExit(string installerPath)
-        {
-            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(1), Environment.ProcessId);
-            Close();
         }
 
         private void SetAboutUpdateStatusText(string text)

@@ -18,7 +18,13 @@ ARM64/
 AppPackages/
 BundleArtifacts/
 artifacts/
+Releases/
 installer/FileLocker-Setup-*.exe
+installer/inno/Output/
+installer/inno/*.exe
+installer/inno/*.sha256
+*.sha256
+*.vpk
 *.appx
 *.appxbundle
 *.appxupload

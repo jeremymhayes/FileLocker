@@ -35,16 +35,9 @@ type SettingsPageProps = {
   onDashboardUpdate: (dashboard: DashboardState) => void
 }
 
-type UpdaterCleanupTestResult = {
-  installerRan: boolean
-  installerDeleted: boolean
-  exitCode: number
-  testDirectory: string
-}
-
 type SettingsTab = "general" | "files" | "privacy" | "updates" | "integration" | "about"
 type HistoryAction = "json" | "csv" | "clear"
-type UpdateAction = "check" | "download" | "install" | "skip" | "clear-skip" | "test-dialog" | "test-startup" | "test-cleanup"
+type UpdateAction = "check" | "download" | "install" | "skip" | "clear-skip" | "test-dialog" | "test-startup"
 
 const tabs: Array<{ key: SettingsTab; label: string; icon: LucideIcon }> = [
   { key: "general", label: "General", icon: Paintbrush },
@@ -342,7 +335,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
       const response = await invoke<{ installerPath: string; fileName: string }>("updates.install")
       setDownloadedInstallerPath(response.installerPath)
       setUpdateStatus(`Launching ${response.fileName}`)
-      toast.success(`Launching ${response.fileName}. FileLocker will close to finish the update.`)
+      toast.success(`Launching ${response.fileName}. FileLocker will close while the installer updates the app.`)
     } catch (error) {
       const message = getErrorMessage(error, "Update install failed.")
       setUpdateStatus(message)
@@ -433,26 +426,6 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
     }
   }
 
-  async function testInstallerCleanup() {
-    if (updateAction) {
-      return
-    }
-
-    setUpdateAction("test-cleanup")
-    try {
-      setUpdaterTestStatus("Running installer cleanup test")
-      const response = await invoke<UpdaterCleanupTestResult>("updates.testInstallerCleanup")
-      const passed = response.installerRan && response.installerDeleted && response.exitCode === 0
-      setUpdaterTestStatus(passed ? "Installer cleanup test passed" : `Installer cleanup test failed: ${response.testDirectory}`)
-      toast[passed ? "success" : "error"](passed ? "Installer cleanup test passed." : "Installer cleanup test failed.")
-    } catch (error) {
-      setUpdaterTestStatus("Installer cleanup test failed")
-      toast.error(error instanceof Error ? error.message : "Installer cleanup test failed.")
-    } finally {
-      setUpdateAction(null)
-    }
-  }
-
   async function revealDownloadedInstaller() {
     if (!downloadedInstallerPath) {
       return
@@ -461,7 +434,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
     try {
       await invoke("files.revealPath", { path: downloadedInstallerPath })
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not open the installer folder.")
+      toast.error(error instanceof Error ? error.message : "Could not open the update installer folder.")
     }
   }
 
@@ -704,7 +677,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                     </Button>
                     <Button variant="secondary" size="sm" onClick={installUpdate} disabled={updateBusy}>
                       {updateAction === "install" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : null}
-                      {updateAction === "install" ? "Launching" : "Install"}
+                      {updateAction === "install" ? "Installing" : "Install"}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={skipUpdate} disabled={updateBusy}>
                       {updateAction === "skip" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : null}
@@ -714,7 +687,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                 </SettingRow>
               ) : null}
               {downloadedInstallerPath ? (
-                <SettingRow label="Installer">
+                <SettingRow label="Update installer">
                   <Button variant="outline" size="sm" onClick={revealDownloadedInstaller}>
                     <FolderOpen data-icon="inline-start" />
                     Open Folder
@@ -731,10 +704,6 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                     <Button variant="secondary" size="sm" onClick={testStartupUpdateCheck} disabled={updateBusy}>
                       {updateAction === "test-startup" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <RefreshCw data-icon="inline-start" />}
                       {updateAction === "test-startup" ? "Checking" : "Check"}
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={testInstallerCleanup} disabled={updateBusy}>
-                      {updateAction === "test-cleanup" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
-                      {updateAction === "test-cleanup" ? "Testing" : "Cleanup"}
                     </Button>
                   </div>
                 </SettingRow>

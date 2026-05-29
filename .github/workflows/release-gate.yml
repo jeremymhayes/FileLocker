@@ -30,8 +30,9 @@ jobs:
           cache: npm
           cache-dependency-path: FileLocker/frontend/package-lock.json
 
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
 
       - name: Run release gate
         shell: pwsh

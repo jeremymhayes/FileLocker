@@ -18,7 +18,7 @@ Requirements:
 - .NET SDK matching `global.json`.
 - Node.js 22 or newer for the frontend release gate.
 - Visual Studio 2022 with Windows App SDK support for full desktop development.
-- NSIS for installer builds.
+- Inno Setup 6 for building the public Windows installer.
 
 Install frontend dependencies:
 
@@ -54,6 +54,12 @@ Run release gate checks from the repository root:
 .\scripts\Test-ReleaseGate.ps1 -Configuration Release -RuntimeIdentifier win-x64
 ```
 
+Build the public installer:
+
+```powershell
+.\scripts\Build-InnoInstaller.ps1 -Configuration Release -RuntimeIdentifier win-x64
+```
+
 ## Pull Request Guidelines
 
 Before opening a pull request:
@@ -87,7 +93,7 @@ Good pull requests include:
 
 Release preparation should include:
 
-- Version metadata sync across project, app manifest, package metadata, installer script, README, release notes, and release gate report.
+- Version metadata sync across project, app manifest, Inno installer metadata, README, release notes, and release gate report.
 - `npm ci`
 - `npm run build`
 - `dotnet restore`
@@ -95,7 +101,7 @@ Release preparation should include:
 - `dotnet test -c Release`
 - `scripts\Test-BridgeContracts.ps1`
 - `scripts\Test-ReleaseGate.ps1 -Configuration Release -RuntimeIdentifier win-x64 -RequireInstallerAssets`
-- Installer artifact and SHA-256 sidecar validation.
+- Inno setup executable and SHA-256 sidecar validation.
 - Manual smoke testing of install, launch, About version, encrypt/decrypt, hashing, and System Care scan flows.
 
 Do not create tags or publish releases from a dirty working tree.

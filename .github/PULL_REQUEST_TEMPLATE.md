@@ -21,8 +21,8 @@
 - [ ] No secrets, passwords, key material, or private file contents are logged or committed.
 - [ ] Destructive workflows still require explicit user action.
 - [ ] Bridge action changes are reflected in `contracts/bridge-actions.json`.
-- [ ] Version, installer, or release changes include matching docs/release-note updates.
-- [ ] Generated installers and local artifacts are not committed.
+- [ ] Version, setup/update, or release changes include matching docs/release-note updates.
+- [ ] Generated Inno installer artifacts and local build outputs are not committed.
 
 ## Screenshots
 

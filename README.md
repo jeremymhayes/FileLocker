@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jeremymhayes/FileLocker/releases/latest"><strong>Download the latest installer</strong></a>
+  <a href="https://github.com/jeremymhayes/FileLocker/releases/latest"><strong>Download the latest release</strong></a>
   ·
   <a href="https://github.com/jeremymhayes/FileLocker/issues">Report an issue</a>
   ·
@@ -51,18 +51,21 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current version | `1.2.2.0` |
-| Installer | `FileLocker-Setup-1.2.2.0.exe` |
+| Current version | `1.2.2.1` |
+| Installer | Inno Setup installer from the latest GitHub release |
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
 | New `.locked` algorithms | Runtime-supported AEAD options: AES-256-GCM, ChaCha20-Poly1305, AES-256-GCM-SIV |
-| Updates | Optional checks against GitHub Releases |
+| Updates | Optional GitHub Releases checks for signed or checksum-verified setup installers |
 | Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
 
-## New In 1.2.2.0
+## New In 1.2.2.1
 
-- Fixed the in-app updater install flow so FileLocker closes first, then a helper launches the downloaded installer and removes it after the installer exits.
+- Migrated public installation and in-app updates to an Inno Setup installer named `FileLocker-Setup-1.2.2.1.exe`.
+- Restored normal Windows installer behavior: Program Files install location, setup wizard, upgrade support, shortcuts, launch-after-install, and Apps & Features uninstall.
+- Updated the in-app updater to download the setup installer from GitHub Releases, verify SHA-256 when a sidecar is published, launch the installer helper, and let the installer replace Program Files files.
+- Kept Windows assembly, file, manifest, installer, README, release notes, and release-gate metadata aligned at `1.2.2.1`.
 - Standardized new `.locked` encryption choices around runtime-supported AEAD algorithms with shared metadata, labels, validation, and payload headers.
 - Added stronger v4 `.locked` payload metadata checks while keeping existing AES-256-GCM payloads decryptable.
 - Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so invalid or unsafe inputs fail earlier with clearer messages.
@@ -132,8 +135,8 @@ The app keeps a strong boundary between the interface and the file-handling logi
 ## Download And Install
 
 1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download `FileLocker-Setup-1.2.2.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
-3. Run the installer.
+2. Download `FileLocker-Setup-1.2.2.1.exe` or the newest `FileLocker-Setup-{version}.exe` asset.
+3. Run the setup executable and follow the installer wizard.
 4. Launch FileLocker from the Start Menu or desktop shortcut.
 
 FileLocker is distributed as a 64-bit Windows desktop app. It works offline after installation.
@@ -180,7 +183,7 @@ FileLocker is distributed as a 64-bit Windows desktop app. It works offline afte
 - Startup entry review with reversible disable support
 - Installed app inventory and visible uninstaller launch
 - Approved app leftover cleanup for AppData and ProgramData
-- Update checks against GitHub Releases with installer validation
+- GitHub Releases update checks with setup-installer checksum verification
 
 </details>
 
@@ -205,9 +208,9 @@ Requirements:
 
 - Windows 10 or Windows 11
 - .NET 10 SDK
-- Node.js 20 or newer
+- Node.js 22 or newer
+- Inno Setup 6 if you need to build the public installer
 - Visual Studio 2022 with WinUI / Windows App SDK support if you want the full desktop development setup
-- NSIS if you want to build the installer
 
 Build the frontend and app:
 
@@ -226,14 +229,14 @@ Run tests:
 dotnet test --project ..\FileLocker.Tests\FileLocker.Tests.csproj -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:SelfContained=true -p:SkipFrontendBuild=true
 ```
 
-Build the installer:
+Build the Inno Setup installer:
 
 ```powershell
 cd ..
-.\scripts\Build-Installer.ps1 -Configuration Release
+.\scripts\Build-InnoInstaller.ps1 -Configuration Release -RuntimeIdentifier win-x64
 ```
 
-The installer flow publishes the app into `artifacts\nsis\publish` and produces a `FileLocker-Setup-<version>.exe` installer in `artifacts\nsis`.
+The installer flow publishes the app into a clean staging folder, compiles `installer\inno\FileLocker.iss`, and writes `FileLocker-Setup-1.2.2.1.exe` plus `FileLocker-Setup-1.2.2.1.exe.sha256` to `artifacts\inno`.
 
 </details>
 
@@ -243,7 +246,7 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
-- [FileLocker 1.2.2.0 release notes](RELEASE_NOTES_1.2.2.0.md)
+- [FileLocker 1.2.2.1 release notes](RELEASE_NOTES_1.2.2.1.md)
 - [FileLocker 1.2.1.0 release notes](RELEASE_NOTES_1.2.1.0.md)
 
 ## Project Documents

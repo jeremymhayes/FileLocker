@@ -48,7 +48,6 @@
     "updates.clearSkip",
     "updates.testDialog",
     "updates.testStartupCheck",
-    "updates.testInstallerCleanup",
     "history.clear",
     "history.export"
   ]

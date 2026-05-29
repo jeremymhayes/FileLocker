@@ -43,8 +43,7 @@ export function UpdateDialog({ update, isInstalling, isSkipping, onInstall, onSk
           </AlertDialogMedia>
           <AlertDialogTitle>FileLocker {release?.displayVersion} is available</AlertDialogTitle>
           <AlertDialogDescription>
-            You are running {update?.currentVersion}. Download and install the update now? Everything happens on this
-            device.
+            You are running {update?.currentVersion}. Download the verified installer and update FileLocker now?
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-bg-subtle/45 p-3 text-sm leading-[1.55] text-secondary">
@@ -59,7 +58,7 @@ export function UpdateDialog({ update, isInstalling, isSkipping, onInstall, onSk
           </AlertDialogCancel>
           <Button onClick={onInstall} disabled={busy}>
             <Download data-icon="inline-start" />
-            {isInstalling ? "Launching" : "Download and Install"}
+            {isInstalling ? "Installing" : "Download and Install"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

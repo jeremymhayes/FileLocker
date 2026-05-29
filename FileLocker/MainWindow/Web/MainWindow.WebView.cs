@@ -339,7 +339,6 @@ namespace FileLocker
 #if DEBUG
                 "updates.testDialog" => TestUpdateDialogAsync(),
                 "updates.testStartupCheck" => TestUpdateStartupCheckAsync(),
-                "updates.testInstallerCleanup" => TestInstallerCleanupAsync(),
 #endif
                 "history.clear" => ClearHistoryFromBridgeAsync(),
                 "history.export" => ExportHistoryFromBridgeAsync(ReadPayload<HistoryExportRequest>(request.Payload)),
@@ -2130,20 +2129,24 @@ namespace FileLocker
                 throw new InvalidOperationException(result.StatusMessage);
             }
 
-            string installerPath = await UpdateService.DownloadInstallerAsync(result.Release, CancellationToken.None);
+            UpdateDownloadResult download = await UpdateService.DownloadUpdateAsync(CancellationToken.None);
             _updateSettings.SkippedVersion = null;
             UpdateService.SaveSettings(_updateSettings);
             return new DownloadedUpdateDto(
-                installerPath,
-                Path.GetFileName(installerPath),
-                ToUpdateReleaseDto(result.Release));
+                download.InstallerPath,
+                download.FileName,
+                ToUpdateReleaseDto(download.Release));
         }
 
         private async Task<object?> InstallUpdateFromBridgeAsync()
         {
+            SetAboutUpdateStatusText("Updates: downloading installer");
+            SetStatus("Downloading and verifying the FileLocker installer...");
             DownloadedUpdateDto downloadedUpdate = await DownloadUpdateInstallerAsync();
+            _updateSettings.SkippedVersion = null;
+            UpdateService.SaveSettings(_updateSettings);
             SetAboutUpdateStatusText("Updates: launching installer");
-            SetStatus("Launching FileLocker update installer...");
+            SetStatus("Launching the FileLocker installer...");
             LaunchInstallerAndExit(downloadedUpdate.InstallerPath);
             return downloadedUpdate;
         }
@@ -2173,12 +2176,12 @@ namespace FileLocker
         {
             var mockRelease = new UpdateReleaseInfo(
                 new Version(99, 99, 99, 0),
-                "99.99.99",
-                "v99.99.99",
+                "99.99.99.0",
+                "v99.99.99.0",
                 UpdateService.GitHubRepositoryUrl,
-                "## Test Release\n\nThis is a **mock** update dialog for testing the updater UI.\n\n**New in this build:**\n- Auto-check on startup\n- Installer auto-delete after install\n- Dev testing hooks\n\nClicking Install will attempt a download from a fake URL and fail — that is expected.",
-                "FileLocker-test-setup.exe",
-                "https://example.invalid/test-installer.exe",
+                "## Test Release\n\nThis is a **mock** update dialog for testing the updater UI.\n\n**New in this build:**\n- Auto-check on startup\n- Inno installer download and checksum verification\n- Dev testing hooks\n\nClicking Install will use the real installer helper and may fail unless the mock asset exists.",
+                "FileLocker-Setup-99.99.99.0.exe",
+                $"{UpdateService.GitHubLatestReleaseUrl}/download/FileLocker-Setup-99.99.99.0.exe",
                 null,
                 null);
 
@@ -2191,41 +2194,6 @@ namespace FileLocker
             return await CheckForUpdatesFromBridgeAsync();
         }
 
-        private async Task<object?> TestInstallerCleanupAsync()
-        {
-            string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(testDirectory);
-
-            string sourceExecutablePath = Path.Combine(Environment.SystemDirectory, "whoami.exe");
-            string installerPath = Path.Combine(testDirectory, "FileLocker Fake Installer.exe");
-            File.Copy(sourceExecutablePath, installerPath);
-
-            using Process process = UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.Zero);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await process.WaitForExitAsync(timeout.Token);
-
-            bool installerRan = process.ExitCode == 0;
-            bool installerDeleted = !File.Exists(installerPath);
-            if (installerRan && installerDeleted)
-            {
-                try
-                {
-                    Directory.Delete(testDirectory, recursive: true);
-                }
-                catch
-                {
-                    // Best-effort cleanup only.
-                }
-            }
-
-            return new
-            {
-                installerRan,
-                installerDeleted,
-                process.ExitCode,
-                testDirectory
-            };
-        }
 #endif
 
         private static object ToUpdateCheckDto(UpdateCheckResult result)
@@ -2547,6 +2515,16 @@ namespace FileLocker
                 release.Sha256DigestHex,
                 release.Sha256DigestDownloadUrl
             };
+        }
+
+        private void LaunchInstallerAndExit(string installerPath)
+        {
+            UpdateService.StartInstallerAndDeleteWhenClosed(
+                installerPath,
+                TimeSpan.FromSeconds(1),
+                Environment.ProcessId,
+                GetCurrentExecutablePath());
+            Close();
         }
 
         private void ApplyPreferencesDto(PreferencesDto? dto)
