@@ -13,7 +13,6 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -121,9 +120,9 @@ namespace FileLocker
                 new EncryptionProfile
                 {
                     Name = "Recommended",
-                    Description = "Balanced default. AES-GCM, verify writes, keep originals, and avoid destructive cleanup.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Description = $"Balanced default. {EncryptionAlgorithmCatalog.Aes256Gcm}, verify writes, keep originals, and avoid destructive cleanup.",
+                    Algorithm = EncryptionAlgorithmCatalog.Aes256Gcm,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm),
                     CompressFiles = true,
                     ScrambleNames = false,
                     UseSteganography = false,
@@ -137,8 +136,8 @@ namespace FileLocker
                 {
                     Name = "Private Archive",
                     Description = "Good for long-term private storage. Scrambles names and randomizes metadata while keeping source files.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Algorithm = EncryptionAlgorithmCatalog.Aes256Gcm,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm),
                     CompressFiles = true,
                     ScrambleNames = true,
                     UseSteganography = false,
@@ -151,9 +150,9 @@ namespace FileLocker
                 new EncryptionProfile
                 {
                     Name = "Fast Local Lock",
-                    Description = "Optimized for speed on already-compressed media. Keeps originals and skips compression.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Description = "Optimized for fast software encryption on already-compressed media. Keeps originals and skips compression.",
+                    Algorithm = EncryptionAlgorithmCatalog.ChaCha20Poly1305,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.ChaCha20Poly1305),
                     CompressFiles = false,
                     ScrambleNames = false,
                     UseSteganography = false,
@@ -167,8 +166,8 @@ namespace FileLocker
                 {
                     Name = "Transfer Copy",
                     Description = "Creates an encrypted payload and removes the source only after a verified successful write.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Algorithm = EncryptionAlgorithmCatalog.Aes256Gcm,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm),
                     CompressFiles = true,
                     ScrambleNames = false,
                     UseSteganography = false,
@@ -181,9 +180,9 @@ namespace FileLocker
                 new EncryptionProfile
                 {
                     Name = "Shred After Lock",
-                    Description = "Most aggressive cleanup. Verifies output, then securely deletes originals after success.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Description = $"Most aggressive cleanup. Uses {EncryptionAlgorithmCatalog.Aes256GcmSiv}, verifies output, then securely deletes originals after success.",
+                    Algorithm = EncryptionAlgorithmCatalog.Aes256GcmSiv,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256GcmSiv),
                     CompressFiles = true,
                     ScrambleNames = true,
                     UseSteganography = false,
@@ -196,9 +195,9 @@ namespace FileLocker
                 new EncryptionProfile
                 {
                     Name = "Stealth PNG",
-                    Description = "Wraps the encrypted payload in a PNG container for less conspicuous file handling.",
-                    Algorithm = "AES-GCM",
-                    KeySizeBits = 256,
+                    Description = $"Wraps an {EncryptionAlgorithmCatalog.Aes256Gcm} payload in a PNG container for less conspicuous file handling.",
+                    Algorithm = EncryptionAlgorithmCatalog.Aes256Gcm,
+                    KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm),
                     CompressFiles = true,
                     ScrambleNames = false,
                     UseSteganography = true,
@@ -220,6 +219,13 @@ namespace FileLocker
 
         private bool ProfileAllowedForCurrentExperience(EncryptionProfile profile)
         {
+            if (!EncryptionAlgorithmCatalog.TryGetDefinition(profile.Algorithm, out EncryptionAlgorithmDefinition? definition) ||
+                !PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime(definition) ||
+                (profile.UseSteganography && !string.Equals(definition.Id, EncryptionAlgorithmCatalog.Aes256Gcm, StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
             return _currentExperienceLevel switch
             {
                 UserExperienceLevel.Beginner => string.Equals(profile.Name, "Recommended", StringComparison.OrdinalIgnoreCase),
@@ -241,12 +247,11 @@ namespace FileLocker
             {
                 try
                 {
-                    byte[] protectedBytes = await File.ReadAllBytesAsync(protectedPath);
-                    byte[] unprotectedBytes = AppPreferencesStore.UnprotectForCurrentUser(protectedBytes);
-                    var loaded = JsonSerializer.Deserialize<List<EncryptionProfile>>(Encoding.UTF8.GetString(unprotectedBytes), JsonOptions);
+                    byte[] protectedBytes = await ReadStoredJsonBytesAsync(protectedPath);
+                    var loaded = DeserializeProtectedJsonForCurrentUser<List<EncryptionProfile>>(protectedBytes);
                     if (loaded != null)
                     {
-                        _customProfiles.AddRange(loaded.Where(profile => !profile.IsBuiltIn));
+                        _customProfiles.AddRange(SanitizeCustomProfiles(loaded));
                     }
                 }
                 catch
@@ -258,11 +263,11 @@ namespace FileLocker
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(path);
+                    string json = await ReadStoredJsonTextAsync(path);
                     var loaded = JsonSerializer.Deserialize<List<EncryptionProfile>>(json, JsonOptions);
                     if (loaded != null)
                     {
-                        _customProfiles.AddRange(loaded.Where(profile => !profile.IsBuiltIn));
+                        _customProfiles.AddRange(SanitizeCustomProfiles(loaded));
                     }
                 }
                 catch
@@ -281,10 +286,63 @@ namespace FileLocker
 
         private async Task SaveProfilesAsync()
         {
-            string json = JsonSerializer.Serialize(_customProfiles, JsonOptions);
-            byte[] protectedBytes = AppPreferencesStore.ProtectForCurrentUser(Encoding.UTF8.GetBytes(json));
+            List<EncryptionProfile> profiles = SanitizeCustomProfiles(_customProfiles).ToList();
+            byte[] protectedBytes = ProtectJsonForCurrentUser(profiles);
             await AppPreferencesStore.WriteAllBytesAtomicallyAsync(GetProtectedProfilesPath(), protectedBytes);
             TryDeleteFile(GetProfilesPath());
+        }
+
+        private static IReadOnlyList<EncryptionProfile> SanitizeCustomProfiles(IEnumerable<EncryptionProfile>? profiles)
+        {
+            var sanitizedProfiles = new List<EncryptionProfile>();
+
+            foreach (EncryptionProfile profile in (profiles ?? Enumerable.Empty<EncryptionProfile>()).OfType<EncryptionProfile>())
+            {
+                if (profile.IsBuiltIn)
+                {
+                    continue;
+                }
+
+                string name = NormalizeProfileName(profile.Name);
+                if (string.IsNullOrWhiteSpace(name) ||
+                    IsBuiltInProfileName(name) ||
+                    !EncryptionAlgorithmCatalog.TryGetDefinition(profile.Algorithm, out EncryptionAlgorithmDefinition? definition) ||
+                    !PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime(definition))
+                {
+                    continue;
+                }
+
+                var sanitizedProfile = new EncryptionProfile
+                {
+                    Name = name,
+                    Description = profile.Description ?? string.Empty,
+                    Algorithm = definition.DisplayName,
+                    KeySizeBits = definition.KeySizeBits,
+                    CompressFiles = profile.CompressFiles,
+                    ScrambleNames = profile.ScrambleNames,
+                    UseSteganography = profile.UseSteganography && definition.CanUsePngCarrier,
+                    RandomizeMetadata = profile.RandomizeMetadata,
+                    RemoveOriginalsAfterSuccess = profile.RemoveOriginalsAfterSuccess,
+                    SecureDeleteOriginals = profile.RemoveOriginalsAfterSuccess && profile.SecureDeleteOriginals,
+                    VerifyAfterWrite = profile.VerifyAfterWrite,
+                    BackupFolderPath = profile.BackupFolderPath?.Trim() ?? string.Empty,
+                    KeyfilePath = profile.KeyfilePath?.Trim() ?? string.Empty,
+                    IsBuiltIn = false
+                };
+
+                int existingIndex = sanitizedProfiles.FindIndex(existing =>
+                    string.Equals(existing.Name, sanitizedProfile.Name, StringComparison.OrdinalIgnoreCase));
+                if (existingIndex >= 0)
+                {
+                    sanitizedProfiles[existingIndex] = sanitizedProfile;
+                }
+                else
+                {
+                    sanitizedProfiles.Add(sanitizedProfile);
+                }
+            }
+
+            return sanitizedProfiles;
         }
 
         private async Task SaveProfilesSafelyAsync()
@@ -333,9 +391,15 @@ namespace FileLocker
 
         private static string BuildCustomProfileDescription(EncryptionProfile profile)
         {
+            string algorithm = EncryptionAlgorithmCatalog.TryNormalize(profile.Algorithm, out string normalizedAlgorithm)
+                ? normalizedAlgorithm
+                : profile.Algorithm;
+            int keySizeBits = EncryptionAlgorithmCatalog.CanEncryptNewPayload(algorithm)
+                ? EncryptionAlgorithmCatalog.GetKeySizeBits(algorithm)
+                : profile.KeySizeBits;
             var parts = new List<string>
             {
-                $"{profile.Algorithm} {profile.KeySizeBits}-bit"
+                OperationHistoryAlgorithm.Format(algorithm, keySizeBits)
             };
 
             if (profile.CompressFiles) parts.Add("compression");
@@ -382,17 +446,23 @@ namespace FileLocker
 
             string protectedPath = GetProtectedHistoryPath();
             string redactedPath = GetHistoryPath();
+            bool loadedHistory = false;
 
             if (_preferences.HistoryPrivacyMode == HistoryPrivacyMode.Full && File.Exists(protectedPath))
             {
                 try
                 {
-                    byte[] protectedBytes = await File.ReadAllBytesAsync(protectedPath);
-                    byte[] unprotectedBytes = AppPreferencesStore.UnprotectForCurrentUser(protectedBytes);
-                    var loaded = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(Encoding.UTF8.GetString(unprotectedBytes), JsonOptions);
+                    byte[] protectedBytes = await ReadStoredJsonBytesAsync(protectedPath);
+                    var loaded = DeserializeProtectedJsonForCurrentUser<List<OperationHistoryEntry>>(protectedBytes);
                     if (loaded != null)
                     {
-                        _operationHistory.AddRange(loaded.OrderByDescending(entry => entry.TimestampUtc));
+                        _operationHistory.AddRange(OperationHistorySanitizer.CloneEntries(
+                            loaded
+                                .OfType<OperationHistoryEntry>()
+                                .OrderByDescending(entry => entry.TimestampUtc)
+                                .Take(MaxHistoryEntries),
+                            includeFullPaths: true));
+                        loadedHistory = true;
                     }
                 }
                 catch
@@ -400,15 +470,21 @@ namespace FileLocker
                     // Ignore malformed history and continue with an empty view.
                 }
             }
-            else if (File.Exists(redactedPath))
+
+            if (!loadedHistory && File.Exists(redactedPath))
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(redactedPath);
+                    string json = await ReadStoredJsonTextAsync(redactedPath);
                     var loaded = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json, JsonOptions);
                     if (loaded != null)
                     {
-                        _operationHistory.AddRange(loaded.OrderByDescending(entry => entry.TimestampUtc));
+                        _operationHistory.AddRange(OperationHistorySanitizer.CloneEntries(
+                            loaded
+                                .OfType<OperationHistoryEntry>()
+                                .OrderByDescending(entry => entry.TimestampUtc)
+                                .Take(MaxHistoryEntries),
+                            includeFullPaths: true));
                     }
                 }
                 catch
@@ -439,15 +515,15 @@ namespace FileLocker
 
             if (_preferences.HistoryPrivacyMode == HistoryPrivacyMode.Full)
             {
-                string json = JsonSerializer.Serialize(_operationHistory.Take(MaxHistoryEntries).ToList(), JsonOptions);
-                byte[] protectedBytes = AppPreferencesStore.ProtectForCurrentUser(Encoding.UTF8.GetBytes(json));
+                byte[] protectedBytes = ProtectJsonForCurrentUser(
+                    CloneHistoryEntries(_operationHistory.Take(MaxHistoryEntries).ToList(), includeFullPaths: true));
                 await AppPreferencesStore.WriteAllBytesAtomicallyAsync(protectedPath, protectedBytes);
                 TryDeleteFile(redactedPath);
                 return;
             }
 
             string redactedJson = JsonSerializer.Serialize(
-                RedactHistoryEntries(_operationHistory.Take(MaxHistoryEntries).ToList()),
+                CloneHistoryEntries(_operationHistory.Take(MaxHistoryEntries).ToList(), includeFullPaths: false),
                 JsonOptions);
             await AppPreferencesStore.WriteAllTextAtomicallyAsync(redactedPath, redactedJson, Encoding.UTF8);
             TryDeleteFile(protectedPath);
@@ -465,60 +541,14 @@ namespace FileLocker
             }
         }
 
-        private static List<OperationHistoryEntry> RedactHistoryEntries(List<OperationHistoryEntry> entries)
+        private static List<OperationHistoryEntry> CloneHistoryEntries(List<OperationHistoryEntry>? entries, bool includeFullPaths)
         {
-            return entries.Select(entry => new OperationHistoryEntry
-            {
-                Id = entry.Id,
-                TimestampUtc = entry.TimestampUtc,
-                Operation = entry.Operation,
-                ProfileName = entry.ProfileName,
-                Algorithm = entry.Algorithm,
-                Mode = entry.Mode,
-                KeySizeBits = entry.KeySizeBits,
-                UsedKeyfile = entry.UsedKeyfile,
-                RemoveOriginalsAfterSuccess = entry.RemoveOriginalsAfterSuccess,
-                SecureDeleteOriginals = entry.SecureDeleteOriginals,
-                VerifyAfterWrite = entry.VerifyAfterWrite,
-                BackupFolderPath = SensitiveDataRedactor.RedactPath(entry.BackupFolderPath),
-                Cancelled = entry.Cancelled,
-                SuccessCount = entry.SuccessCount,
-                FailureCount = entry.FailureCount,
-                TotalOriginalSizeBytes = entry.TotalOriginalSizeBytes,
-                TotalOutputSizeBytes = entry.TotalOutputSizeBytes,
-                TotalStorageSavedBytes = entry.TotalStorageSavedBytes,
-                TotalStorageAddedBytes = entry.TotalStorageAddedBytes,
-                ElapsedMilliseconds = entry.ElapsedMilliseconds,
-                CompressionRequestedCount = entry.CompressionRequestedCount,
-                CompressionAppliedCount = entry.CompressionAppliedCount,
-                CompressionSkippedCount = entry.CompressionSkippedCount,
-                FailureCategorySummary = entry.FailureCategorySummary,
-                Results = entry.Results.Select(result => new FileOperationResult
-                {
-                    SourcePath = SensitiveDataRedactor.RedactPath(result.SourcePath),
-                    OutputPath = SensitiveDataRedactor.RedactPath(result.OutputPath),
-                    BackupPath = SensitiveDataRedactor.RedactPath(result.BackupPath),
-                    Status = result.Status,
-                    Message = SensitiveDataRedactor.RedactMessage(result.Message),
-                    OriginalRetained = result.OriginalRetained,
-                    OutputVerified = result.OutputVerified,
-                    OriginalSizeBytes = result.OriginalSizeBytes,
-                    OutputSizeBytes = result.OutputSizeBytes,
-                    CompressionRequested = result.CompressionRequested,
-                    CompressionApplied = result.CompressionApplied,
-                    CompressionReason = result.CompressionReason,
-                    EstimatedCompressedSizeBytes = result.EstimatedCompressedSizeBytes,
-                    CompressedSizeBytes = result.CompressedSizeBytes,
-                    ElapsedMilliseconds = result.ElapsedMilliseconds,
-                    FailureCategory = result.FailureCategory,
-                    HashValue = result.HashValue
-                }).ToList()
-            }).ToList();
+            return OperationHistorySanitizer.CloneEntries(entries, includeFullPaths);
         }
 
         private static void TryDeleteFile(string path)
         {
-            FileCleanupService.TryDeleteTemporaryFile(path, out _);
+            FileCleanupService.TryDeleteFile(path, out _);
         }
 
         private void RefreshHistoryItems()
@@ -527,11 +557,12 @@ namespace FileLocker
             foreach (var entry in _operationHistory.Where(ShouldShowHistoryEntry).Take(MaxHistoryEntries))
             {
                 string metrics = BuildHistoryMetricsSummary(entry);
+                string algorithm = OperationHistoryAlgorithm.Format(entry.Algorithm, entry.KeySizeBits);
                 _jobHistoryItems.Add(new JobHistoryItem
                 {
                     Id = entry.Id,
                     Title = $"{entry.Operation} • {entry.TimestampUtc.ToLocalTime():g}",
-                    Subtitle = $"{entry.Algorithm} {entry.KeySizeBits}-bit • Profile: {entry.ProfileName}{metrics}",
+                    Subtitle = $"{algorithm} • Profile: {entry.ProfileName}{metrics}",
                     ResultSummary = entry.Cancelled
                         ? $"Cancelled after {entry.SuccessCount} success(es)"
                         : $"{entry.SuccessCount} success • {entry.FailureCount} failed"
@@ -578,18 +609,18 @@ namespace FileLocker
         private static string BuildHistoryMetricsSummary(OperationHistoryEntry entry)
         {
             var parts = new List<string>();
-            if (entry.TotalOutputSizeBytes.HasValue)
+            if (OperationHistorySanitizer.NormalizeNonNegativeMetric(entry.TotalOutputSizeBytes) is long outputSizeBytes)
             {
-                parts.Add($"output {FormatDashboardFileSize(entry.TotalOutputSizeBytes.Value)}");
+                parts.Add($"output {FormatDashboardFileSize(outputSizeBytes)}");
             }
 
-            if (entry.TotalStorageSavedBytes is > 0)
+            if (OperationHistorySanitizer.NormalizeNonNegativeMetric(entry.TotalStorageSavedBytes) is long savedBytes && savedBytes > 0)
             {
-                parts.Add($"saved {FormatDashboardFileSize(entry.TotalStorageSavedBytes.Value)}");
+                parts.Add($"saved {FormatDashboardFileSize(savedBytes)}");
             }
-            else if (entry.TotalStorageAddedBytes is > 0)
+            else if (OperationHistorySanitizer.NormalizeNonNegativeMetric(entry.TotalStorageAddedBytes) is long addedBytes && addedBytes > 0)
             {
-                parts.Add($"compression increased {FormatDashboardFileSize(entry.TotalStorageAddedBytes.Value)}");
+                parts.Add($"compression increased {FormatDashboardFileSize(addedBytes)}");
             }
 
             if (entry.CompressionRequestedCount > 0)
@@ -635,9 +666,7 @@ namespace FileLocker
 
             FullPathExportsToggle.IsOn = _preferences.IncludeFullPathsInExports;
 
-            string timestampPolicy = string.IsNullOrWhiteSpace(_preferences.OutputTimestampPolicy)
-                ? "Current time"
-                : _preferences.OutputTimestampPolicy;
+            string timestampPolicy = AppPreferencesStore.NormalizeOutputTimestampPolicy(_preferences.OutputTimestampPolicy);
 
             foreach (ComboBoxItem item in OutputTimestampPolicyCombo.Items.OfType<ComboBoxItem>())
             {
@@ -756,8 +785,10 @@ namespace FileLocker
         private void EnforceExperienceModeConstraints()
         {
             SetComboSelection(OperationModeCombo, "Encrypt / Decrypt");
-            SetComboSelection(AlgorithmCombo, "AES-GCM");
-            SetComboSelection(KeySizeCombo, "256");
+            SetComboSelection(AlgorithmCombo, EncryptionAlgorithmCatalog.Aes256Gcm);
+            SetComboSelection(
+                KeySizeCombo,
+                EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm).ToString(CultureInfo.InvariantCulture));
 
             if (_currentExperienceLevel == UserExperienceLevel.Beginner)
             {
@@ -1084,15 +1115,16 @@ namespace FileLocker
 
             try
             {
-                if (IsPayloadV3File(candidate.SourcePath))
+                string candidatePath = RequireExistingFile(candidate.SourcePath);
+                if (IsPayloadV3File(candidatePath))
                 {
-                    using FileStream stream = new(candidate.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    using FileStream stream = new(candidatePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                     PayloadHeader header = PayloadChunkedService.InspectHeader(stream);
                     PayloadInspectorSection.Visibility = Visibility.Visible;
                     PayloadInspectorText.Text =
-                        $"File: {Path.GetFileName(candidate.SourcePath)}\n" +
+                        $"File: {Path.GetFileName(candidatePath)}\n" +
                         $"Format version: {header.Version}\n" +
-                        $"Algorithm: AES-256-GCM\n" +
+                        $"Algorithm: {EncryptionAlgorithmCatalog.GetDisplayName(header.AlgorithmId)}\n" +
                         $"KDF: Argon2id ({header.ArgonIterations} iterations, {header.ArgonMemoryKb / 1024.0:0.#} MB, parallelism {header.ArgonParallelism})\n" +
                         $"Chunk size: {FormatFileSize(header.ChunkSize)}\n" +
                         $"Key slots: {header.Slots.Count}\n" +
@@ -1100,16 +1132,16 @@ namespace FileLocker
                     return;
                 }
 
-                byte[]? stegoPayload = TryExtractStegoPayload(candidate.SourcePath);
-                if (candidate.SourcePath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase) || stegoPayload != null)
+                bool hasStegoPayload = ContainsStegoPayload(candidatePath);
+                if (candidatePath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase) || hasStegoPayload)
                 {
                     PayloadInspectorSection.Visibility = Visibility.Visible;
-                    PayloadInspectorText.Text =
-                        $"File: {Path.GetFileName(candidate.SourcePath)}\n" +
+                        PayloadInspectorText.Text =
+                        $"File: {Path.GetFileName(candidatePath)}\n" +
                         $"Format version: older v2\n" +
-                        $"Algorithm: AES-256-GCM\n" +
+                        $"Algorithm: {EncryptionAlgorithmCatalog.Aes256Gcm}\n" +
                         $"KDF: Argon2id with older payload support\n" +
-                        $"Flags: {(stegoPayload != null ? "PNG carrier" : "standard locked payload")}\n" +
+                        $"Flags: {(hasStegoPayload ? "PNG carrier" : "standard locked payload")}\n" +
                         "Transparency note: older payloads expose fewer header details than v3.";
                     return;
                 }
@@ -1126,17 +1158,19 @@ namespace FileLocker
 
         private void UpdateRunSummaryBanner()
         {
-            string algorithm = GetComboContent(AlgorithmCombo) ?? "AES-GCM";
-            int keySize = ParseKeySizeSelection();
+            string algorithm = EncryptionAlgorithmCatalog.TryNormalize(GetComboContent(AlgorithmCombo), out string normalizedAlgorithm)
+                ? normalizedAlgorithm
+                : EncryptionAlgorithmCatalog.Aes256Gcm;
+            int keySize = EncryptionAlgorithmCatalog.GetKeySizeBits(algorithm);
             bool hasKeyfile = !string.IsNullOrWhiteSpace(KeyfilePathBox.Text);
             bool hasRecoveryKey = !string.IsNullOrWhiteSpace(RecoveryKeyBox.Text);
-            string outputTimestampPolicy = (OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string
-                ?? "Current time";
+            string outputTimestampPolicy = AppPreferencesStore.NormalizeOutputTimestampPolicy(
+                (OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string);
             string outputLocationSummary = BuildRunSummaryOutputLocation();
 
             var parts = new List<string>
             {
-                $"{algorithm} {keySize}-bit",
+                OperationHistoryAlgorithm.Format(algorithm, keySize),
                 $"output: {outputLocationSummary}",
                 VerifyAfterWriteToggle.IsOn ? "verify writes on" : "verify writes off",
                 RemoveOriginalsToggle.IsOn ? "remove originals after success" : "keep originals"
@@ -1172,7 +1206,7 @@ namespace FileLocker
                 parts.Add("backup folder");
             }
 
-            if (!string.Equals(outputTimestampPolicy, "Current time", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(outputTimestampPolicy, AppPreferencesStore.CurrentTimeTimestampPolicy, StringComparison.OrdinalIgnoreCase))
             {
                 parts.Add($"timestamps: {outputTimestampPolicy.ToLowerInvariant()}");
             }
@@ -1291,15 +1325,15 @@ namespace FileLocker
 
         private void UpdateAboutMenuInfo()
         {
-            string? version = FileVersionInfo.GetVersionInfo(Environment.ProcessPath ?? string.Empty).FileVersion;
+            string version = UpdateService.GetCurrentVersionLabel();
 
-            AboutVersionMenuItem.Text = $"Version {version ?? "Unknown"}";
+            AboutVersionMenuItem.Text = $"Version {version}";
             AboutRecentOperationMenuItem.Text = GetRecentOperationMenuText();
             AboutUpdateStatusMenuItem.Text = _aboutUpdateStatusText;
 
             if (AboutViewVersionText != null)
             {
-                AboutViewVersionText.Text = $"Version {version ?? "Unknown"}";
+                AboutViewVersionText.Text = $"Version {version}";
             }
 
             if (AboutViewUpdateText != null)

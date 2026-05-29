@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace FileLocker;
 
@@ -6,7 +7,7 @@ internal static class CsvCellFormatter
 {
     internal static string Format(string? value, bool alwaysQuote = false)
     {
-        string sanitized = EscapeFormula(value ?? string.Empty);
+        string sanitized = EscapeFormula(ReplaceUnsafeFormatting(value ?? string.Empty));
         bool shouldQuote = alwaysQuote ||
             sanitized.Contains(',') ||
             sanitized.Contains('"') ||
@@ -34,8 +35,26 @@ internal static class CsvCellFormatter
         return $"'{value}";
     }
 
+    private static string ReplaceUnsafeFormatting(string value)
+    {
+        char[]? characters = null;
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (!char.IsControl(value[index]) &&
+                char.GetUnicodeCategory(value[index]) != UnicodeCategory.Format)
+            {
+                continue;
+            }
+
+            characters ??= value.ToCharArray();
+            characters[index] = ' ';
+        }
+
+        return characters is null ? value : new string(characters);
+    }
+
     private static bool IsFormulaPrefixIgnored(char value)
     {
-        return value is ' ' or '\t' or '\r' or '\n' or '\uFEFF' or '\u200B' or '\u200C' or '\u200D';
+        return value == ' ' || char.IsControl(value) || char.GetUnicodeCategory(value) == UnicodeCategory.Format;
     }
 }

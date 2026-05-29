@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -32,7 +33,15 @@ internal static class UpdateService
 
     private const long MaxInstallerBytes = 250L * 1024L * 1024L;
     private const long MaxDigestBytes = 64L * 1024L;
-    private const string OwnedInstallerFileNamePrefix = "FileLocker-Setup";
+    internal const int MaxDigestTextChars = 64 * 1024;
+    internal const int MaxDigestLineChars = 4096;
+    private const long MaxUpdateSettingsJsonBytes = 64L * 1024L;
+    internal const long MaxReleaseMetadataBytes = 2L * 1024L * 1024L;
+    private const int MaxCleanupFileCandidates = 10_000;
+    private const int MaxSkippedVersionChars = 64;
+    private const int MaxReleaseNotesChars = 16 * 1024;
+    internal const int MaxReleaseAssetUrlChars = 2048;
+    internal const int MaxInstallerFileNameChars = 128;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(45);
 
     // Best option: add the SHA-256 thumbprint of your code-signing certificate here.
@@ -52,26 +61,46 @@ internal static class UpdateService
     };
 
     private const string InstallerCleanupPathEnvironmentVariable = "FILELOCKER_UPDATER_INSTALLER_PATH";
+    private const string InstallerCleanupDelayEnvironmentVariable = "FILELOCKER_UPDATER_STARTUP_DELAY_MS";
+    private const string InstallerCleanupWaitPidEnvironmentVariable = "FILELOCKER_UPDATER_WAIT_PID";
+
+    private static readonly string InstallerCleanupPowerShellPath = Path.Combine(
+        Environment.SystemDirectory,
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe");
 
     internal static string GitHubRepositoryUrl => $"https://github.com/{Owner}/{Repo}";
 
-    internal static ProcessStartInfo CreateInstallerCleanupStartInfo(string installerPath, TimeSpan startupDelay)
+    internal static ProcessStartInfo CreateInstallerCleanupStartInfo(
+        string installerPath,
+        TimeSpan startupDelay,
+        int? processIdToWaitFor = null)
     {
         string normalizedInstallerPath = NormalizeInstallerPath(installerPath);
         var startInfo = new ProcessStartInfo
         {
-            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            Arguments = CreateInstallerCleanupCommand(startupDelay),
+            FileName = InstallerCleanupPowerShellPath,
+            Arguments = CreateInstallerCleanupCommand(),
             CreateNoWindow = true,
             UseShellExecute = false,
             WindowStyle = ProcessWindowStyle.Hidden
         };
 
         startInfo.Environment[InstallerCleanupPathEnvironmentVariable] = normalizedInstallerPath;
+        startInfo.Environment[InstallerCleanupDelayEnvironmentVariable] = GetStartupDelayMilliseconds(startupDelay).ToString(CultureInfo.InvariantCulture);
+        if (processIdToWaitFor is > 0)
+        {
+            startInfo.Environment[InstallerCleanupWaitPidEnvironmentVariable] = processIdToWaitFor.Value.ToString(CultureInfo.InvariantCulture);
+        }
+
         return startInfo;
     }
 
-    internal static Process StartInstallerAndDeleteWhenClosed(string installerPath, TimeSpan startupDelay)
+    internal static Process StartInstallerAndDeleteWhenClosed(
+        string installerPath,
+        TimeSpan startupDelay,
+        int? processIdToWaitFor = null)
     {
         string normalizedInstallerPath = NormalizeInstallerPath(installerPath);
         if (!File.Exists(normalizedInstallerPath))
@@ -79,7 +108,7 @@ internal static class UpdateService
             throw new FileNotFoundException("The update installer could not be found.", normalizedInstallerPath);
         }
 
-        ProcessStartInfo startInfo = CreateInstallerCleanupStartInfo(normalizedInstallerPath, startupDelay);
+        ProcessStartInfo startInfo = CreateInstallerCleanupStartInfo(normalizedInstallerPath, startupDelay, processIdToWaitFor);
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Unable to launch the update installer.");
     }
@@ -91,9 +120,26 @@ internal static class UpdateService
             throw new ArgumentException("Installer path is required.", nameof(installerPath));
         }
 
+        string trimmed = installerPath.Trim();
+        if (trimmed.Any(ContainsUnsafeFormattingCharacter))
+        {
+            throw new ArgumentException("Installer path is invalid.", nameof(installerPath));
+        }
+
         try
         {
-            return Path.GetFullPath(installerPath.Trim());
+            if (!Path.IsPathFullyQualified(trimmed))
+            {
+                throw new ArgumentException("Installer path is invalid.", nameof(installerPath));
+            }
+
+            string fullPath = Path.GetFullPath(trimmed);
+            if (ContainsAlternateDataStreamToken(fullPath))
+            {
+                throw new ArgumentException("Installer path is invalid.", nameof(installerPath));
+            }
+
+            return fullPath;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -101,14 +147,51 @@ internal static class UpdateService
         }
     }
 
-    internal static string CreateInstallerCleanupCommand(TimeSpan startupDelay)
+    private static bool ContainsAlternateDataStreamToken(string fullPath)
     {
-        int delaySeconds = Math.Clamp((int)Math.Ceiling(Math.Max(0, startupDelay.TotalSeconds)), 0, 60);
-        string delayCommand = delaySeconds > 0
-            ? $"timeout /t {delaySeconds} /nobreak >nul & "
-            : string.Empty;
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+        return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
+    }
 
-        return $"/d /c {delayCommand}start /wait \"\" \"%{InstallerCleanupPathEnvironmentVariable}%\" & del /f /q \"%{InstallerCleanupPathEnvironmentVariable}%\"";
+    private static bool ContainsUnsafeFormattingCharacter(char character) =>
+        char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format;
+
+    private static int GetStartupDelayMilliseconds(TimeSpan startupDelay)
+    {
+        double delayMilliseconds = Math.Ceiling(Math.Max(0, startupDelay.TotalMilliseconds));
+        return (int)Math.Clamp(delayMilliseconds, 0, 60_000);
+    }
+
+    internal static string CreateInstallerCleanupCommand()
+    {
+        string script = string.Join(
+            "\n",
+            "$ErrorActionPreference = 'SilentlyContinue'",
+            $"$installer = $env:{InstallerCleanupPathEnvironmentVariable}",
+            "if ([string]::IsNullOrWhiteSpace($installer) -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) { exit 2 }",
+            $"$waitPidText = $env:{InstallerCleanupWaitPidEnvironmentVariable}",
+            "if ($waitPidText -match '^\\d{1,10}$') {",
+            "  $waitPid = [int]$waitPidText",
+            "  $deadline = [DateTime]::UtcNow.AddSeconds(90)",
+            "  while ([DateTime]::UtcNow -lt $deadline) {",
+            "    $running = Get-Process -Id $waitPid -ErrorAction SilentlyContinue",
+            "    if ($null -eq $running) { break }",
+            "    Start-Sleep -Milliseconds 500",
+            "  }",
+            "}",
+            $"$delayText = $env:{InstallerCleanupDelayEnvironmentVariable}",
+            "if ($delayText -match '^\\d{1,6}$') {",
+            "  $delayMs = [int]$delayText",
+            "  if ($delayMs -gt 0) { Start-Sleep -Milliseconds $delayMs }",
+            "}",
+            "$process = Start-Process -FilePath $installer -Wait -PassThru",
+            "if ($null -eq $process) { exit 3 }",
+            "Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue",
+            "exit $process.ExitCode");
+
+        return "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " +
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
     }
 
     internal static UpdateSettings LoadSettings()
@@ -121,7 +204,7 @@ internal static class UpdateService
 
         try
         {
-            string json = File.ReadAllText(path);
+            string json = BoundedFileReader.ReadAllUtf8Text(path, MaxUpdateSettingsJsonBytes);
             return NormalizeSettings(JsonSerializer.Deserialize<UpdateSettings>(json, JsonOptions) ?? new UpdateSettings());
         }
         catch
@@ -132,6 +215,8 @@ internal static class UpdateService
 
     internal static void SaveSettings(UpdateSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+
         string directory = GetUpdaterDataDirectory();
         Directory.CreateDirectory(directory);
 
@@ -142,34 +227,122 @@ internal static class UpdateService
 
     internal static UpdateSettings NormalizeSettings(UpdateSettings settings)
     {
-        settings.SkippedVersion = string.IsNullOrWhiteSpace(settings.SkippedVersion)
-            ? null
-            : settings.SkippedVersion.Trim();
+        ArgumentNullException.ThrowIfNull(settings);
+
+        settings.SkippedVersion = NormalizeSkippedVersion(settings.SkippedVersion);
 
         return settings;
+    }
+
+    internal static string? NormalizeSkippedVersion(string? skippedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(skippedVersion))
+        {
+            return null;
+        }
+
+        string trimmed = skippedVersion.Trim();
+        if (trimmed.Length > MaxSkippedVersionChars ||
+            !TryParseVersion(trimmed, out Version version))
+        {
+            return null;
+        }
+
+        return FormatVersion(version);
+    }
+
+    internal static string NormalizeReleaseNotes(string? notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes))
+        {
+            return string.Empty;
+        }
+
+        string normalized = ReplaceUnicodeFormatCharacters(notes.Trim());
+        if (normalized.Length <= MaxReleaseNotesChars)
+        {
+            return normalized;
+        }
+
+        const string truncationMessage = "Release notes truncated.";
+        string suffix = $"{Environment.NewLine}{Environment.NewLine}{truncationMessage}";
+        int bodyLength = Math.Max(0, MaxReleaseNotesChars - suffix.Length);
+        return normalized[..bodyLength].TrimEnd() + suffix;
+    }
+
+    private static string ReplaceUnicodeFormatCharacters(string value)
+    {
+        char[]? characters = null;
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(value[index]) != UnicodeCategory.Format)
+            {
+                continue;
+            }
+
+            characters ??= value.ToCharArray();
+            characters[index] = ' ';
+        }
+
+        return characters is null ? value : new string(characters);
     }
 
     internal static string GetCurrentVersionLabel() => FormatVersion(GetCurrentVersion());
 
     internal static Version GetCurrentVersion()
     {
-        string? processPath = Environment.ProcessPath;
-        if (!string.IsNullOrWhiteSpace(processPath))
+        if (TryGetVersionFromExecutablePath(Environment.ProcessPath, out Version processVersion))
         {
-            FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(processPath);
-            if (TryParseVersion(versionInfo.ProductVersion, out Version productVersion))
-            {
-                return productVersion;
-            }
-
-            if (TryParseVersion(versionInfo.FileVersion, out Version fileVersion))
-            {
-                return fileVersion;
-            }
+            return processVersion;
         }
 
         Version? assemblyVersion = typeof(UpdateService).Assembly.GetName().Version;
         return assemblyVersion ?? new Version(0, 0, 0, 0);
+    }
+
+    internal static bool TryGetVersionFromExecutablePath(string? processPath, out Version version)
+    {
+        version = new Version(0, 0, 0, 0);
+        if (string.IsNullOrWhiteSpace(processPath))
+        {
+            return false;
+        }
+
+        string trimmedPath = processPath.Trim();
+        if (trimmedPath.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format) ||
+            !Path.IsPathFullyQualified(trimmedPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(trimmedPath);
+            if (ContainsAlternateDataStreamToken(fullPath) || !File.Exists(fullPath))
+            {
+                return false;
+            }
+
+            FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(fullPath);
+            if (TryParseVersion(versionInfo.ProductVersion, out Version productVersion))
+            {
+                version = productVersion;
+                return true;
+            }
+
+            if (TryParseVersion(versionInfo.FileVersion, out Version fileVersion))
+            {
+                version = fileVersion;
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or PathTooLongException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            version = new Version(0, 0, 0, 0);
+            return false;
+        }
     }
 
     internal static async Task<UpdateCheckResult> CheckForUpdatesAsync(CancellationToken cancellationToken)
@@ -238,10 +411,9 @@ internal static class UpdateService
 
         response.EnsureSuccessStatusCode();
 
-        await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonSerializer.DeserializeAsync<GitHubReleaseResponse>(
-            contentStream,
-            JsonOptions,
+        return await DeserializeJsonResponseWithLimitAsync<GitHubReleaseResponse>(
+            response,
+            "GitHub release metadata",
             cancellationToken);
     }
 
@@ -256,10 +428,9 @@ internal static class UpdateService
 
         response.EnsureSuccessStatusCode();
 
-        await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        GitHubReleaseResponse[]? releases = await JsonSerializer.DeserializeAsync<GitHubReleaseResponse[]>(
-            contentStream,
-            JsonOptions,
+        GitHubReleaseResponse[]? releases = await DeserializeJsonResponseWithLimitAsync<GitHubReleaseResponse[]>(
+            response,
+            "GitHub release metadata",
             cancellationToken);
 
         if (releases == null || releases.Length == 0)
@@ -337,7 +508,7 @@ internal static class UpdateService
                 bufferSize: 1024 * 128,
                 options: FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await CopyToAsyncWithLimit(httpStream, outputStream, MaxInstallerBytes, cancellationToken);
+                await CopyToAsyncWithLimit(httpStream, outputStream, MaxInstallerBytes, "installer download", cancellationToken);
                 await outputStream.FlushAsync(cancellationToken);
             }
 
@@ -379,16 +550,11 @@ internal static class UpdateService
             cancellationToken);
 
         response.EnsureSuccessStatusCode();
-
-        long? contentLength = response.Content.Headers.ContentLength;
-        if (contentLength is <= 0 or > MaxDigestBytes)
-        {
-            throw new InvalidOperationException("The release SHA-256 digest file was empty or too large.");
-        }
+        ValidateFinalDigestResponse(response);
 
         await using Stream httpStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var digestStream = new MemoryStream();
-        await CopyToAsyncWithLimit(httpStream, digestStream, MaxDigestBytes, cancellationToken);
+        await CopyToAsyncWithLimit(httpStream, digestStream, MaxDigestBytes, "release digest download", cancellationToken);
 
         string digestText = Encoding.UTF8.GetString(digestStream.ToArray());
         return TryExtractSha256DigestFromText(digestText, installerFileName, out string digest)
@@ -400,6 +566,7 @@ internal static class UpdateService
         Stream source,
         Stream destination,
         long maxBytes,
+        string itemDescription,
         CancellationToken cancellationToken)
     {
         byte[] buffer = ArrayPool<byte>.Shared.Rent(1024 * 128);
@@ -418,7 +585,7 @@ internal static class UpdateService
                 totalBytes += read;
                 if (totalBytes > maxBytes)
                 {
-                    throw new InvalidOperationException($"The installer download exceeded the {maxBytes:N0}-byte safety limit.");
+                    throw new InvalidOperationException($"The {itemDescription} exceeded the {maxBytes:N0}-byte safety limit.");
                 }
 
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
@@ -428,6 +595,18 @@ internal static class UpdateService
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    internal static async Task<T?> DeserializeJsonResponseWithLimitAsync<T>(
+        HttpResponseMessage response,
+        string itemDescription,
+        CancellationToken cancellationToken)
+    {
+        await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var boundedStream = new MemoryStream();
+        await CopyToAsyncWithLimit(contentStream, boundedStream, MaxReleaseMetadataBytes, itemDescription, cancellationToken);
+        boundedStream.Position = 0;
+        return await JsonSerializer.DeserializeAsync<T>(boundedStream, JsonOptions, cancellationToken);
     }
 
     private static void ValidateFinalDownloadResponse(HttpResponseMessage response)
@@ -450,6 +629,21 @@ internal static class UpdateService
             {
                 throw new InvalidOperationException($"The installer is too large ({contentLength.Value:N0} bytes).");
             }
+        }
+    }
+
+    internal static void ValidateFinalDigestResponse(HttpResponseMessage response)
+    {
+        Uri? finalUri = response.RequestMessage?.RequestUri;
+        if (finalUri == null || !string.Equals(finalUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The release digest download did not finish over HTTPS.");
+        }
+
+        long? contentLength = response.Content.Headers.ContentLength;
+        if (contentLength is <= 0 or > MaxDigestBytes)
+        {
+            throw new InvalidOperationException("The release SHA-256 digest file was empty or too large.");
         }
     }
 
@@ -488,8 +682,9 @@ internal static class UpdateService
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        string normalizedFilePath = NormalizeInstallerPath(filePath);
 
-        if (!File.Exists(filePath))
+        if (!File.Exists(normalizedFilePath))
         {
             return new InstallerTrustResult(
                 IsTrusted: false,
@@ -500,7 +695,7 @@ internal static class UpdateService
                 Message: "Installer file is missing.");
         }
 
-        DigestVerificationResult digest = await VerifyDigestAsync(filePath, expectedSha256Hex, cancellationToken);
+        DigestVerificationResult digest = await VerifyDigestAsync(normalizedFilePath, expectedSha256Hex, cancellationToken);
         if (digest.IsFailure)
         {
             return new InstallerTrustResult(
@@ -512,7 +707,7 @@ internal static class UpdateService
                 Message: digest.Message);
         }
 
-        AuthenticodeVerificationResult authenticode = VerifyAuthenticodeSignature(filePath);
+        AuthenticodeVerificationResult authenticode = VerifyAuthenticodeSignature(normalizedFilePath);
         using X509Certificate2? signerCertificate = authenticode.SignerCertificate;
 
         if (authenticode.Status == AuthenticodeVerificationStatus.Verified)
@@ -611,32 +806,72 @@ internal static class UpdateService
 
     private static bool IsOwnedUpdaterDownloadFileName(string? fileName)
     {
-        return !string.IsNullOrWhiteSpace(fileName) &&
-            fileName.StartsWith(OwnedInstallerFileNamePrefix, StringComparison.OrdinalIgnoreCase) &&
-            fileName.EndsWith(".download", StringComparison.OrdinalIgnoreCase);
+        return UpdaterFileNameRules.IsOwnedDownloadFileName(fileName);
     }
 
     private static bool IsOwnedUpdaterInstallerFileName(string? fileName)
     {
-        return !string.IsNullOrWhiteSpace(fileName) &&
-            fileName.StartsWith(OwnedInstallerFileNamePrefix, StringComparison.OrdinalIgnoreCase) &&
-            fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+        return UpdaterFileNameRules.IsOwnedInstallerFileName(fileName);
     }
 
     private static IReadOnlyList<string> TryEnumerateCleanupFiles(string downloadDirectory, string searchPattern)
     {
-        if (string.IsNullOrWhiteSpace(downloadDirectory) || !Directory.Exists(downloadDirectory))
+        if (!TryNormalizeCleanupDirectory(downloadDirectory, out string normalizedDownloadDirectory) ||
+            !Directory.Exists(normalizedDownloadDirectory))
         {
             return Array.Empty<string>();
         }
 
         try
         {
-            return Directory.EnumerateFiles(downloadDirectory, searchPattern).ToArray();
+            var files = new List<string>();
+            foreach (string file in Directory.EnumerateFiles(normalizedDownloadDirectory, searchPattern))
+            {
+                if (files.Count >= MaxCleanupFileCandidates)
+                {
+                    break;
+                }
+
+                files.Add(file);
+            }
+
+            return files;
         }
         catch
         {
             return Array.Empty<string>();
+        }
+    }
+
+    private static bool TryNormalizeCleanupDirectory(string? directoryPath, out string normalizedDirectoryPath)
+    {
+        normalizedDirectoryPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(directoryPath))
+        {
+            return false;
+        }
+
+        string trimmed = directoryPath.Trim();
+        if (trimmed.Any(ContainsUnsafeFormattingCharacter) ||
+            !Path.IsPathFullyQualified(trimmed))
+        {
+            return false;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(trimmed);
+            if (ContainsAlternateDataStreamToken(fullPath))
+            {
+                return false;
+            }
+
+            normalizedDirectoryPath = fullPath;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
         }
     }
 
@@ -655,7 +890,7 @@ internal static class UpdateService
 
         if (!TryParseVersion(release.TagName, out Version version))
         {
-            failureReason = $"The latest GitHub release tag '{release.TagName}' is not a supported version format.";
+            failureReason = "The latest GitHub release tag is not a supported version format.";
             return false;
         }
 
@@ -716,7 +951,7 @@ internal static class UpdateService
             FormatVersion(version),
             release.TagName,
             release.HtmlUrl,
-            release.Body ?? string.Empty,
+            NormalizeReleaseNotes(release.Body),
             safeInstallerFileName,
             installerDownloadUri.ToString(),
             sha256,
@@ -731,7 +966,7 @@ internal static class UpdateService
         return string.Equals(asset.State, "uploaded", StringComparison.OrdinalIgnoreCase) &&
             !string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl) &&
             asset.Size <= MaxInstallerBytes &&
-            asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+            UpdaterFileNameRules.IsOwnedInstallerFileName(asset.Name) &&
             !asset.Name.Contains("uninstall", StringComparison.OrdinalIgnoreCase) &&
             !asset.Name.Contains("symbols", StringComparison.OrdinalIgnoreCase);
     }
@@ -784,6 +1019,13 @@ internal static class UpdateService
     {
         uri = null!;
 
+        if (string.IsNullOrWhiteSpace(rawUrl) ||
+            rawUrl.Length > MaxReleaseAssetUrlChars ||
+            rawUrl.Any(ContainsUnsafeFormattingCharacter))
+        {
+            return false;
+        }
+
         if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out Uri? parsedUri))
         {
             return false;
@@ -799,8 +1041,26 @@ internal static class UpdateService
             return false;
         }
 
+        if (!string.IsNullOrEmpty(parsedUri.UserInfo) || !parsedUri.IsDefaultPort)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(parsedUri.Query) || !string.IsNullOrEmpty(parsedUri.Fragment))
+        {
+            return false;
+        }
+
         string expectedPathPrefix = $"/{Owner}/{Repo}/releases/download/";
         if (!parsedUri.AbsolutePath.StartsWith(expectedPathPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string releaseAssetPath = parsedUri.AbsolutePath[expectedPathPrefix.Length..];
+        if (releaseAssetPath.Length == 0 ||
+            releaseAssetPath.EndsWith("/", StringComparison.Ordinal) ||
+            !releaseAssetPath.Contains("/", StringComparison.Ordinal))
         {
             return false;
         }
@@ -817,30 +1077,45 @@ internal static class UpdateService
             return false;
         }
 
-        string trimmed = rawFileName.Trim().Replace('\\', '/');
-        string fileName = trimmed[(trimmed.LastIndexOf('/') + 1)..];
+        string fileName = rawFileName.Trim();
         if (string.IsNullOrWhiteSpace(fileName) || fileName is "." or "..")
         {
             return false;
         }
 
+        if (fileName.Length > MaxInstallerFileNameChars)
+        {
+            return false;
+        }
+
+        if (fileName.Contains(Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            fileName.Contains(Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         char[] invalidChars = Path.GetInvalidFileNameChars();
-        char[] cleanedChars = fileName
-            .Select(ch => invalidChars.Contains(ch) ? '_' : ch)
-            .ToArray();
-
-        string cleaned = new(cleanedChars);
-        if (!cleaned.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        if (fileName.Any(ch => invalidChars.Contains(ch)))
         {
             return false;
         }
 
-        if (WindowsFileNameRules.IsReservedDeviceName(cleaned))
+        if (!fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        safeFileName = cleaned;
+        if (WindowsFileNameRules.IsReservedDeviceName(fileName))
+        {
+            return false;
+        }
+
+        if (!IsOwnedUpdaterInstallerFileName(fileName))
+        {
+            return false;
+        }
+
+        safeFileName = fileName;
         return true;
     }
 
@@ -887,13 +1162,24 @@ internal static class UpdateService
             return false;
         }
 
+        if (digestText.Length > MaxDigestTextChars)
+        {
+            return false;
+        }
+
         HashSet<string> fallbackDigests = new(StringComparer.OrdinalIgnoreCase);
         string safeInstallerFileName = Path.GetFileName(installerFileName);
-        string[] lines = digestText.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        foreach (string rawLine in lines)
+        using var reader = new StringReader(digestText);
+        string? rawLine;
+        while ((rawLine = reader.ReadLine()) is not null)
         {
             string line = rawLine.Trim().TrimStart('\uFEFF');
             if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (line.Length > MaxDigestLineChars)
             {
                 continue;
             }
@@ -1125,6 +1411,11 @@ internal static class UpdateService
         }
 
         string normalized = rawVersion.Trim();
+        if (normalized.Length > MaxSkippedVersionChars)
+        {
+            return false;
+        }
+
         if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
         {
             normalized = normalized[1..];
@@ -1205,7 +1496,7 @@ internal static class UpdateService
             return;
         }
 
-        FileCleanupService.TryDeleteTemporaryFile(path, out _);
+        FileCleanupService.TryDeleteFile(path, out _);
     }
 
     internal static void ReplaceDownloadedInstaller(string tempPath, string installerPath)

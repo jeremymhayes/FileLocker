@@ -4,7 +4,8 @@ type ProgressBarProps = {
 }
 
 export function ProgressBar({ value, label }: ProgressBarProps) {
-  const clamped = Math.min(100, Math.max(0, value))
+  const numericValue = Number.isFinite(value) ? value : 0
+  const clamped = Math.min(100, Math.max(0, numericValue))
   const rounded = Math.round(clamped)
 
   return (

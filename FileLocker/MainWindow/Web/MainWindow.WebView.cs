@@ -1,12 +1,15 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -18,10 +21,20 @@ using WinRT.Interop;
 
 namespace FileLocker
 {
+    internal sealed record StartupSourceOpenPlan(string TargetKind, string Target);
+
     public sealed partial class MainWindow
     {
         private const string DevServerUrl = "http://127.0.0.1:5173";
         private const string AppHostName = "filelocker.app";
+        private const int MaxBridgeRequestJsonChars = 8 * 1024 * 1024;
+        private const int MaxBridgeRequestIdChars = 128;
+        private const int MaxBridgeActionChars = 128;
+        private const int MaxBridgeOperationIdLength = 80;
+        internal const int MaxBridgeStringListItems = 5_000;
+        internal const int MaxBridgeStringValueChars = 32_767;
+        private const int MaxExternalUrlChars = 2048;
+        private const int MaxRestartTargetPageChars = 128;
 
         private static readonly JsonSerializerOptions BridgeJsonOptions = new(JsonSerializerDefaults.Web)
         {
@@ -137,10 +150,9 @@ namespace FileLocker
             try
             {
                 IReadOnlyList<Windows.Storage.IStorageItem> items = await e.DataView.GetStorageItemsAsync();
-                paths = items
+                paths = NormalizeBridgeStringList(items
                     .Select(item => item.Path)
-                    .Where(path => !string.IsNullOrWhiteSpace(path))
-                    .ToArray();
+                    .ToArray());
             }
             catch (Exception ex)
             {
@@ -218,12 +230,7 @@ namespace FileLocker
             BridgeRequest? request = null;
             try
             {
-                request = JsonSerializer.Deserialize<BridgeRequest>(args.WebMessageAsJson, BridgeJsonOptions);
-                if (request == null || string.IsNullOrWhiteSpace(request.Id) || string.IsNullOrWhiteSpace(request.Action))
-                {
-                    throw new InvalidOperationException("Bridge request is missing an id or action.");
-                }
-
+                request = ReadBridgeRequest(args.WebMessageAsJson);
                 object? result = await DispatchBridgeRequestAsync(request);
                 PostBridgeResponse(request.Id, result);
             }
@@ -235,6 +242,50 @@ namespace FileLocker
                     GetFriendlyExceptionMessage(ex, "The request could not be completed."));
             }
         }
+
+        private static BridgeRequest ReadBridgeRequest(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json) || json.Length > MaxBridgeRequestJsonChars)
+            {
+                throw new InvalidOperationException("Bridge request was empty, invalid, or too large.");
+            }
+
+            BridgeRequest? request;
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(json);
+                EnsureNoDuplicateBridgeJsonProperties(document.RootElement, "Bridge request contains duplicate fields.");
+                request = JsonSerializer.Deserialize<BridgeRequest>(json, BridgeJsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException("Bridge request was empty or invalid.", ex);
+            }
+            catch (NotSupportedException ex)
+            {
+                throw new InvalidOperationException("Bridge request was empty or invalid.", ex);
+            }
+
+            if (request == null || string.IsNullOrWhiteSpace(request.Id) || string.IsNullOrWhiteSpace(request.Action))
+            {
+                throw new InvalidOperationException("Bridge request is missing an id or action.");
+            }
+
+            if (request.Id.Length > MaxBridgeRequestIdChars || request.Action.Length > MaxBridgeActionChars)
+            {
+                throw new InvalidOperationException("Bridge request id or action is too long.");
+            }
+
+            if (ContainsInvalidBridgeEnvelopeText(request.Id) || ContainsInvalidBridgeEnvelopeText(request.Action))
+            {
+                throw new InvalidOperationException("Bridge request id or action is invalid.");
+            }
+
+            return request;
+        }
+
+        private static bool ContainsInvalidBridgeEnvelopeText(string value) =>
+            value.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
 
         private Task<object?> DispatchBridgeRequestAsync(BridgeRequest request)
         {
@@ -268,6 +319,10 @@ namespace FileLocker
                 "maintenance.cleanRegistry" => RunBridgeWorkerAsync(() => CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
                 "maintenance.scanStartup" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanStartup()),
                 "maintenance.setStartupEnabled" => RunBridgeWorkerAsync(() => SetStartupEnabledFromBridge(ReadPayload<StartupToggleRequest>(request.Payload))),
+                "maintenance.setStartupIgnored" => RunBridgeWorkerAsync(() => SetStartupIgnoredFromBridge(ReadPayload<StartupIgnoreRequest>(request.Payload))),
+                "maintenance.exportStartupItem" => RunBridgeWorkerAsync(() => ExportStartupItemFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
+                "maintenance.openStartupSource" => RunBridgeWorkerAsync(() => OpenStartupSourceFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
+                "maintenance.removeBrokenStartupItem" => RunBridgeWorkerAsync(() => RemoveBrokenStartupItemFromBridge(ReadPayload<StartupItemActionRequest>(request.Payload))),
                 "maintenance.scanInstalledApps" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanInstalledApps()),
                 "maintenance.launchUninstaller" => RunBridgeWorkerAsync(() => LaunchUninstallerFromBridge(ReadPayload<UninstallerLaunchRequest>(request.Payload))),
                 "maintenance.scanAppLeftovers" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanAppLeftovers(ReadPayload<AppLeftoverRequest>(request.Payload).AppIds)),
@@ -288,7 +343,7 @@ namespace FileLocker
 #endif
                 "history.clear" => ClearHistoryFromBridgeAsync(),
                 "history.export" => ExportHistoryFromBridgeAsync(ReadPayload<HistoryExportRequest>(request.Payload)),
-                _ => throw new InvalidOperationException($"Unknown bridge action '{request.Action}'.")
+                _ => throw new InvalidOperationException("Unknown bridge action.")
             };
         }
 
@@ -298,6 +353,8 @@ namespace FileLocker
             {
                 throw new InvalidOperationException("Bridge payload was empty or invalid.");
             }
+
+            EnsureNoDuplicateBridgeJsonProperties(payload, "Bridge payload contains duplicate fields.");
 
             T? value;
             try
@@ -314,6 +371,30 @@ namespace FileLocker
             }
 
             return value ?? throw new InvalidOperationException("Bridge payload was empty or invalid.");
+        }
+
+        private static void EnsureNoDuplicateBridgeJsonProperties(JsonElement element, string duplicateMessage)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (!propertyNames.Add(property.Name))
+                    {
+                        throw new InvalidOperationException(duplicateMessage);
+                    }
+
+                    EnsureNoDuplicateBridgeJsonProperties(property.Value, duplicateMessage);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    EnsureNoDuplicateBridgeJsonProperties(item, duplicateMessage);
+                }
+            }
         }
 
         private static Task<object?> RunBridgeWorkerAsync(Func<object?> action)
@@ -381,11 +462,32 @@ namespace FileLocker
                     launchAction = _launchAction,
                     isAdministrator = IsRunningAsAdministrator(),
                     canRestartAsAdministrator = !IsRunningAsAdministrator(),
-                    isDebug = IsDebugBuild
+                    isDebug = IsDebugBuild,
+                    encryptionAlgorithms = BuildEncryptionAlgorithmOptions()
                 },
                 dashboard = BuildDashboardPayload(),
                 settings = BuildSettingsPayload()
             };
+        }
+
+        private static object[] BuildEncryptionAlgorithmOptions()
+        {
+            return EncryptionAlgorithmCatalog.Definitions
+                .Where(PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime)
+                .Select(definition => new
+                {
+                    id = definition.Id,
+                    label = definition.DisplayName,
+                    fileFormatName = definition.FileFormatName,
+                    keySizeBits = definition.KeySizeBits,
+                    status = definition.Status,
+                    detail = definition.Detail,
+                    bestFor = definition.BestFor,
+                    supportNote = definition.SupportNote,
+                    canUsePngCarrier = definition.CanUsePngCarrier,
+                    pngCarrierMaxSourceBytes = definition.CanUsePngCarrier ? MaxPngCarrierSourceBytes : (long?)null
+                })
+                .ToArray<object>();
         }
 
         private Task<object?> RestartAsAdministratorFromBridgeAsync(RestartAsAdministratorRequest request)
@@ -400,11 +502,7 @@ namespace FileLocker
                 });
             }
 
-            string? processPath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(processPath) || !File.Exists(processPath))
-            {
-                throw new InvalidOperationException("FileLocker could not find its executable to restart as administrator.");
-            }
+            string processPath = ExplorerIntegrationService.NormalizeExecutablePath(Environment.ProcessPath ?? string.Empty);
 
             string targetPage = NormalizeRestartTargetPage(request.TargetPage);
             var startInfo = new ProcessStartInfo
@@ -448,11 +546,17 @@ namespace FileLocker
             }
 
             string trimmed = pageName.Trim();
+            if (trimmed.Length > 512)
+            {
+                trimmed = trimmed[..512];
+            }
+
             var builder = new StringBuilder(trimmed.Length);
             bool pendingControlSpace = false;
             foreach (char character in trimmed)
             {
-                if (char.IsControl(character))
+                if (char.IsControl(character) ||
+                    CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format)
                 {
                     pendingControlSpace = true;
                     continue;
@@ -479,17 +583,25 @@ namespace FileLocker
                 return "Dashboard";
             }
 
-            return normalized.Length > 80 ? normalized[..80] : normalized;
+            return normalized.Length > 80 ? normalized[..80].Trim() : normalized;
         }
 
-        private static string NormalizeRestartTargetPage(string? targetPage)
+        internal static string NormalizeRestartTargetPage(string? targetPage)
         {
             if (string.IsNullOrWhiteSpace(targetPage))
             {
                 return string.Empty;
             }
 
-            string normalized = targetPage.Trim().TrimStart('#').ToLowerInvariant();
+            string bounded = targetPage.Length > MaxRestartTargetPageChars
+                ? targetPage[..MaxRestartTargetPageChars]
+                : targetPage;
+            if (bounded.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                return string.Empty;
+            }
+
+            string normalized = bounded.Trim().TrimStart('#').ToLowerInvariant();
             return RestartPageKeys.Contains(normalized) ? normalized : string.Empty;
         }
 
@@ -501,6 +613,204 @@ namespace FileLocker
         private static StartupToggleResult SetStartupEnabledFromBridge(StartupToggleRequest request)
         {
             return StartupAppMaintenanceService.SetStartupEnabled(request.ItemId, request.Enabled);
+        }
+
+        private static StartupIgnoreResult SetStartupIgnoredFromBridge(StartupIgnoreRequest request)
+        {
+            return StartupAppMaintenanceService.SetStartupIgnored(request.ItemId, request.Ignored);
+        }
+
+        private StartupExportResult ExportStartupItemFromBridge(StartupItemActionRequest request)
+        {
+            return StartupAppMaintenanceService.ExportStartupItemDetails(request.ItemId, _preferences.IncludeFullPathsInExports);
+        }
+
+        private static StartupToggleResult RemoveBrokenStartupItemFromBridge(StartupItemActionRequest request)
+        {
+            return StartupAppMaintenanceService.RemoveBrokenStartupItem(request.ItemId, request.Confirmation);
+        }
+
+        private static object OpenStartupSourceFromBridge(StartupItemActionRequest request)
+        {
+            string itemId = request.ItemId?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(itemId))
+            {
+                throw new InvalidOperationException("A startup item is required.");
+            }
+
+            StartupItem item = StartupAppMaintenanceService.ScanStartup().items
+                .FirstOrDefault(candidate => string.Equals(candidate.id, itemId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("The selected startup item is no longer available.");
+            StartupSourceOpenPlan plan = CreateStartupSourceOpenPlan(item);
+            OpenStartupSourcePlan(plan);
+            return new
+            {
+                opened = true,
+                itemId = item.id,
+                targetKind = plan.TargetKind,
+                target = plan.Target
+            };
+        }
+
+        internal static StartupSourceOpenPlan CreateStartupSourceOpenPlan(StartupItem item)
+        {
+            string location = FirstNonBlank(item.location, item.sourceLocation);
+            string? fileTarget = TryGetExistingFileSystemRevealTarget(location);
+            if (!string.IsNullOrWhiteSpace(fileTarget))
+            {
+                return new StartupSourceOpenPlan("File system", fileTarget);
+            }
+
+            string? registryPath = NormalizeStartupRegistryEditorPath(location);
+            if (!string.IsNullOrWhiteSpace(registryPath))
+            {
+                return new StartupSourceOpenPlan("Registry", registryPath);
+            }
+
+            if (string.Equals(item.sourceType, "Scheduled Task", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("Task Scheduler", "taskschd.msc");
+            }
+
+            if (string.Equals(item.sourceType, "WMI", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("WMI Management", "wmimgmt.msc");
+            }
+
+            if (string.Equals(item.sourceType, "Packaged app", StringComparison.OrdinalIgnoreCase))
+            {
+                return new StartupSourceOpenPlan("Startup Apps settings", "ms-settings:startupapps");
+            }
+
+            throw new InvalidOperationException("FileLocker cannot open this startup source location directly.");
+        }
+
+        internal static string? NormalizeStartupRegistryEditorPath(string? location)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return null;
+            }
+
+            string normalized = location.Trim().Replace('/', '\\');
+            if (normalized.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                return null;
+            }
+
+            string viewLabel = string.Empty;
+            if (normalized.EndsWith(" (32-bit view)", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[..^" (32-bit view)".Length].TrimEnd();
+                viewLabel = "32-bit";
+            }
+            else if (normalized.EndsWith(" (64-bit view)", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized[..^" (64-bit view)".Length].TrimEnd();
+                viewLabel = "64-bit";
+            }
+
+            (string Prefix, string Hive)[] hives =
+            [
+                ("HKCU\\", "HKEY_CURRENT_USER"),
+                ("HKLM\\", "HKEY_LOCAL_MACHINE"),
+                ("HKCR\\", "HKEY_CLASSES_ROOT"),
+                ("HKU\\", "HKEY_USERS"),
+                ("HKCC\\", "HKEY_CURRENT_CONFIG")
+            ];
+            foreach ((string prefix, string hive) in hives)
+            {
+                if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    string keyPath = normalized[prefix.Length..].Trim('\\');
+                    if (string.Equals(prefix, "HKLM\\", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(viewLabel, "32-bit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        keyPath = NormalizeMachineRegistry32BitViewPath(keyPath);
+                    }
+
+                    return string.IsNullOrWhiteSpace(keyPath)
+                        ? $"Computer\\{hive}"
+                        : $"Computer\\{hive}\\{keyPath}";
+                }
+            }
+
+            return null;
+        }
+
+        private static string NormalizeMachineRegistry32BitViewPath(string keyPath)
+        {
+            const string softwarePrefix = "Software\\";
+            const string wow6432Prefix = "Software\\WOW6432Node\\";
+            if (!keyPath.StartsWith(softwarePrefix, StringComparison.OrdinalIgnoreCase) ||
+                keyPath.StartsWith(wow6432Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return keyPath;
+            }
+
+            return $"{wow6432Prefix}{keyPath[softwarePrefix.Length..]}";
+        }
+
+        private static string FirstNonBlank(params string[] values)
+        {
+            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+        }
+
+        private static string? TryGetExistingFileSystemRevealTarget(string? location)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                return null;
+            }
+
+            try
+            {
+                string trimmed = location.Trim();
+                if (trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+                {
+                    return null;
+                }
+
+                string fullPath = Path.GetFullPath(trimmed);
+                if (ContainsAlternateDataStreamToken(fullPath))
+                {
+                    return null;
+                }
+
+                if (Directory.Exists(fullPath))
+                {
+                    return fullPath;
+                }
+
+                if (File.Exists(fullPath))
+                {
+                    return Path.GetDirectoryName(fullPath) ?? fullPath;
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+
+            return null;
+        }
+
+        private static void OpenStartupSourcePlan(StartupSourceOpenPlan plan)
+        {
+            if (string.Equals(plan.TargetKind, "Registry", StringComparison.OrdinalIgnoreCase))
+            {
+                OpenRegistryEditorAtPath(plan.Target);
+                return;
+            }
+
+            OpenWithShell(plan.Target);
+        }
+
+        private static void OpenRegistryEditorAtPath(string registryPath)
+        {
+            using RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit", writable: true)
+                ?? throw new InvalidOperationException("Registry Editor state could not be prepared.");
+            key.SetValue("LastKey", registryPath, RegistryValueKind.String);
+            OpenWithShell("regedit.exe");
         }
 
         private static UninstallerLaunchResult LaunchUninstallerFromBridge(UninstallerLaunchRequest request)
@@ -515,6 +825,24 @@ namespace FileLocker
 
         private async Task<object?> PickFilesAsync()
         {
+            if (IsRunningAsAdministrator())
+            {
+                return PickFilesWithShellDialog();
+            }
+
+            try
+            {
+                return await PickFilesWithWinRtPickerAsync();
+            }
+            catch (Exception ex) when (ShouldUseClassicPickerFallback(ex))
+            {
+                Debug.WriteLine($"WinRT file picker failed; using classic dialog. {SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Picker failed."))}");
+                return PickFilesWithShellDialog();
+            }
+        }
+
+        private async Task<object?> PickFilesWithWinRtPickerAsync()
+        {
             var picker = new FileOpenPicker
             {
                 SuggestedStartLocation = PickerLocationId.DocumentsLibrary
@@ -524,11 +852,29 @@ namespace FileLocker
             IReadOnlyList<Windows.Storage.StorageFile> files = await picker.PickMultipleFilesAsync();
             return new
             {
-                paths = files.Select(file => file.Path).Where(path => !string.IsNullOrWhiteSpace(path)).ToArray()
+                paths = NormalizeBridgeStringList(files.Select(file => file.Path).ToArray())
             };
         }
 
         private async Task<object?> PickFolderAsync()
+        {
+            if (IsRunningAsAdministrator())
+            {
+                return PickFolderWithShellDialog();
+            }
+
+            try
+            {
+                return await PickFolderWithWinRtPickerAsync();
+            }
+            catch (Exception ex) when (ShouldUseClassicPickerFallback(ex))
+            {
+                Debug.WriteLine($"WinRT folder picker failed; using classic dialog. {SensitiveDataRedactor.RedactMessage(GetFriendlyExceptionMessage(ex, "Picker failed."))}");
+                return PickFolderWithShellDialog();
+            }
+        }
+
+        private async Task<object?> PickFolderWithWinRtPickerAsync()
         {
             var picker = new FolderPicker
             {
@@ -537,10 +883,215 @@ namespace FileLocker
             picker.FileTypeFilter.Add("*");
             InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
             Windows.Storage.StorageFolder? folder = await picker.PickSingleFolderAsync();
+            string[] paths = NormalizeBridgeStringList(folder?.Path is string path ? [path] : []);
             return new
             {
-                path = folder?.Path ?? string.Empty
+                path = paths.FirstOrDefault() ?? string.Empty
             };
+        }
+
+        private object PickFilesWithShellDialog()
+        {
+            string[] paths = NormalizeBridgeStringList(ShowShellOpenDialog("Select files", FileOpenOptions.AllowMultiSelect | FileOpenOptions.FileMustExist | FileOpenOptions.PathMustExist));
+            return new
+            {
+                paths
+            };
+        }
+
+        private object PickFolderWithShellDialog()
+        {
+            string[] paths = NormalizeBridgeStringList(ShowShellOpenDialog("Select folder", FileOpenOptions.PickFolders | FileOpenOptions.PathMustExist));
+            return new
+            {
+                path = paths.FirstOrDefault() ?? string.Empty
+            };
+        }
+
+        private static bool ShouldUseClassicPickerFallback(Exception ex)
+        {
+            return ex is InvalidOperationException || ex is UnauthorizedAccessException || ex.HResult != 0;
+        }
+
+        private string[] ShowShellOpenDialog(string title, FileOpenOptions options)
+        {
+            Type dialogType = Type.GetTypeFromCLSID(FileOpenDialogClsid)
+                ?? throw new InvalidOperationException("Windows shell file dialog is not available.");
+            var dialog = (IFileOpenDialog)Activator.CreateInstance(dialogType)!;
+            try
+            {
+                dialog.GetOptions(out FileOpenOptions currentOptions);
+                dialog.SetOptions(currentOptions | options | FileOpenOptions.ForceFileSystem | FileOpenOptions.NoChangeDir);
+                dialog.SetTitle(title);
+
+                int hr = dialog.Show(WindowNative.GetWindowHandle(this));
+                if (hr == HResultCancelled)
+                {
+                    return Array.Empty<string>();
+                }
+
+                Marshal.ThrowExceptionForHR(hr);
+
+                if (options.HasFlag(FileOpenOptions.AllowMultiSelect))
+                {
+                    dialog.GetResults(out IShellItemArray results);
+                    return GetShellItemArrayPaths(results);
+                }
+
+                dialog.GetResult(out IShellItem item);
+                try
+                {
+                    string? path = GetShellItemPath(item);
+                    return string.IsNullOrWhiteSpace(path) ? Array.Empty<string>() : [path];
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(item);
+                }
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(dialog);
+            }
+        }
+
+        private static string[] GetShellItemArrayPaths(IShellItemArray results)
+        {
+            try
+            {
+                results.GetCount(out uint count);
+                var paths = new List<string>();
+                for (uint index = 0; index < count; index++)
+                {
+                    results.GetItemAt(index, out IShellItem item);
+                    try
+                    {
+                        string? path = GetShellItemPath(item);
+                        if (!string.IsNullOrWhiteSpace(path))
+                        {
+                            if (paths.Count >= MaxBridgeStringListItems)
+                            {
+                                throw new InvalidOperationException("Too many selected values were provided.");
+                            }
+
+                            paths.Add(path);
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FinalReleaseComObject(item);
+                    }
+                }
+
+                return paths.ToArray();
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(results);
+            }
+        }
+
+        private static string? GetShellItemPath(IShellItem item)
+        {
+            item.GetDisplayName(SigDnFileSystemPath, out IntPtr pathPointer);
+            try
+            {
+                return Marshal.PtrToStringUni(pathPointer);
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pathPointer);
+            }
+        }
+
+        private const int HResultCancelled = unchecked((int)0x800704C7);
+        private const uint SigDnFileSystemPath = 0x80058000;
+        private static readonly Guid FileOpenDialogClsid = new("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7");
+
+        [Flags]
+        private enum FileOpenOptions : uint
+        {
+            NoChangeDir = 0x00000008,
+            PickFolders = 0x00000020,
+            ForceFileSystem = 0x00000040,
+            AllowMultiSelect = 0x00000200,
+            PathMustExist = 0x00000800,
+            FileMustExist = 0x00001000
+        }
+
+        [ComImport]
+        [Guid("d57c7288-d4ad-4768-be02-9d969532d960")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IFileOpenDialog
+        {
+            [PreserveSig]
+            int Show(IntPtr parent);
+            void SetFileTypes(uint fileTypes, [MarshalAs(UnmanagedType.LPArray)] ComDlgFilterSpec[] filterSpec);
+            void SetFileTypeIndex(uint fileType);
+            void GetFileTypeIndex(out uint fileType);
+            void Advise(IntPtr events, out uint cookie);
+            void Unadvise(uint cookie);
+            void SetOptions(FileOpenOptions options);
+            void GetOptions(out FileOpenOptions options);
+            void SetDefaultFolder(IShellItem item);
+            void SetFolder(IShellItem item);
+            void GetFolder(out IShellItem item);
+            void GetCurrentSelection(out IShellItem item);
+            void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+            void GetFileName(out IntPtr name);
+            void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+            void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+            void GetResult(out IShellItem item);
+            void AddPlace(IShellItem item, uint place);
+            void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string defaultExtension);
+            void Close(int result);
+            void SetClientGuid(ref Guid guid);
+            void ClearClientData();
+            void SetFilter(IntPtr filter);
+            void GetResults(out IShellItemArray results);
+            void GetSelectedItems(out IShellItemArray items);
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ComDlgFilterSpec
+        {
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string Name;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string Spec;
+        }
+
+        [ComImport]
+        [Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItem
+        {
+            void BindToHandler(IntPtr bindContext, ref Guid handlerId, ref Guid interfaceId, out IntPtr result);
+            void GetParent(out IShellItem parent);
+            void GetDisplayName(uint name, out IntPtr displayName);
+            void GetAttributes(uint attributesMask, out uint attributes);
+            void Compare(IShellItem item, uint hint, out int order);
+        }
+
+        [ComImport]
+        [Guid("b63ea76d-1f85-456f-a19c-48159efa858b")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItemArray
+        {
+            void BindToHandler(IntPtr bindContext, ref Guid handlerId, ref Guid interfaceId, out IntPtr result);
+            void GetPropertyStore(int flags, ref Guid interfaceId, out IntPtr propertyStore);
+            void GetPropertyDescriptionList(ref PropertyKey keyType, ref Guid interfaceId, out IntPtr descriptionList);
+            void GetAttributes(int attributeFlags, uint attributeMask, out uint attributes);
+            void GetCount(out uint count);
+            void GetItemAt(uint index, out IShellItem item);
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct PropertyKey
+        {
+            public Guid FormatId;
+            public uint PropertyId;
         }
 
         private Task<object?> RevealPathAsync(RevealPathRequest request)
@@ -562,7 +1113,18 @@ namespace FileLocker
 
         internal static string RequireExternalHttpsUrl(string? url)
         {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) ||
+            string normalizedUrl = url?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(normalizedUrl) || normalizedUrl.Length > MaxExternalUrlChars)
+            {
+                throw new InvalidOperationException("Only HTTPS links can be opened.");
+            }
+
+            if (normalizedUrl.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("Only HTTPS links can be opened.");
+            }
+
+            if (!Uri.TryCreate(normalizedUrl, UriKind.Absolute, out Uri? uri) ||
                 !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException("Only HTTPS links can be opened.");
@@ -593,7 +1155,7 @@ namespace FileLocker
 
         private async Task<object?> RunFileOperationFromBridgeAsync(string operationName, ProcessingIntent intent, FileOperationRequest request)
         {
-            string operationId = string.IsNullOrWhiteSpace(request.OperationId) ? Guid.NewGuid().ToString("N") : request.OperationId;
+            string operationId = NormalizeBridgeOperationId(request.OperationId);
             string[] paths = ValidateFileOperationBridgePaths(request.Paths);
 
             if (_processingCancellation is not null)
@@ -601,12 +1163,7 @@ namespace FileLocker
                 throw new InvalidOperationException("A file operation is already running. Wait for it to finish before starting another.");
             }
 
-            if (string.IsNullOrWhiteSpace(request.Password))
-            {
-                throw new InvalidOperationException(intent == ProcessingIntent.Encrypt
-                    ? "Enter a password before encrypting."
-                    : "Enter the unlock password.");
-            }
+            ValidateBridgeUnlockSecret(intent == ProcessingIntent.Encrypt, request.Password, request.RecoveryKey);
 
             var processingCancellation = new CancellationTokenSource();
             _processingCancellation = processingCancellation;
@@ -622,11 +1179,13 @@ namespace FileLocker
 
                 string keyfilePath = request.KeyfilePath?.Trim() ?? string.Empty;
                 loadedKeyfileBytes = await Task.Run(() => ReadKeyfileBytesIfConfigured(keyfilePath));
-                runOptions = CreateRunOptionsFromBridge(request, keyfilePath, loadedKeyfileBytes);
+                runOptions = CreateRunOptionsFromBridge(request, keyfilePath, loadedKeyfileBytes, intent);
                 loadedKeyfileBytes = null;
 
                 QueueExpandResult expansion = await Task.Run(() => ExpandQueuePaths(paths));
                 List<QueuedFileItem> queueItems = expansion.Files
+                    .GroupBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
                     .Select(file => new QueuedFileItem(file.Path, file.RootPath, file.RootIsFolder, file.SizeBytes))
                     .ToList();
 
@@ -635,6 +1194,11 @@ namespace FileLocker
                     queueItems = queueItems
                         .Where(item => intent == ProcessingIntent.Verify || IsSupportedFileLockerEncryptedFile(item.SourcePath, out _))
                         .ToList();
+                }
+
+                if (intent == ProcessingIntent.Encrypt)
+                {
+                    ValidatePngCarrierQueueSizes(queueItems, runOptions.UseSteganography);
                 }
 
                 List<ProcessingWorkItem> workItems = BuildBridgeWorkItems(queueItems, intent, runOptions);
@@ -706,7 +1270,7 @@ namespace FileLocker
                 {
                     operationId,
                     cancelled,
-                    completed = results.Count(result => string.Equals(result.Status, "Completed", StringComparison.OrdinalIgnoreCase) || string.Equals(result.Status, "Verified", StringComparison.OrdinalIgnoreCase)),
+                    completed = results.Count(result => OperationHistoryMetrics.IsSuccessfulStatus(result.Status)),
                     failed = failedPaths.Count,
                     warnings = expansion.Warnings,
                     results = results.Select(ToResultDto).ToArray(),
@@ -738,6 +1302,33 @@ namespace FileLocker
             return NormalizeRequiredBridgePathList(paths, "Select at least one file or folder.");
         }
 
+        internal static void ValidateBridgeUnlockSecret(bool encryptingNewPayload, string? password, string? recoveryKey)
+        {
+            if (!string.IsNullOrWhiteSpace(password))
+            {
+                ValidateKdfSecretTextLength(password);
+            }
+
+            if (!string.IsNullOrWhiteSpace(recoveryKey))
+            {
+                ValidateKdfSecretTextLength(recoveryKey);
+            }
+
+            if (!string.IsNullOrWhiteSpace(password))
+            {
+                return;
+            }
+
+            if (!encryptingNewPayload && !string.IsNullOrWhiteSpace(recoveryKey))
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(encryptingNewPayload
+                ? "Enter a password before encrypting."
+                : "Enter the unlock password or recovery key.");
+        }
+
         internal static void ValidateFolderSourceRemovalConfirmation(
             bool removeOriginalsAfterSuccess,
             IEnumerable<string> paths,
@@ -754,20 +1345,22 @@ namespace FileLocker
         private ProcessingRunOptions CreateRunOptionsFromBridge(
             FileOperationRequest request,
             string keyfilePath,
-            byte[]? keyfileBytes)
+            byte[]? keyfileBytes,
+            ProcessingIntent intent)
         {
             string encryptOutputDirectory = request.EncryptOutputDirectory?.Trim() ?? string.Empty;
             string decryptOutputDirectory = request.DecryptOutputDirectory?.Trim() ?? string.Empty;
             bool useCustomEncryptOutput = !request.SaveNextToSource && !string.IsNullOrWhiteSpace(encryptOutputDirectory);
             bool useCustomDecryptOutput = !request.SaveNextToEncrypted && !string.IsNullOrWhiteSpace(decryptOutputDirectory);
+            string algorithm = NormalizeBridgeEncryptionAlgorithm(request.Algorithm, intent == ProcessingIntent.Encrypt);
 
             var options = new ProcessingRunOptions(
                 request.CompressFiles,
                 request.ScrambleNames,
                 request.UseSteganography,
-                "AES-GCM",
+                algorithm,
                 "Encrypt / Decrypt",
-                256,
+                EncryptionAlgorithmCatalog.GetKeySizeBits(algorithm),
                 request.RemoveOriginalsAfterSuccess,
                 request.SecureDeleteOriginals,
                 request.VerifyAfterWrite,
@@ -778,7 +1371,7 @@ namespace FileLocker
                 request.RestoreOriginalFilenames,
                 request.PreserveFolderStructure,
                 request.PackageFolders,
-                string.IsNullOrWhiteSpace(request.OutputTimestampPolicy) ? "Current time" : request.OutputTimestampPolicy,
+                AppPreferencesStore.NormalizeOutputTimestampPolicy(request.OutputTimestampPolicy),
                 request.BackupFolderPath?.Trim() ?? string.Empty,
                 string.IsNullOrWhiteSpace(keyfilePath) ? null : keyfilePath,
                 keyfileBytes,
@@ -791,7 +1384,14 @@ namespace FileLocker
                     request.MetadataCreatedText ?? string.Empty,
                     request.MetadataModifiedText ?? string.Empty));
 
-            return NormalizeRunOptionsForCurrentMode(options);
+            return NormalizeRunOptionsForCurrentMode(options, intent == ProcessingIntent.Encrypt);
+        }
+
+        internal static string NormalizeBridgeEncryptionAlgorithm(string? algorithm, bool encryptingNewPayload)
+        {
+            return encryptingNewPayload
+                ? EncryptionAlgorithmCatalog.NormalizeForNewPayload(algorithm)
+                : EncryptionAlgorithmCatalog.Aes256Gcm;
         }
 
         private static List<ProcessingWorkItem> BuildBridgeWorkItems(List<QueuedFileItem> queueItems, ProcessingIntent intent, ProcessingRunOptions options)
@@ -835,13 +1435,14 @@ namespace FileLocker
 
         private void PostProgress(string operationId, string path, double percent, string status)
         {
+            double safePercent = double.IsFinite(percent) ? Math.Clamp(percent, 0, 100) : 0;
             PostBridgeEvent(new
             {
                 type = "progress",
                 operationId,
                 path,
                 fileName = Path.GetFileName(path),
-                percent = Math.Clamp(percent, 0, 100),
+                percent = safePercent,
                 status
             });
         }
@@ -850,7 +1451,7 @@ namespace FileLocker
         {
             string path = RequireExistingFile(request.Path);
             string algorithm = NormalizeBridgeHashAlgorithm(request.Algorithm);
-            string operationId = string.IsNullOrWhiteSpace(request.OperationId) ? Guid.NewGuid().ToString("N") : request.OperationId;
+            string operationId = NormalizeBridgeOperationId(request.OperationId);
 
             var progress = new Progress<double>(percent => PostProgress(operationId, path, percent, "Hashing"));
             string hash = await FileHashService.ComputeHashHexAsync(path, algorithm, progress);
@@ -863,7 +1464,9 @@ namespace FileLocker
                 OriginalRetained = true,
                 OutputVerified = false,
                 OriginalSizeBytes = new FileInfo(path).Length,
-                HashValue = hash
+                HashValue = hash,
+                Algorithm = algorithm,
+                KeySizeBits = FileHashService.GetDigestBits(algorithm)
             };
 
             await AppendBridgeHistoryAsync("Hash", CreateHistoryOnlyRunOptions("Hash", algorithm), [result], cancelled: false);
@@ -898,6 +1501,11 @@ namespace FileLocker
                 throw new InvalidOperationException("Paste a SHA-256 or SHA-512 hash before verifying.");
             }
 
+            if (generated.Length != expected.Length)
+            {
+                throw new InvalidOperationException("The expected hash length does not match the generated hash.");
+            }
+
             bool match = string.Equals(generated, expected, StringComparison.OrdinalIgnoreCase);
             return new
             {
@@ -923,7 +1531,9 @@ namespace FileLocker
                 Status = "Completed",
                 Message = $"Generated {manifest.Algorithm} manifest for {manifest.FileCount} file(s).",
                 OriginalRetained = true,
-                OutputVerified = true
+                OutputVerified = true,
+                Algorithm = manifest.Algorithm,
+                KeySizeBits = FileHashService.GetDigestBits(manifest.Algorithm)
             };
             await AppendBridgeHistoryAsync("Hash Manifest", CreateHistoryOnlyRunOptions("Hash Manifest", manifest.Algorithm), [result], cancelled: false);
 
@@ -965,10 +1575,8 @@ namespace FileLocker
 
         private static object ConvertTextFromBridge(TextConvertRequest request)
         {
-            EncodeTextMode mode = string.Equals(request.Mode, "decode", StringComparison.OrdinalIgnoreCase)
-                ? EncodeTextMode.Decode
-                : EncodeTextMode.Encode;
-            string output = ConvertEncodeText(request.Input ?? string.Empty, mode, NormalizeEncodeFormat(request.Format), request.PreserveLineBreaks);
+            EncodeTextMode mode = NormalizeEncodeTextMode(request.Mode);
+            string output = ConvertEncodeText(request.Input ?? string.Empty, mode, NormalizeEncodeTextFormat(request.Format), request.PreserveLineBreaks);
             return new
             {
                 output,
@@ -1329,11 +1937,17 @@ namespace FileLocker
             return normalizedPaths;
         }
 
-        private static int NormalizeSecureDeletePasses(int requestedPasses, string? method)
+        internal static int NormalizeSecureDeletePasses(int requestedPasses, string? method)
         {
             if (string.Equals(method, "quick", StringComparison.OrdinalIgnoreCase))
             {
                 return 1;
+            }
+
+            if (string.IsNullOrWhiteSpace(method) ||
+                string.Equals(method, "dod", StringComparison.OrdinalIgnoreCase))
+            {
+                return 3;
             }
 
             if (string.Equals(method, "gutmann", StringComparison.OrdinalIgnoreCase))
@@ -1361,6 +1975,13 @@ namespace FileLocker
                 return "Gutmann (35 passes)";
             }
 
+            if (!string.IsNullOrWhiteSpace(method) &&
+                !string.Equals(method, "dod", StringComparison.OrdinalIgnoreCase))
+            {
+                string unit = passes == 1 ? "pass" : "passes";
+                return $"Custom ({passes} {unit})";
+            }
+
             return $"DoD 5220.22-M ({passes} passes)";
         }
 
@@ -1386,6 +2007,12 @@ namespace FileLocker
 
         private object BuildSettingsPayload()
         {
+            string customDecryptOutputDirectory = _preferences.CustomDecryptOutputDirectory;
+            if (_preferences.UseCustomDecryptOutputDirectory && string.IsNullOrWhiteSpace(customDecryptOutputDirectory))
+            {
+                customDecryptOutputDirectory = GetDefaultDecryptOutputFolder();
+            }
+
             return new
             {
                 preferences = new
@@ -1396,7 +2023,7 @@ namespace FileLocker
                     _preferences.UseCustomEncryptOutputDirectory,
                     _preferences.CustomEncryptOutputDirectory,
                     _preferences.UseCustomDecryptOutputDirectory,
-                    _preferences.CustomDecryptOutputDirectory,
+                    CustomDecryptOutputDirectory = customDecryptOutputDirectory,
                     ThemePreference = _preferences.ThemePreference.ToString()
                 },
                 updates = new
@@ -1528,7 +2155,8 @@ namespace FileLocker
                 throw new InvalidOperationException("A version is required to skip an update.");
             }
 
-            _updateSettings.SkippedVersion = request.Version.Trim();
+            _updateSettings.SkippedVersion = UpdateService.NormalizeSkippedVersion(request.Version)
+                ?? throw new InvalidOperationException("The skipped update version is not valid.");
             UpdateService.SaveSettings(_updateSettings);
             return BuildSettingsPayload();
         }
@@ -1659,17 +2287,23 @@ namespace FileLocker
 
             string protectedPath = GetProtectedHistoryPath();
             string redactedPath = GetHistoryPath();
+            bool loadedHistory = false;
 
             if (_preferences.HistoryPrivacyMode == HistoryPrivacyMode.Full && File.Exists(protectedPath))
             {
                 try
                 {
-                    byte[] protectedBytes = await File.ReadAllBytesAsync(protectedPath);
-                    byte[] unprotectedBytes = AppPreferencesStore.UnprotectForCurrentUser(protectedBytes);
-                    List<OperationHistoryEntry>? loaded = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(Encoding.UTF8.GetString(unprotectedBytes), JsonOptions);
+                    byte[] protectedBytes = await ReadStoredJsonBytesAsync(protectedPath);
+                    List<OperationHistoryEntry>? loaded = DeserializeProtectedJsonForCurrentUser<List<OperationHistoryEntry>>(protectedBytes);
                     if (loaded != null)
                     {
-                        _operationHistory.AddRange(loaded.OrderByDescending(entry => entry.TimestampUtc));
+                        _operationHistory.AddRange(OperationHistorySanitizer.CloneEntries(
+                            loaded
+                                .OfType<OperationHistoryEntry>()
+                                .OrderByDescending(entry => entry.TimestampUtc)
+                                .Take(MaxHistoryEntries),
+                            includeFullPaths: true));
+                        loadedHistory = true;
                     }
                 }
                 catch
@@ -1677,15 +2311,21 @@ namespace FileLocker
                     _operationHistory.Clear();
                 }
             }
-            else if (File.Exists(redactedPath))
+
+            if (!loadedHistory && File.Exists(redactedPath))
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(redactedPath);
+                    string json = await ReadStoredJsonTextAsync(redactedPath);
                     List<OperationHistoryEntry>? loaded = JsonSerializer.Deserialize<List<OperationHistoryEntry>>(json, JsonOptions);
                     if (loaded != null)
                     {
-                        _operationHistory.AddRange(loaded.OrderByDescending(entry => entry.TimestampUtc));
+                        _operationHistory.AddRange(OperationHistorySanitizer.CloneEntries(
+                            loaded
+                                .OfType<OperationHistoryEntry>()
+                                .OrderByDescending(entry => entry.TimestampUtc)
+                                .Take(MaxHistoryEntries),
+                            includeFullPaths: true));
                     }
                 }
                 catch
@@ -1705,23 +2345,24 @@ namespace FileLocker
             }
 
             OperationMetricsSummary metrics = OperationHistoryMetrics.Calculate(results);
+            (string historyAlgorithm, int historyKeySizeBits) = ResolveHistoryAlgorithm(options, results);
             _operationHistory.Insert(0, new OperationHistoryEntry
             {
                 Id = Guid.NewGuid().ToString("N"),
                 TimestampUtc = DateTime.UtcNow,
                 Operation = operation,
                 ProfileName = options.ProfileName,
-                Algorithm = options.Algorithm,
+                Algorithm = historyAlgorithm,
                 Mode = options.Mode,
-                KeySizeBits = options.KeySizeBits,
+                KeySizeBits = historyKeySizeBits,
                 UsedKeyfile = options.KeyfileBytes is { Length: > 0 },
                 RemoveOriginalsAfterSuccess = options.RemoveOriginalsAfterSuccess,
                 SecureDeleteOriginals = options.SecureDeleteOriginals,
                 VerifyAfterWrite = options.VerifyAfterWrite,
                 BackupFolderPath = options.BackupFolderPath,
                 Cancelled = cancelled,
-                SuccessCount = results.Count(result => string.Equals(result.Status, "Completed", StringComparison.OrdinalIgnoreCase) || string.Equals(result.Status, "Verified", StringComparison.OrdinalIgnoreCase)),
-                FailureCount = results.Count(result => string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase)),
+                SuccessCount = results.Count(result => OperationHistoryMetrics.IsSuccessfulStatus(result.Status)),
+                FailureCount = results.Count(result => OperationHistoryMetrics.IsFailedStatus(result.Status)),
                 TotalOriginalSizeBytes = metrics.TotalOriginalSizeBytes,
                 TotalOutputSizeBytes = metrics.TotalOutputSizeBytes,
                 TotalStorageSavedBytes = metrics.TotalStorageSavedBytes,
@@ -1750,7 +2391,7 @@ namespace FileLocker
                 false,
                 algorithm,
                 profileName,
-                algorithm.Contains("512", StringComparison.OrdinalIgnoreCase) ? 512 : 256,
+                GetHistoryOnlyKeySizeBits(profileName, algorithm),
                 false,
                 false,
                 false,
@@ -1761,13 +2402,26 @@ namespace FileLocker
                 true,
                 false,
                 false,
-                _preferences.OutputTimestampPolicy,
+                AppPreferencesStore.NormalizeOutputTimestampPolicy(_preferences.OutputTimestampPolicy),
                 string.Empty,
                 null,
                 null,
                 null,
                 profileName,
                 new MetadataOverridesSnapshot(string.Empty, string.Empty, false, string.Empty, string.Empty));
+        }
+
+        private static int GetHistoryOnlyKeySizeBits(string profileName, string algorithm)
+        {
+            if (string.Equals(profileName, "Hash", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(profileName, "Hash Manifest", StringComparison.OrdinalIgnoreCase))
+            {
+                return FileHashService.GetDigestBits(algorithm);
+            }
+
+            return EncryptionAlgorithmCatalog.TryNormalize(algorithm, out string normalizedAlgorithm)
+                ? EncryptionAlgorithmCatalog.GetKeySizeBits(normalizedAlgorithm)
+                : 0;
         }
 
         private object BuildDashboardPayload()
@@ -1833,17 +2487,23 @@ namespace FileLocker
 
         private static object ToHistoryDto(OperationHistoryEntry entry)
         {
+            OperationHistoryEntry sanitized = OperationHistorySanitizer.CloneEntry(entry, includeFullPaths: true);
             return new
             {
-                entry.Id,
-                entry.TimestampUtc,
-                entry.Operation,
-                entry.ProfileName,
-                entry.SuccessCount,
-                entry.FailureCount,
-                entry.Cancelled,
-                entry.ElapsedMilliseconds,
-                results = entry.Results.Take(8).Select(ToResultDto).ToArray()
+                sanitized.Id,
+                sanitized.TimestampUtc,
+                sanitized.Operation,
+                sanitized.ProfileName,
+                algorithm = OperationHistoryAlgorithm.NormalizeName(sanitized.Algorithm),
+                keySizeBits = OperationHistoryAlgorithm.NormalizeKeySize(sanitized.KeySizeBits),
+                sanitized.SuccessCount,
+                sanitized.FailureCount,
+                sanitized.Cancelled,
+                sanitized.ElapsedMilliseconds,
+                results = sanitized.Results
+                    .Take(8)
+                    .Select(ToResultDto)
+                    .ToArray()
             };
         }
 
@@ -1867,7 +2527,9 @@ namespace FileLocker
                 result.CompressedSizeBytes,
                 result.ElapsedMilliseconds,
                 result.FailureCategory,
-                result.HashValue
+                result.HashValue,
+                result.Algorithm,
+                result.KeySizeBits
             };
         }
 
@@ -1892,12 +2554,18 @@ namespace FileLocker
             dto ??= new PreferencesDto();
             _preferences.IncognitoMode = dto.IncognitoMode;
             _preferences.IncludeFullPathsInExports = dto.IncludeFullPathsInExports;
-            _preferences.OutputTimestampPolicy = string.IsNullOrWhiteSpace(dto.OutputTimestampPolicy) ? "Current time" : dto.OutputTimestampPolicy;
+            _preferences.OutputTimestampPolicy = AppPreferencesStore.NormalizeOutputTimestampPolicy(dto.OutputTimestampPolicy);
             _preferences.UseCustomEncryptOutputDirectory = dto.UseCustomEncryptOutputDirectory;
             _preferences.CustomEncryptOutputDirectory = dto.CustomEncryptOutputDirectory ?? string.Empty;
             _preferences.UseCustomDecryptOutputDirectory = dto.UseCustomDecryptOutputDirectory;
             _preferences.CustomDecryptOutputDirectory = dto.CustomDecryptOutputDirectory ?? string.Empty;
+            if (_preferences.UseCustomDecryptOutputDirectory && string.IsNullOrWhiteSpace(_preferences.CustomDecryptOutputDirectory))
+            {
+                _preferences.CustomDecryptOutputDirectory = GetDefaultDecryptOutputFolder();
+            }
+
             _preferences.ThemePreference = ParseEnum(dto.ThemePreference, ThemePreference.Dark);
+            AppPreferencesStore.NormalizePreferences(_preferences);
             _currentExperienceLevel = UserExperienceLevel.Advanced;
             _themePreference = _preferences.ThemePreference;
             isDarkTheme = _themePreference != ThemePreference.Light;
@@ -1927,14 +2595,30 @@ namespace FileLocker
                 throw new InvalidOperationException("A file or folder path is required.");
             }
 
+            if (path.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("The selected path contains invalid characters.");
+            }
+
+            string trimmedPath = path.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                throw new InvalidOperationException("The selected path must be fully qualified.");
+            }
+
             string fullPath;
             try
             {
-                fullPath = Path.GetFullPath(path.Trim());
+                fullPath = Path.GetFullPath(trimmedPath);
             }
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
             {
                 throw new InvalidOperationException("The selected path is not valid.", ex);
+            }
+
+            if (ContainsAlternateDataStreamToken(fullPath))
+            {
+                throw new InvalidOperationException("The selected path must reference a normal file or folder.");
             }
 
             if (!File.Exists(fullPath) && !Directory.Exists(fullPath))
@@ -1945,29 +2629,21 @@ namespace FileLocker
             return fullPath;
         }
 
-        private static string NormalizeBridgeHashAlgorithm(string? algorithm)
+        private static bool ContainsAlternateDataStreamToken(string fullPath)
         {
-            return string.Equals(algorithm, "SHA-512", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(algorithm, "SHA512", StringComparison.OrdinalIgnoreCase)
-                ? "SHA-512"
-                : "SHA-256";
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
         }
 
-        private static string NormalizeEncodeFormat(string? format)
+        internal static string NormalizeBridgeHashAlgorithm(string? algorithm)
         {
-            return format switch
-            {
-                "URL" => "URL",
-                "Hex" => "Hex",
-                "HTML Entities" => "HTML Entities",
-                "UTF-8" => "UTF-8",
-                _ => "Base64"
-            };
+            return FileHashService.NormalizeAlgorithmName(algorithm);
         }
 
         private static object SuggestEncryptOutputFromBridge(PathListRequest request)
         {
-            string[] selectedPaths = NormalizeBridgePathList(request.Paths);
+            string[] selectedPaths = NormalizeBridgePathList(request.Paths, fullPaths: true);
 
             string? suggestedPath = EncryptOutputPathAdvisor.SuggestForSelectedPaths(selectedPaths);
             int folderCount = selectedPaths.Count(Directory.Exists);
@@ -2035,7 +2711,7 @@ namespace FileLocker
                     items.Add(new
                     {
                         fullPath = selectedPath,
-                        displayName = Path.GetFileName(selectedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                        displayName = GetFolderDisplayName(selectedPath),
                         itemType = "Folder",
                         sizeBytes,
                         sizeDisplay = fileCount > 0 ? FormatFileSize(sizeBytes) : "Calculated at run start",
@@ -2064,13 +2740,36 @@ namespace FileLocker
 
             if (fullPaths)
             {
-                return normalizedPaths
-                    .Select(Path.GetFullPath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
+                try
+                {
+                    return normalizedPaths
+                        .Select(NormalizeBridgeFullPath)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    throw new InvalidOperationException("One or more selected paths are invalid.", ex);
+                }
             }
 
             return normalizedPaths;
+        }
+
+        private static string NormalizeBridgeFullPath(string path)
+        {
+            if (!Path.IsPathFullyQualified(path))
+            {
+                throw new InvalidOperationException("One or more selected paths must be fully qualified.");
+            }
+
+            string fullPath = Path.GetFullPath(path);
+            if (ContainsAlternateDataStreamToken(fullPath))
+            {
+                throw new InvalidOperationException("One or more selected paths must reference normal files or folders.");
+            }
+
+            return fullPath;
         }
 
         internal static string[] NormalizeBridgeStringList(string[]? values)
@@ -2080,10 +2779,62 @@ namespace FileLocker
                 return [];
             }
 
-            return values
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value.Trim())
-                .ToArray();
+            var normalizedValues = new List<string>();
+            var seenValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string? value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                string normalizedValue = value.Trim();
+                if (normalizedValue.Length > MaxBridgeStringValueChars)
+                {
+                    throw new InvalidOperationException("A selected value is too long.");
+                }
+
+                if (normalizedValue.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+                {
+                    throw new InvalidOperationException("A selected value contains invalid characters.");
+                }
+
+                if (!seenValues.Add(normalizedValue))
+                {
+                    continue;
+                }
+
+                normalizedValues.Add(normalizedValue);
+                if (normalizedValues.Count > MaxBridgeStringListItems)
+                {
+                    throw new InvalidOperationException("Too many selected values were provided.");
+                }
+            }
+
+            return normalizedValues.ToArray();
+        }
+
+        internal static string NormalizeBridgeOperationId(string? operationId)
+        {
+            if (string.IsNullOrWhiteSpace(operationId))
+            {
+                return Guid.NewGuid().ToString("N");
+            }
+
+            var builder = new StringBuilder(Math.Min(operationId.Length, MaxBridgeOperationIdLength));
+            foreach (char character in operationId.Trim())
+            {
+                if (char.IsLetterOrDigit(character) || character is '-' or '_')
+                {
+                    builder.Append(character);
+                    if (builder.Length >= MaxBridgeOperationIdLength)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return builder.Length > 0 ? builder.ToString() : Guid.NewGuid().ToString("N");
         }
 
         private static string GetBridgePathTypeDisplay(string path, bool isDirectory)
@@ -2159,6 +2910,7 @@ namespace FileLocker
             public string Password { get; set; } = string.Empty;
             public string? KeyfilePath { get; set; }
             public string? RecoveryKey { get; set; }
+            public string Algorithm { get; set; } = EncryptionAlgorithmCatalog.Aes256Gcm;
             public bool CompressFiles { get; set; } = true;
             public bool ScrambleNames { get; set; }
             public bool UseSteganography { get; set; }
@@ -2172,7 +2924,7 @@ namespace FileLocker
             public string? DecryptOutputDirectory { get; set; }
             public bool RestoreOriginalFilenames { get; set; } = true;
             public bool PreserveFolderStructure { get; set; } = true;
-            public string OutputTimestampPolicy { get; set; } = "Current time";
+            public string OutputTimestampPolicy { get; set; } = AppPreferencesStore.CurrentTimeTimestampPolicy;
             public string? BackupFolderPath { get; set; }
             public string ProfileName { get; set; } = "FileLocker";
             public string? MetadataLabel { get; set; }
@@ -2187,7 +2939,7 @@ namespace FileLocker
         {
             public string OperationId { get; set; } = string.Empty;
             public string Path { get; set; } = string.Empty;
-            public string Algorithm { get; set; } = "SHA-256";
+            public string Algorithm { get; set; } = FileHashService.Sha256;
         }
 
         private sealed class HashVerifyRequest
@@ -2199,7 +2951,7 @@ namespace FileLocker
         private sealed class HashManifestCreateRequest
         {
             public string[] Paths { get; set; } = [];
-            public string Algorithm { get; set; } = "SHA-256";
+            public string Algorithm { get; set; } = FileHashService.Sha256;
         }
 
         private sealed class HashManifestVerifyRequest
@@ -2267,6 +3019,18 @@ namespace FileLocker
             public bool Enabled { get; set; }
         }
 
+        private sealed class StartupIgnoreRequest
+        {
+            public string ItemId { get; set; } = string.Empty;
+            public bool Ignored { get; set; }
+        }
+
+        private sealed class StartupItemActionRequest
+        {
+            public string ItemId { get; set; } = string.Empty;
+            public string Confirmation { get; set; } = string.Empty;
+        }
+
         private sealed class UninstallerLaunchRequest
         {
             public string AppId { get; set; } = string.Empty;
@@ -2305,7 +3069,7 @@ namespace FileLocker
         {
             public bool IncognitoMode { get; set; }
             public bool IncludeFullPathsInExports { get; set; }
-            public string OutputTimestampPolicy { get; set; } = "Current time";
+            public string OutputTimestampPolicy { get; set; } = AppPreferencesStore.CurrentTimeTimestampPolicy;
             public bool UseCustomEncryptOutputDirectory { get; set; }
             public string CustomEncryptOutputDirectory { get; set; } = string.Empty;
             public bool UseCustomDecryptOutputDirectory { get; set; } = true;

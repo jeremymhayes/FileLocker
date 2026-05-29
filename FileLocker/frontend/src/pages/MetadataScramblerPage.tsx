@@ -27,7 +27,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { FileTypeIcon } from "@/components/common/FileTypeIcon"
 import { cn } from "@/lib/utils"
-import { mergeUniquePaths } from "@/lib/format"
+import { getComparableLocalPath, mergeUniquePaths } from "@/lib/format"
 
 type MetadataPreviewItem = {
   label: string
@@ -295,7 +295,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
     }
 
     setIsPreviewStale(true)
-    setPaths((current) => current.filter((item) => item !== path))
+    setPaths((current) => current.filter((item) => getComparableLocalPath(item.trim()) !== getComparableLocalPath(path.trim())))
   }
 
   function clearSelection() {
@@ -310,7 +310,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
     setIsPreviewStale(false)
   }
 
-  const activeFile = preview?.files.find((file) => file.fullPath === activeFilePath) ?? preview?.files[0] ?? null
+  const activeFile = preview?.files.find((file) => getComparableLocalPath(file.fullPath.trim()) === getComparableLocalPath(activeFilePath.trim())) ?? preview?.files[0] ?? null
 
   return (
     <div className="security-page">
@@ -428,7 +428,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
               </SectionHeader>
               <SectionBody className="px-4 py-3">
                 {preview?.files.length ? (
-                  <div className="overflow-hidden rounded-md border border-border/80 bg-background/35">
+                  <div className="overflow-hidden rounded-md border border-border/60 bg-bg-subtle/35">
                     <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(120px,0.8fr)_100px_130px_110px_56px] gap-3 border-b border-border/80 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                       <span>Name</span>
                       <span>Type</span>
@@ -490,7 +490,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm text-secondary">
+                  <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm text-secondary">
                     No files selected. Drop files above or choose files to inspect metadata.
                   </div>
                 )}
@@ -516,7 +516,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
               </SectionHeader>
               <SectionBody className="px-4 py-3">
                 {activeFile && preview ? (
-                  <div className="rounded-md border border-border/80 bg-background/35 p-3">
+                  <div className="rounded-md border border-border/60 bg-bg-subtle/35 p-3">
                     <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)]">
                       <div className="rounded-md border border-border/70 bg-bg-dropzone/80 p-3">
                         <div className="mb-2 font-display text-sm font-semibold tracking-tight text-primary">Before</div>
@@ -544,7 +544,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm text-secondary">
+                  <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm text-secondary">
                     No preview selected. Inspect a file to view metadata changes.
                   </div>
                 )}
@@ -561,7 +561,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                 <div className="flex flex-col gap-2">
                   {categories.length ? (
                     categories.map((category) => (
-                      <label key={category.name} className="flex items-start gap-2.5 rounded-md border border-border/80 bg-background/35 px-3 py-2 transition-colors hover:border-accent-purple/30 hover:bg-accent-purple/6">
+                      <label key={category.name} className="flex items-start gap-2.5 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2 transition-colors hover:border-accent-purple/30 hover:bg-accent-purple/6">
                         <Checkbox
                           checked={category.isSelected}
                           disabled={!category.isSupported || isRunning}
@@ -584,7 +584,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                       </label>
                     ))
                   ) : (
-                    <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm leading-snug text-secondary">
+                    <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm leading-snug text-secondary">
                       No categories yet. Inspect selected files to load metadata groups.
                     </div>
                   )}
@@ -644,10 +644,10 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
               </SectionBody>
             </Section>
 
-            <Section className="overflow-hidden rounded-md border border-amber-500/40 bg-transparent py-0 shadow-none ring-0">
-              <SectionHeader className="border-b border-amber-500/30 px-4 py-3">
+            <Section className="overflow-hidden rounded-md border border-amber-400/40 bg-transparent py-0 shadow-none ring-0">
+              <SectionHeader className="border-b border-amber-400/30 px-4 py-3">
                 <div className="flex items-start gap-2.5">
-                  <div className="flex size-8 items-center justify-center rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                  <div className="flex size-8 items-center justify-center rounded-md border border-amber-400/30 bg-amber-400/10 text-amber-400">
                     <ShieldAlert className="size-4" aria-hidden />
                   </div>
                   <div>
@@ -709,7 +709,7 @@ type SummaryRowProps = {
 
 function SummaryRow({ label, value, tone = "neutral" }: SummaryRowProps) {
   return (
-    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/80 bg-background/35 px-3 py-2">
+    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2">
       <span className="text-sm text-secondary">{label}</span>
       <span className={cn("font-display text-sm font-semibold tracking-tight", tone === "good" ? "text-accent-green" : tone === "warning" ? "text-accent-orange" : "text-primary")}>{value}</span>
     </div>

@@ -1,0 +1,544 @@
+# FileLocker Improvement Backlog
+
+Last updated: 2026-05-29
+
+This backlog tracks small, safe iterations for the current checkout. Items are ordered by security/correctness value first, then standardization, tests, and documentation.
+
+## P0 - Build and Validation
+
+- [x] Fix the `InstalledApp` test fixture after the `iconDataUri` model addition so the test project can compile again.
+- [x] Keep using a redirected test output path while a running `FileLocker.exe` locks the normal debug output.
+
+## P1 - Encryption Correctness and Standardization
+
+- [x] Tighten the encryption algorithm catalog so every algorithm has a stable payload id, display name, file-format name, UI availability flag, and support notes.
+- [x] Make catalog payload-id lookup reject unknown algorithm names instead of silently defaulting to AES.
+- [x] Make catalog AES-GCM checks strict so unknown algorithm strings are not treated as AES.
+- [x] Make catalog key-size lookup reject unknown algorithm names instead of returning 256 for anything.
+- [x] Store key-size validation rules in the central algorithm catalog instead of hardcoding them at call sites.
+- [x] Use catalog key-size defaults for WinUI encryption key-size fallback selections.
+- [x] Expose catalog file-format names and key sizes through the bridge algorithm contract.
+- [x] Cover catalog file-format algorithm names so aliases normalize through the same contract used by metadata.
+- [x] Add catalog invariant coverage for unique IDs, payload IDs, file-format names, and key-size definitions.
+- [x] Save custom encryption profiles with catalog-normalized algorithm names and key sizes.
+- [x] Apply saved encryption profiles through the catalog so stale key sizes or unsupported algorithms cannot reach run options.
+- [x] Hide saved encryption profiles that reference unsupported algorithms, unavailable runtime implementations, or invalid PNG-carrier combinations.
+- [x] Re-check runtime algorithm availability before saving custom encryption profiles from stale UI state.
+- [x] Normalize saved profile description text through the catalog so stale key sizes are not displayed.
+- [x] Format saved profile algorithm descriptions without duplicating key sizes already present in algorithm names.
+- [x] Normalize the live run summary algorithm and key-size text through the catalog.
+- [x] Use strict catalog normalization for WinUI file-encryption helper text.
+- [x] Add run-option coverage for catalog algorithm aliases overriding stale key-size selections.
+- [x] Remove any newly exposed encryption option that depends on custom cryptographic primitives instead of the platform or a maintained library.
+- [x] Stop accepting reserved XChaCha20-Poly1305 payloads until a maintained AEAD implementation is available, and remove the local HChaCha helper.
+- [x] Add per-algorithm payload tests for round trip, wrong password, tampered ciphertext, tampered tag, tampered nonce/header, and unsupported algorithm failure.
+- [x] Broaden authenticated-header tamper coverage across all supported payload algorithms.
+- [x] Use saved Argon2id KDF parameters when unwrapping payload keys so files remain portable across machines and header tampering is detected.
+- [x] Validate payload header fields more strictly before allocating or decrypting chunk data.
+- [x] Reject excessive or duplicate payload key slots before key derivation to match the two-slot file format.
+- [x] Re-check cancellation after payload headers are read and before expensive key derivation.
+- [x] Write new payloads as header-authenticated v4 files so key-slot unwrap binds algorithm, KDF, flags, chunk size, nonce prefix, and slot kind while keeping legacy v3 AES fixture compatibility.
+- [x] Make payload key rotation authenticate existing ciphertext before writing a rotated header.
+- [x] Close rotated payload temp streams before promotion and use the shared safe replacement helper.
+- [x] Reject unavailable payload algorithm implementations before writing a new payload header.
+- [x] Require AES-GCM runtime support for all payload algorithms because key slots use AES-GCM wrapping.
+- [x] Make per-chunk AEAD additional data explicitly little-endian instead of relying on machine-endian `BitConverter`.
+- [x] Make legacy scalar payload metadata and padding length writes explicitly little-endian.
+- [x] Make payload header Argon2 and chunk-size integer reads/writes explicitly little-endian.
+- [x] Expose current and legacy payload version constants so tests and writer use the same version source.
+- [x] Report truncated scalar payload headers as corrupted payload data instead of leaking `EndOfStreamException`.
+- [x] Make FileLocker payload detection tolerate valid seekable streams that return partial reads.
+- [x] Make payload header inspection explicitly require seekable streams before resetting position.
+- [x] Ensure v3 `.locked` metadata always records the normalized algorithm name and 256-bit key size from the central catalog.
+- [x] Write new payload metadata algorithm names through the catalog's stable file-format name instead of the UI display name.
+- [x] Keep existing AES-256-GCM v3 payloads decryptable with a fixed Base64 compatibility fixture test.
+
+## P2 - User-Safe Failure Behavior
+
+- [x] Normalize crypto failure messages so wrong password, unsupported algorithm, corrupted header, and tampered payload fail clearly without exposing sensitive path details.
+- [x] Make bridge secure-delete method names authoritative so stale pass-count values cannot downgrade named methods.
+- [x] Verify decrypt and verify flows report the saved payload algorithm rather than assuming AES-256-GCM.
+- [x] Carry per-result algorithm/key-size metadata so operation history can summarize payload-header algorithms instead of stale run options.
+- [x] Make history algorithm rendering tolerate legacy entries with missing algorithm or invalid key-size fields.
+- [x] Normalize known legacy encryption/hash aliases in history labels to canonical catalog names.
+- [x] Normalize per-result legacy algorithm/key-size fields before saving or exporting operation history.
+- [x] Share operation-result success/failure status rules so native and bridge history both count verified results as successes.
+- [x] Treat applied compression as requested in history metrics so inconsistent legacy rows cannot produce negative skipped counts or impossible `1/0` summaries.
+- [x] Make dashboard history and recent-file projections tolerate null legacy result lists or rows.
+- [x] Make dashboard stats, recent hashes, and decrypt history tolerate null legacy result lists or rows.
+- [x] Let the bridge history loader fall back to redacted history if protected history cannot be read.
+- [x] Let the WinUI history loader fall back to redacted history if protected history cannot be read.
+- [x] Read preferences, updater settings, startup metadata, and stored profile/history JSON through bounded file reads instead of size-check-then-unbounded reads.
+- [x] Validate bounded-reader paths against alternate data stream tokens anywhere after the filesystem root.
+- [x] Normalize protected and redacted history save payloads through the same null-safe clone path.
+- [x] Cap persisted history entries before cloning/sanitizing them during WinUI and bridge history loads.
+- [x] Redact compression-reason text when saving redacted local history, matching export behavior.
+- [x] Add focused coverage for redacted history save cloning with legacy algorithm fields and null result rows.
+- [x] Preserve full leaf names when redacting unquoted absolute directory paths whose final segment contains spaces.
+- [x] Strip Unicode format characters while redacting paths and user-facing failure messages.
+- [x] Reject duplicate WebView bridge payload fields recursively before request DTO deserialization.
+- [x] Reject duplicate WebView bridge request envelope fields before dispatching actions.
+- [x] Reject oversized WebView bridge request ids and action names before dispatch or response posting.
+- [x] Report malformed WebView bridge request envelopes with a stable user-safe message.
+- [x] Bound title-page normalization work before truncating bridge-provided page titles.
+- [x] Strip Unicode format characters from bridge-provided page titles and selected string values.
+- [x] Return a generic user-safe error for unknown WebView bridge actions instead of reflecting the action string.
+- [x] Trim external HTTPS bridge links before validation and length checks.
+- [x] Reject Unicode format characters in external HTTPS bridge links before shell-open.
+- [x] Reject shell-open targets with control characters before creating shell process start info.
+- [x] Reject Unicode format characters in shell-open targets before creating process start info.
+- [x] Cap centrally formatted friendly exception messages after redaction before they reach UI or bridge results.
+- [x] Catch folder enumeration failures during iteration in queue and metadata folder expansion.
+- [x] Classify unsupported encryption algorithms and unavailable runtime crypto separately from generic unsupported operations.
+- [x] Classify unsupported encryption failures by message before exception type so catalog errors wrapped as argument/operation failures stay distinct.
+- [x] Scan wrapped exception messages for unsupported encryption failures before falling back to the base exception type.
+- [x] Classify legacy-header/new-algorithm mismatches as unsupported encryption instead of generic corruption.
+- [x] Reject unsupported bridge hash algorithms instead of silently defaulting stale values to SHA-256.
+- [x] Reject alternate-data-stream paths in the shared file hashing service before opening files.
+- [x] Validate hash manifest entry digest lengths against the `.sha256` or `.sha512` manifest extension during verification.
+- [x] Reject alternate-data-stream hash manifest paths, output folders, and verification roots at the manifest service boundary.
+- [x] Reject relative and Unicode-format hash manifest paths, output folders, input paths, and file paths before filesystem resolution.
+- [x] Fail hash manifest verification on malformed or unsafe non-comment entries instead of silently skipping them.
+- [x] Reject direct hash verification when generated and expected digests use different SHA lengths.
+- [x] Bound pasted hash-verification input and avoid treating huge hex blobs as valid digest suffixes.
+- [x] Bound native queue folder expansion by file and directory count before adding selected folders to the UI queue.
+- [x] Bound batch hash path counts and path text length before parallel hashing starts.
+- [x] Deduplicate batch hash paths before enforcing the batch-size limit.
+- [x] Trim, bound, and deduplicate hash-manifest input paths before path normalization and file expansion.
+- [x] Reject alternate-data-stream hash-manifest input and file paths during manifest normalization.
+- [x] Cap, path-bound, and deduplicate hash-manifest file expansion before materializing the manifest file list.
+- [x] Preserve filesystem roots when calculating hash-manifest common directories.
+- [x] Reject oversized hash-manifest lines and excessive manifest entry counts during verification.
+- [x] Validate final updater digest download responses so redirected sidecar checks still finish over HTTPS with bounded content length.
+- [x] Bound GitHub release metadata JSON downloads before deserializing updater responses.
+- [x] Avoid reflecting malformed GitHub release tags in updater failure messages.
+- [x] Strip Unicode format characters from updater release notes before display.
+- [x] Bound updater version-string parsing before splitting or numeric conversion.
+- [x] Bound temporary updater-file cleanup scans so clearing app temp files cannot traverse an unexpectedly huge tree forever.
+- [x] Reject updater GitHub asset URLs with embedded credentials, non-default ports, or paths outside the configured repository release downloads.
+- [x] Reject updater GitHub asset URLs with query strings, fragments, or missing release asset path segments.
+- [x] Restrict updater installer selection and local filenames to the owned `FileLocker-Setup*.exe` asset family.
+- [x] Require an owned updater filename boundary so similarly prefixed installers are not downloaded or cleaned up.
+- [x] Reject updater installer names with path separators or invalid filename characters instead of silently rewriting them.
+- [x] Reject invalid owned-looking updater filenames before release selection or cleanup classification.
+- [x] Reject Unicode-format updater installer and download filenames before ownership or safe-name checks.
+- [x] Reject null updater settings before save/normalization instead of failing later with a less useful exception.
+- [x] Report the actual payload format version in decrypt results after adding v4 writes.
+- [x] Make bridge decrypt/verify runs ignore stale UI-selected encryption algorithms and rely on the payload header.
+- [x] Make WinUI decrypt/verify run-option capture treat the selected algorithm as informational instead of new-payload validation.
+- [x] Validate WinUI decrypt custom output folders through the shared fully-qualified normal-output path guard.
+- [x] Preserve keyfile and recovery-key unlock material for decrypt/verify even in Beginner or Intermediate mode.
+- [x] Allow recovery-key-only decrypt/verify starts through the WebView bridge and React decrypt page.
+- [x] Reject oversized bridge/native password or recovery-key text before file-operation preflight work starts.
+- [x] Reject Unicode format characters in startup/app/system-maintenance selection ids before lookup.
+- [x] Make hex text decoding reject embedded `0x` prefixes instead of silently deleting them before validation.
+- [x] Normalize and cap persisted custom output-directory settings before encryption/decryption runs reuse them.
+- [x] Store custom output directories as canonical full paths after validating preferences.
+- [x] Clear persisted custom output-directory settings that contain alternate-data-stream or Unicode format characters.
+- [x] Clear persisted relative custom output-directory settings before file-operation paths reuse them.
+- [x] Reject relative, alternate-data-stream, and Unicode-format app preferences data directories before load/save.
+- [x] Align React password presence checks with backend non-whitespace secret validation.
+- [x] Align dashboard quick-encrypt password presence checks with backend non-whitespace secret validation.
+- [x] Deduplicate expanded WebView file-operation queue entries so overlapping bridge paths do not process the same file twice.
+- [x] Deduplicate shared WebView bridge string-list inputs after trimming so metadata categories and non-full path lists cannot repeat.
+- [x] Normalize keyfile paths before loading and reject malformed keyfile paths with a stable message.
+- [x] Normalize, deduplicate, and cap WebView drag/drop paths before posting them into the React bridge.
+- [x] Normalize, deduplicate, and cap WebView picker paths before returning file/folder selections to React.
+- [x] Normalize, deduplicate, and cap command-line launch paths before forwarding them into the WebView initial state.
+- [x] Preserve the last valid command-line launch action when later unsupported flags are ignored.
+- [x] Apply the same path-count and path-length ceilings to React's shared path merge helper.
+- [x] Add coverage for folder-package metadata validation failures and unsafe restore paths in the v3 decrypt path.
+- [x] Validate single-file v3 content-hash metadata before restore or verify work proceeds.
+- [x] Bound legacy v3 binary metadata string fields before decoding them.
+- [x] Reject invalid UTF-8 in legacy v3 binary metadata text fields.
+- [x] Parse payload metadata kind with JSON instead of brittle string matching, and reject explicit unknown kinds.
+- [x] Read payload metadata property names case-insensitively for compatibility with older or externally generated JSON.
+- [x] Reject duplicate payload metadata kind fields so case-insensitive kind detection cannot disagree with later JSON deserialization.
+- [x] Reject duplicate payload metadata JSON fields recursively before deserialization so case-insensitive properties cannot use last-writer-wins behavior.
+- [x] Reject malformed or duplicate folder-package entry metadata before restore paths are resolved.
+- [x] Reject folder-package entry paths that end with a directory separator instead of naming a file.
+- [x] Reject folder-package and restored-file metadata names with leading/trailing whitespace or embedded path components before path resolution.
+- [x] Reject Unicode-format folder-package and restored-file metadata names before path resolution.
+- [x] Use a safe fallback folder display name for filesystem roots when building folder package names, backup folder names, and bridge folder rows.
+- [x] Remove package entry names from folder-package corruption and integrity failure messages.
+- [x] Use safe fallback names in verify-only status messages instead of echoing raw payload metadata names.
+- [x] Treat oversized restored metadata file names as unsafe so decrypt falls back before path creation.
+- [x] Validate restored payload timestamps and apply single-file metadata before the final decrypt move.
+- [x] Strip structural file attributes such as directory and reparse-point flags before applying restored payload metadata to regular files.
+- [x] Reject folder-package metadata whose total entry size overflows before decrypt/verify progress calculations.
+- [x] Preserve root folder paths when resolving custom output subdirectories for folder-source encryption.
+- [x] Reject relative, alternate-data-stream, and Unicode-format directory boundary paths when checking for output folders inside sources.
+- [x] Sanitize Unicode-format, reserved, and trailing-dot folder-structure segments before recreating relative output folders.
+- [x] Reject explicit v3 metadata algorithm/key-size mismatches against the authenticated payload header.
+- [x] Limit blank metadata algorithm/key-size compatibility to legacy AES payloads.
+- [x] Make blank AES metadata compatibility check header-version-aware so current v4 payloads must carry explicit algorithm and key size.
+- [x] Make metadata/header consistency validation reject unsupported header algorithm ids when called directly.
+- [x] Validate payload metadata key sizes against the catalog definition for the authenticated header algorithm.
+- [x] Reject legacy v3 payload headers that claim newer non-AES-GCM algorithms.
+- [x] Strip Unicode format characters from user-provided metadata override text and custom profile names.
+- [x] Make file and folder metadata validators reject null inputs clearly.
+- [x] Verify restored folder-package entries against their SHA-256 metadata before reporting decrypted output as verified.
+- [x] Drain any remaining authenticated padding after compressed v3 file decrypt/verify while allowing for `GZipStream` read-ahead buffering.
+- [x] Check compressed v3 file restore length against authenticated metadata before accepting the output.
+- [x] Bound folder-source backup copying before remove-originals flows copy a selected source tree.
+- [x] Put folder-backup directory conflict resolution under the shared available-name attempt limit.
+- [x] Make fixed-length stream helpers reject negative lengths instead of treating them as empty work.
+- [x] Make progress-copy stream helpers reject negative total lengths.
+- [x] Make truncated legacy AES-GCM payload envelopes fail before ciphertext allocation/decryption.
+- [x] Wrap malformed legacy binary metadata reads in a stable corrupted-metadata failure.
+- [x] Reject invalid chunk counters before payload nonce/AAD construction can cross the signed counter boundary.
+- [x] Read keyfiles through a bounded stream so the 16 MB cap is enforced during the actual read, not only before it.
+- [x] Bound payload password and recovery-key text before UTF-8 allocation and Argon2 derivation.
+- [x] Apply the same KDF secret text ceiling to legacy AES/PNG-carrier compatibility paths.
+- [x] Centralize the KDF secret text ceiling so streaming and legacy payload paths use one rule.
+- [x] Make startup/app-maintenance hidden process scans start stdout/stderr reads asynchronously so timeout enforcement cannot be bypassed by blocking `ReadToEnd`.
+- [x] Cap startup/app-maintenance warning messages after redaction before returning scan payloads.
+- [x] Reject oversized `.ico` files before App Manager icon extraction opens registry-provided icon paths.
+- [x] Normalize and cap installed-app display text before it reaches app IDs, sorting, and WebView payloads.
+- [x] Strip Unicode format characters from installed-app and COM startup text before app IDs, sorting, and WebView payloads.
+- [x] Bound startup-folder file materialization during startup item scans.
+- [x] Use the shared available-file resolver for disabled startup-item backup paths.
+- [x] Bound startup command `PATH`/`PATHEXT` probing and ignore malformed environment path segments.
+- [x] Reject Unicode format characters in registry-provided paths and expanded environment variable values.
+- [x] Treat startup commands with alternate-data-stream executable suffixes as unresolved instead of truncating them at the first space.
+- [x] Bound app-leftover deletion traversal so cleanup cannot materialize or delete an unexpectedly huge selected tree.
+- [x] Bound system-cleanup empty-directory enumeration before sorting and deleting folders.
+- [x] Bound browser/profile cleanup target discovery before materializing child directory lists.
+- [x] Reject alternate-data-stream icon paths before App Manager icon extraction reaches shell/icon APIs.
+- [x] Require executable icon fallback targets to end in `.exe` so malformed uninstall commands cannot produce truncated icon paths.
+- [x] Reject alternate-data-stream cleanup paths before temporary-file cleanup touches attributes or deletion APIs.
+- [x] Reject alternate-data-stream tokens anywhere in output and preflight output-directory paths.
+
+## P3 - UI and Documentation Consistency
+
+- [x] Drive React encryption option labels from the same backend-supported algorithm definitions or an explicit bridge contract.
+- [x] Filter bridge encryption options by payload algorithm runtime support before the UI can offer them.
+- [x] Filter WinUI encryption algorithm and key-size choices by payload algorithm runtime support.
+- [x] Treat an explicit empty bridge encryption-algorithm list as unavailable instead of repopulating fallback algorithms.
+- [x] Make dashboard quick-encrypt use the runtime-filtered bridge default algorithm and disable itself when none is available.
+- [x] Make the dashboard quick-encrypt drop zone advertise `none` for drag/drop when runtime encryption is unavailable.
+- [x] Centralize the runtime-supported-new-payload predicate used by bridge, WinUI, and profiles.
+- [x] Make React encrypt requests use the effective catalog-backed algorithm id when stale UI state falls back to a supported option.
+- [x] Build the Security Guide encryption summary from the bridge-provided algorithm definitions instead of hardcoded names.
+- [x] Update README to describe the actual supported encryption options once the catalog is finalized.
+- [x] Update README compatibility language for header-authenticated v4 payloads and legacy AES-256-GCM v3 decryption.
+- [x] Document that v4 payload metadata carries explicit algorithm/key-size values checked against the authenticated header.
+- [x] Clarify README wording that non-default encryption options are exposed only when the runtime support check passes.
+- [x] Clarify that PNG carrier output still uses the legacy AES-GCM payload path and is not available for newer `.locked` algorithms.
+- [x] Align dev/mock dashboard copy with `.locked` files and AES-256-GCM mode naming.
+- [x] Align dev/mock history operation names, result statuses, and per-result algorithm metadata with the real bridge.
+- [x] Include operation-level and per-result algorithm metadata in CSV history exports.
+- [x] Include per-result algorithm metadata in Markdown and CSV operation receipts.
+- [x] Add receipt-export coverage for formula-like CSV cells.
+- [x] Align the React file-operation result type with bridge compression-size fields.
+- [x] Escape top-level Markdown receipt fields so profile names, operation names, backup paths, and summaries cannot break receipt structure.
+- [x] Sanitize operation receipt entries before Markdown/CSV rendering so path and text caps apply consistently.
+- [x] Normalize loaded/saved operation history rows so null required fields and negative metrics cannot break dashboards or exports.
+- [x] Strip Unicode format characters from persisted operation-history display and path fields.
+- [x] Apply the same operation-history sanitizer to the React/WebView bridge history loader and dashboard DTOs.
+- [x] Trim legacy operation-history text fields before they reach exact-match dashboard and React filters.
+- [x] Trim legacy operation-history path and message fields before dashboard, export, and redacted-history projections.
+- [x] Count legacy applied-compression history rows consistently in storage-savings metrics even when the old requested flag is missing.
+- [x] Sanitize custom encryption profiles on load/save so malformed rows cannot inject unsupported algorithms or invalid option combinations.
+- [x] Keep saved custom profiles from persisting secure-delete state when source removal is off.
+- [x] Normalize runtime options so secure-delete state is cleared whenever originals are retained.
+- [x] Trim custom encrypt/decrypt output directories during preference normalization.
+- [x] Run React/WebView preference saves through the shared preference normalizer.
+- [x] Migrate numeric legacy history privacy settings so old `Off` values still disable local history.
+- [x] Centralize output timestamp policy normalization across saved preferences, bridge run options, and native UI paths.
+- [x] Prevent blank custom encrypt-output preferences from being persisted as an enabled custom destination.
+- [x] Surface the default decrypt output folder through the WebView settings bridge when the stored preference is enabled but blank.
+- [x] Reset native settings to the same default decrypt output folder used by the decrypt page and WebView bridge.
+- [x] Block React settings saves that enable a custom output destination without a folder path.
+- [x] Make encrypt-output suggestions ignore malformed folder roots instead of surfacing path exceptions.
+- [x] Populate per-result hash algorithm metadata in both bridge and WinUI hash history paths.
+- [x] Surface history algorithm labels in React recent activity and encrypt/decrypt history dialogs.
+- [x] Avoid fake key-size labels for non-cryptographic history-only operations such as secure delete.
+- [x] Keep unknown and non-cryptographic legacy history algorithms from rendering as fake key-size labels in backend receipts and React history views.
+- [x] Centralize React history algorithm-label formatting so dashboard and operation pages do not drift.
+- [x] Centralize React default encryption-option selection so pages do not rely on bridge ordering.
+- [x] Carry catalog encryption support notes through the WebView bridge and display them in the existing React algorithm card.
+- [x] Centralize React hash algorithm labels and digest lengths so the Hash Files page and dev bridge mock do not drift.
+- [x] Align dev bridge settings mock with the real timestamp policy values and default decrypt output behavior.
+- [x] Centralize React output timestamp policy labels/defaults and normalize requests before sending them over the bridge.
+- [x] Make the dev bridge persist settings saves/resets in memory so browser review does not drift from real bridge behavior.
+- [x] Return cloned settings from the dev bridge mock and persist Explorer integration toggles like a real JSON bridge round-trip.
+- [x] Use the shared frontend default encryption algorithm constant in dev bridge dashboard and history mocks.
+- [x] Align the dev bridge encrypt-output suggestion response with the real `suggestedPath` bridge contract.
+- [x] Add result-shaped dev bridge mocks for encrypt, decrypt, verify, and secure delete so browser review pages do not crash on `{}` responses.
+- [x] Align dev bridge operation result statuses with the host's `Completed` success contract so secure-delete previews do not count successful mock rows as failures.
+- [x] Add typed dev bridge responses for update test/download/install and maintenance action buttons instead of falling through to `{}`.
+- [x] Make the React Hash Files page disable hashing and manifest creation if stale UI state references an unsupported hash algorithm.
+- [x] Send the catalog-backed hash algorithm id from React hash requests instead of raw UI state.
+- [x] Make the dev bridge hash mock honor requested SHA-256/SHA-512 algorithms and manifest extensions.
+- [x] Add a result-shaped dev bridge mock for hash manifest verification so the mock action table stays aligned with the host bridge.
+- [x] Send only the normalized expected digest from React hash verification instead of the full pasted checksum line.
+- [x] Make the dev bridge hash verification mock return mismatch when normalized digests differ.
+- [x] Show a specific React hash-verification message when the pasted digest length does not match the generated hash algorithm.
+- [x] Align React expected-hash normalization with backend pasted-input and huge-hex suffix limits.
+- [x] Align the dev bridge text-conversion mock with backend mode, format, and input-size validation.
+- [x] Keep the repeated React PNG-carrier toggle disabled for algorithms that cannot use the carrier path.
+- [x] Normalize and deduplicate React-selected local paths before they reach file, hash, metadata, and secure-delete bridge requests.
+- [x] Filter malformed React encryption algorithm bridge entries before option rendering.
+- [x] Treat explicit empty or fully invalid React encryption algorithm bridge lists as unavailable instead of falling back to built-in options.
+- [x] Cover React encryption algorithm option filtering and fallback semantics with a focused utility test.
+- [x] Reuse the shared React comparable-path helper for both adding and removing selected local paths.
+- [x] Normalize Hash Files picker replacement selections through the same path helper used by drag/drop additions.
+- [x] Use the shared React comparable-path helper when removing paths from the reusable drop-zone component.
+- [x] Use the shared React comparable-path helper when removing paths from the dashboard quick-encrypt queue.
+- [x] Use the shared React comparable-path helper when removing paths from the Metadata Scrambler selection.
+- [x] Use the shared React comparable-path helper when resolving the active Metadata Scrambler preview file.
+- [x] Keep the React bridge progress-event buffer capped at the intended 30 entries.
+- [x] Normalize and deduplicate app-level native dropped paths before handing them to page-specific queues.
+- [x] Clamp invalid drive-usage values before rendering maintenance disk bars.
+- [x] Normalize stored maintenance cleanup selections before restoring them from localStorage.
+- [x] Clamp malformed installed-app size values before sorting App Manager rows.
+- [x] Clamp invalid progress values in the shared React progress bar before rendering width and ARIA state.
+- [x] Sanitize dashboard storage and weekly activity chart numbers before using them in inline layout styles.
+- [x] Clamp malformed dashboard activity item sizes before sorting recent activity.
+- [x] Count only normalized drag-and-drop paths in React queue notifications and reject empty drops cleanly.
+- [x] Ignore malformed WebView messages before bridge event/request dispatch.
+- [x] Bound bridge external-link URLs before shell launch.
+- [x] Bound shared WebView bridge string/path lists by value length and item count before downstream processing.
+- [x] Report malformed full-path bridge lists with the same stable selected-path error across all bridge callers.
+- [x] Redact, cap, and count-limit queue expansion warnings before WinUI or WebView surfaces render them.
+- [x] Reuse the bounded folder-scan warning helper for Metadata Scrambler folder expansion.
+- [x] Keep WebView progress events finite before sending them to React.
+- [x] Keep native queue and folder-package progress calculations finite before updating UI state.
+- [x] Keep decrypt queue progress finite and clamp queue file-size displays away from negative values.
+- [x] Deserialize protected profile/history JSON from UTF-8 bytes and zero plaintext buffers after use.
+- [x] Add focused regression coverage for non-finite queue and folder-package progress values.
+- [x] Bound startup-management metadata JSON reads and cover oversized metadata handling.
+- [x] Bound app preferences JSON reads and cover oversized preferences fallback.
+- [x] Bound updater settings JSON reads and cover oversized updater settings fallback.
+- [x] Normalize updater skipped-version settings through the updater version parser before persisting them.
+- [x] Cap remote updater release notes before returning them through the bridge.
+- [x] Bound stored profile/history JSON loads before deserializing protected or redacted data.
+- [x] Cap loaded operation history to the same entry limit used when saving and displaying history.
+- [x] Reserve built-in profile names so custom profiles cannot silently shadow built-in encryption profiles.
+- [x] Bound WebView bridge request JSON before parsing oversized payloads.
+- [x] Time out stalled React bridge requests instead of leaving pending UI promises unresolved.
+- [x] Render malformed history timestamps and non-finite byte values safely in React UI surfaces.
+- [x] Show malformed dashboard history timestamps as unknown instead of the Unix epoch fallback.
+- [x] Normalize bridge operation ids before using them in progress events.
+- [x] Collapse control characters and cap persisted history display text before export or dashboard rendering.
+- [x] Keep truncated profile and title strings trimmed after applying their display-length limits.
+- [x] Bound operation-history failure category summaries while metrics are calculated, before persistence sanitization.
+- [x] Cap malformed operation-history path text before dashboard or export rendering.
+- [x] Add focused regression coverage for bridge operation-id and operation-history text normalization.
+- [x] Make the WinUI encrypt summary avoid silently falling back to AES when the selected algorithm is stale or invalid.
+- [x] Bound PNG carrier encryption to a documented source-file size limit because that compatibility path is memory-backed.
+- [x] Surface oversized PNG carrier selections during preflight before starting encryption.
+- [x] Reject oversized bridge PNG carrier queues before any partial encryption run starts.
+- [x] Carry the PNG carrier source-size limit through the bridge algorithm contract for React validation.
+- [x] Disable React encrypt submission for known oversized file selections when PNG carrier output is enabled.
+- [x] Cover the PNG carrier source-size guard with focused payload validation tests.
+- [x] Bound PNG carrier payload extraction before allocating embedded compatibility payload chunks.
+- [x] Reuse the PNG carrier payload-size guard before embedding payloads into carrier images.
+- [x] Cover the PNG carrier payload-size guard with focused stego payload tests.
+- [x] Cap and clean custom payload metadata override text during run-option normalization.
+- [x] Mirror the payload metadata note cap in the React encryption form.
+- [x] Bound Encode Text conversion input on the backend and React textarea before allocating conversion output.
+- [x] Reject unsupported Encode Text bridge modes and formats instead of silently falling back to Base64/encode.
+- [x] Redact hidden startup/app scan process stderr before surfacing warnings to the UI.
+- [x] Redact and cap drive-maintenance process output before returning it to the WebView.
+- [x] Bound maintenance process stdout/stderr reads before redaction so verbose tools cannot grow unbounded strings.
+- [x] Report hidden startup scan process start failures instead of silently dropping that scan source.
+- [x] Cap system-maintenance warning messages and bound registry warning lists before returning scan payloads.
+- [x] Bound startup/app-maintenance request id lists and normalize returned warning arrays before UI delivery.
+- [x] Reuse startup item id validation across enable, disable, ignore, export, and broken-item removal actions.
+- [x] Reject oversized installed-app ids before launching vendor uninstall commands.
+- [x] Bound App Manager leftover child-directory traversal and treat incomplete reparse inspection as unsafe.
+- [x] Require App Manager cleanup and startup restore allow-list paths to be fully qualified normal paths.
+- [x] Bound persisted maintenance UI selection JSON before parsing localStorage values.
+- [x] Bound system-maintenance cleanup and registry selection id lists before scan or cleanup work starts.
+- [x] Cap maintenance cleanup and restore failure messages with the same redaction helper used for warnings.
+
+## P4 - Cleanup
+
+- [x] Remove duplicated algorithm checks from active encryption/decryption UI paths where the catalog already provides the value.
+- [x] Centralize active frontend fallback/mock/default algorithm strings; leave documentation prose and legacy payload labels explicit.
+- [x] Remove the stale non-runtime-filtered selectable algorithm list from the catalog.
+- [x] Remove unused permissive encryption-catalog support checks after strict call sites moved to explicit normalization.
+- [x] Centralize SHA-256/SHA-512 hash algorithm normalization so manifest creation and direct hashing use the same rule.
+- [x] Reuse the shared hash algorithm labels in native UI and bridge request defaults.
+- [x] Reuse the shared hash expected-length rules in hash input verification instead of hardcoding digest lengths.
+- [x] Make the React hash algorithm lookup tolerate malformed runtime/mock ids without throwing.
+- [x] Bound and reject invisible-formatting React hash algorithm ids before lookup.
+- [x] Reject hash manifests with unsupported extensions instead of silently interpreting them as SHA-256.
+- [x] Remove the avoidable temporary array copy in chunk encryption span writes without changing the file format.
+- [x] Zero transient byte buffers in the AES text-helper path after output generation.
+- [x] Zero transient byte buffers in standalone Base64/Hex/UTF-8 text conversion helpers.
+- [x] Make the AES-GCM text helper reject AES-GCM-SIV instead of accepting any algorithm name containing `GCM`.
+- [x] Make the AES-GCM text helper reject stale non-256-bit key sizes before key derivation.
+- [x] Make AES-GCM text-helper length prefixes explicitly little-endian.
+- [x] Reject AES-GCM text-helper inputs that exceed the labeled payload's 16-bit length fields.
+- [x] Make text-helper SHA output use the shared hash algorithm normalizer instead of accepting any string containing `SHA`.
+- [x] Make Base64 text-helper selection exact instead of accepting any algorithm string containing `Base64`.
+- [x] Clear chunk-encryption plaintext buffers immediately after each payload chunk is written.
+- [x] Clear chunk-decryption plaintext buffers as soon as bytes are copied to the caller.
+- [x] Clear plaintext compression samples and compressed sample buffers after estimating compression savings.
+- [x] Reject relative, alternate-data-stream, and Unicode-format source paths before compression sampling opens files.
+- [x] Clear serialized streaming payload metadata buffers after file and folder-package encryption.
+- [x] Write PNG carrier CRC values with explicit big-endian primitives instead of a `BitConverter` endian-reversal temporary.
+- [x] Write registry export QWORD values with explicit little-endian primitives instead of relying on machine-endian `BitConverter`.
+- [x] Use the static platform RNG fill helper for legacy payload random byte buffers.
+- [x] Reject invalid random-buffer lengths in chunked payload helper code.
+- [x] Make updater bounded-copy failures identify whether the installer or digest download exceeded the limit.
+- [x] Cap updater cleanup file candidates instead of materializing every stale download match.
+- [x] Make temporary-file cleanup tolerate a null params array as a no-op.
+- [x] Require atomic replacement temp files to live beside the destination so future call sites cannot accidentally lose same-directory promotion semantics.
+- [x] Add an explicit safe generic file-delete helper so history/updater deletes do not depend on the temporary-file method name.
+- [x] Rename the shared file-delete primitive so generic cleanup failures no longer report temporary-file wording.
+- [x] Bound available-output-path collision probing in shared file writes and payload restore/write helpers.
+- [x] Promote payload encryption/decryption temp outputs through the shared safe replacement helper instead of raw `File.Move`.
+- [x] Make size-hiding padding calculation and random padding writes reject invalid lengths without overflow.
+- [x] Make chunk-decryption stream reads validate destination arguments before reading or decrypting chunk data.
+- [x] Make chunk-encryption stream writes validate source arguments and reject writes after completion/disposal.
+- [x] Make disposed plaintext payload streams reject further reads instead of touching cleared buffers.
+- [x] Honor cancellation before chunked payload finalization writes the final partial chunk and sentinel.
+- [x] Dispose the decrypting payload stream if `OpenPayload` fails while reading metadata.
+- [x] Clear partial `ReadExactly` buffers when authenticated payload reads fail mid-stream.
+- [x] Add a non-allocating PNG carrier presence check for validation and inspector paths that do not need the embedded payload bytes.
+- [x] Ensure derived key-encryption keys are zeroed even if key-slot AAD construction fails.
+- [x] Normalize App Manager icon DisplayIcon and uninstall-command parsing through shared registry path helpers.
+- [x] Make registry path normalization return null for quoted-empty values after expansion and trimming.
+- [x] Bound shared registry path normalization before oversized registry strings reach path parsing.
+- [x] Make App Manager DisplayIcon parsing return null when shell-resource markers or resource suffixes leave no path.
+- [x] Reject relative App Manager icon and uninstall-command fallback paths before icon extraction.
+- [x] Reject Unicode-format App Manager icon and uninstall-command fallback paths before icon extraction.
+- [x] Avoid materializing every top-level executable when App Manager only needs the first icon fallback candidate.
+- [x] Bound startup PATH/PATHEXT command resolution and treat malformed startup executable paths as unresolved instead of scan-breaking.
+- [x] Treat drive-relative startup executable paths as unresolved instead of resolving them against the process drive.
+- [x] Reject control-character registry path values before environment expansion can truncate them into misleading paths.
+- [x] Check referenced environment variable values for control characters before expanding startup and registry paths.
+- [x] Require protected startup path checks to use fully qualified paths without Unicode format characters.
+- [x] Reject persisted custom output directories containing control characters before they reach file-operation settings.
+- [x] Reject updater installer cleanup paths containing control characters before creating launch environment variables.
+- [x] Reject Unicode format characters in updater installer paths and GitHub release asset URLs.
+- [x] Reject relative updater installer and cleanup directory paths before launch, trust validation, or stale-file enumeration.
+- [x] Reject control-character file targets in the shared atomic write and available-path helpers.
+- [x] Reject Unicode-format file targets in the shared atomic write and available-path helpers.
+- [x] Bound encryption algorithm name normalization in the shared catalog before alias cleanup allocates extra strings.
+- [x] Reject Unicode format characters in shared encryption algorithm catalog inputs before alias cleanup.
+- [x] Sanitize and cap unknown operation-history algorithm labels before dashboard/export formatting.
+- [x] Strip Unicode format characters from operation-history algorithm labels before dashboard/export formatting.
+- [x] Bound hash algorithm name normalization before bridge or manifest inputs reach SHA-256/SHA-512 selection.
+- [x] Reject Unicode format characters in shared hash algorithm names before SHA-256/SHA-512 selection.
+- [x] Reject Unicode format characters in direct hash file paths before opening selected files.
+- [x] Cap scheduled-task COM trigger/action counts and sanitize COM text before startup scan payloads are built.
+- [x] Cap WMI startup consumer processing and sanitize WMI JSON text before creating startup entries.
+- [x] Cap combined scheduled-task command text after joining multiple task actions.
+- [x] Reject control-character hash paths in both single-file and batch hash operations.
+- [x] Reject relative hash paths in both single-file and batch hash operations.
+- [x] Reject control-character hash manifest input and file paths during manifest normalization.
+- [x] Apply manifest line and entry bounds to the permissive hash-manifest parser.
+- [x] Cap persisted operation-history result details per entry so large batches do not break history saves.
+- [x] Drop control-character paths during frontend queue merging before paths reach page state.
+- [x] Reject control-character bridge list values before shared path/category/id lists reach handlers.
+- [x] Reject control-character keyfile paths before loading key material for encryption/decryption helpers.
+- [x] Reject Unicode format characters and alternate-data-stream keyfile paths before loading key material.
+- [x] Cap accepted updater installer asset filenames before download paths are built.
+- [x] Reject control-character system-maintenance drive roots and selection ids at the service boundary.
+- [x] Require system-maintenance drive actions to receive an actual drive root and reject Unicode format characters.
+- [x] Reject control-character startup and installed-app request ids at the startup-maintenance service boundary.
+- [x] Short-circuit oversized KDF secret text before UTF-8 byte counting while preserving byte-size validation.
+- [x] Zero partially read keyfile buffers if keyfile loading fails after allocation.
+- [x] Parse updater digest sidecars line-by-line and cap digest text/line sizes before extracting SHA-256 candidates.
+- [x] Add direct coverage for control-character registry cleanup and startup toggle ids.
+- [x] Reject control-character cleanup paths before temporary-file cleanup touches filesystem APIs.
+- [x] Reject relative and Unicode-format cleanup paths before temporary-file cleanup touches filesystem APIs.
+- [x] Ignore control-character folder roots in encrypted-output path suggestions.
+- [x] Ignore alternate-data-stream folder roots in encrypted-output path suggestions.
+- [x] Ignore relative and Unicode-format folder roots in encrypted-output path suggestions.
+- [x] Strip embedded control characters from unsupported pasted hash fallback text.
+- [x] Strip Unicode format characters from unsupported pasted hash fallback text.
+- [x] Treat leading control and Unicode format characters as ignorable CSV formula prefixes.
+- [x] Replace embedded control characters in persisted operation-history path fields before export/display.
+- [x] Make sensitive-data redaction fail closed for malformed absolute paths containing control characters.
+- [x] Reject control-character encryption algorithm names in the shared backend catalog.
+- [x] Bound and validate frontend encryption algorithm option metadata before selectors consume it.
+- [x] Reject Unicode format characters in frontend encryption algorithm option metadata before selectors consume it.
+- [x] Strip and cap frontend algorithm labels before dashboard/history display.
+- [x] Strip Unicode format characters from frontend algorithm labels before dashboard/history display.
+- [x] Align bridge path validation coverage with the shared control-character list rejection boundary.
+- [x] Reject relative paths in bridge full-path validation before path lists or existing-path checks resolve them.
+- [x] Reject blank or control-character paths in the bounded file reader before opening files.
+- [x] Reject Unicode-format paths in the bounded file reader before opening files.
+- [x] Reject relative paths in the bounded file reader before opening stored app data.
+- [x] Cap hash manifest line counts during verification and permissive manifest parsing.
+- [x] Align hash-manifest bridge path coverage with the shared control-character list rejection boundary.
+- [x] Reject alternate-data-stream file targets in shared atomic write and available-path helpers.
+- [x] Reject alternate-data-stream parent paths in shared atomic write and available-path helpers.
+- [x] Reject relative file targets in shared atomic write and available-path helpers.
+- [x] Reject alternate-data-stream paths in the bounded file reader.
+- [x] Reject alternate-data-stream relative paths in hash manifest entries before verification resolves them.
+- [x] Reject Unicode format characters in hash manifest relative paths before verification resolves them.
+- [x] Reject malformed and alternate-data-stream paths before secure delete probes file existence.
+- [x] Align secure-delete bridge path coverage with the shared control-character list rejection boundary.
+- [x] Apply the same normal-file target validation to non-secure source deletion.
+- [x] Reject alternate-data-stream parent paths before source deletion or source backups run.
+- [x] Reject relative and Unicode-format source delete, backup source, and payload output paths before filesystem resolution.
+- [x] Reject control-character and alternate-data-stream tokens in single bridge path validation.
+- [x] Reject Unicode format characters and alternate-data-stream parent tokens in single bridge path validation.
+- [x] Reject Unicode format characters in startup source registry paths and filesystem reveal targets.
+- [x] Reject alternate-data-stream tokens during full bridge path-list normalization.
+- [x] Add file-operation bridge coverage for alternate-data-stream path rejection.
+- [x] Reject control-character and alternate-data-stream payload output paths before file stream creation.
+- [x] Reject relative payload output and temporary paths before file-operation helpers resolve them against the process directory.
+- [x] Reject alternate-data-stream directory output candidates in payload restore/backup path helpers.
+- [x] Reject alternate-data-stream source and backup folder paths before creating source backups.
+- [x] Make shared source-file validation errors generic across secure delete and backup creation.
+- [x] Reject control-character HTTPS links before external shell-open URI parsing.
+- [x] Reject alternate-data-stream local paths before shell-open launch.
+- [x] Fail closed when local shell-open target normalization throws.
+- [x] Reject alternate-data-stream updater installer paths before cleanup or installer launch.
+- [x] Bound and reject control-character GitHub release asset URLs before updater download URI creation.
+- [x] Sanitize Unicode-format and reserved relative directory segments when restoring folder packages.
+- [x] Require registry help-file references to resolve to fully-qualified non-ADS paths before cleanup scan reporting.
+- [x] Fail closed for drive-relative or alternate-data-stream registry paths before marking them missing.
+- [x] Validate Explorer integration executable paths before building registry command values.
+- [x] Reject payload unlock attempts that provide no password or recovery key before reading encrypted streams.
+- [x] Bound and sanitize elevated-restart target page IDs before building restart arguments.
+- [x] Reuse validated executable-path normalization before launching elevated FileLocker restarts.
+- [x] Normalize installed-app uninstall commands before marking vendor uninstallers launchable.
+- [x] Route About version display through the shared update-version service.
+- [x] Fail closed when executable version lookup sees relative, hidden-format, missing, or alternate-data-stream paths.
+- [x] Validate queue Explorer-select paths before formatting shell arguments.
+- [x] Validate Explorer integration PowerShell script paths before launching the legacy setup script.
+- [x] Derive the install-folder menu target from the validated executable path with an app-data fallback.
+- [x] Bound sensitive error-message redaction output before status/UI surfaces consume it.
+- [x] Keep stego payload detection consistent with extraction when PNG chunks exceed the safe payload limit.
+- [x] Validate stego detection and extraction file paths before opening carrier files.
+- [x] Decode stored UTF-8 text strictly and clear bounded reader byte buffers after text decoding.
+- [x] Reject invalid UTF-8 in bounded stored-text reads instead of silently replacing corrupted bytes.
+- [x] Reject control and Unicode-format bridge request ids/actions before dispatch or response echoing.
+- [x] Reject Unicode-format dropped paths in the frontend path merge helper before they enter page state.
+- [x] Bound text-conversion mode and format selectors before matching supported values.
+- [x] Reject control and Unicode-format text-conversion mode/format selectors.
+- [x] Normalize legacy decrypt selections as fully-qualified non-ADS paths before inspecting files or folders.
+- [x] Validate payload-version probe file paths before opening decrypt or verify streams.
+- [x] Canonicalize V3 decrypt, verify, folder-preview, and key-rotation payload paths before stream access.
+- [x] Normalize legacy encrypt queue selections as fully-qualified non-ADS paths before expansion.
+- [x] Validate low-level payload file-read helpers before opening source or legacy payload streams.
+- [x] Canonicalize top-level encrypt, decrypt, and verify payload source paths before pipeline branching.
+- [x] Align the frontend dev bridge repository URL with the updater and README project URL.
+- [x] Add a frontend local-path guard before reveal-in-Explorer bridge requests.
+- [x] Enforce the reveal-in-Explorer path guard centrally in the frontend bridge client.
+- [x] Keep frontend selected-path state limited to fully-qualified non-ADS local paths.
+- [x] Rename the frontend path predicate around normal local-path validation instead of reveal-only wording.
+- [x] Centralize password-plus-keyfile KDF secret material construction across legacy and chunked payload paths.
+- [x] Rename the legacy AES-GCM envelope version constant to avoid confusion with chunked payload format versions.
+- [x] Centralize default Argon2id and PBKDF2 KDF settings across legacy and chunked payload paths.
+- [x] Remove the disabled non-implemented hybrid-encryption placeholder from the encryption options UI.
+- [x] Document the standardized v4 payload header fields, KDF settings, nonces, salts, and AEAD tags.
+- [x] Require keyfile paths to be fully qualified before loading KDF secret material.
+- [x] Reuse canonical payload inspector paths after validating queued encrypted files.
+- [x] Fall back to the built-in encryption algorithm list when bridge metadata filters down to no valid options.
+- [x] Validate folder-package restore roots before resolving package entries under them.
+- [x] Strip control characters from redacted non-path error text before warnings or UI messages consume it.
+- [x] Clear bounded external-process text buffers after command output has been drained.
+- [x] Report keyfile directory selections as invalid files instead of missing paths.
+- [x] Replace control and Unicode-format characters in CSV cells before export formula escaping.
+- [x] Normalize metadata-scrambler selections as fully-qualified non-ADS paths before expansion.
+- [x] Normalize legacy hash-file selections through the shared existing-file validator before hashing previews.

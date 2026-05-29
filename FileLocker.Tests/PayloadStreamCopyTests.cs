@@ -43,6 +43,59 @@ public sealed class PayloadStreamCopyTests
     }
 
     [Fact]
+    public void CopyFixedLengthStream_RejectsNegativeLength()
+    {
+        using var input = new MemoryStream([1, 2, 3]);
+        using var output = new MemoryStream();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MainWindow.CopyFixedLengthStream(
+                input,
+                output,
+                length: -1,
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void CopyStreamWithProgress_ReturnsCopiedByteCount()
+    {
+        byte[] inputBytes = [1, 2, 3, 4, 5];
+        using var input = new MemoryStream(inputBytes);
+        using var output = new MemoryStream();
+
+        long copied = MainWindow.CopyStreamWithProgress(
+            input,
+            output,
+            TestContext.Current.CancellationToken,
+            totalLength: inputBytes.Length,
+            progress: null,
+            startPercent: 0,
+            endPercent: 100,
+            status: "Copying");
+
+        Assert.Equal(inputBytes.Length, copied);
+        Assert.Equal(inputBytes, output.ToArray());
+    }
+
+    [Fact]
+    public void CopyStreamWithProgress_RejectsNegativeTotalLength()
+    {
+        using var input = new MemoryStream([1, 2, 3]);
+        using var output = new MemoryStream();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MainWindow.CopyStreamWithProgress(
+                input,
+                output,
+                TestContext.Current.CancellationToken,
+                totalLength: -1,
+                progress: null,
+                startPercent: 0,
+                endPercent: 100,
+                status: "Copying"));
+    }
+
+    [Fact]
     public void CopyFixedLengthStream_DoesNotReadWhenAlreadyCanceled()
     {
         using var input = new ThrowOnReadStream();
@@ -72,6 +125,24 @@ public sealed class PayloadStreamCopyTests
     }
 
     [Fact]
+    public void SkipBytes_RejectsNegativeByteCount()
+    {
+        using var input = new MemoryStream([1, 2, 3]);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MainWindow.SkipBytes(input, byteCount: -1, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void DrainBufferedPayloadPadding_RejectsNegativeByteCount()
+    {
+        using var input = new MemoryStream([1, 2, 3]);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MainWindow.DrainBufferedPayloadPadding(input, byteCount: -1, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public void SkipBytes_DoesNotReadWhenAlreadyCanceled()
     {
         using var input = new ThrowOnReadStream();
@@ -92,6 +163,15 @@ public sealed class PayloadStreamCopyTests
         MainWindow.WriteRandomPadding(output, paddingLength: 17, TestContext.Current.CancellationToken);
 
         Assert.Equal(17, output.Length);
+    }
+
+    [Fact]
+    public void WriteRandomPadding_RejectsNegativeLength()
+    {
+        using var output = new MemoryStream();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MainWindow.WriteRandomPadding(output, paddingLength: -1, TestContext.Current.CancellationToken));
     }
 
     [Fact]

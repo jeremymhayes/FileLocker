@@ -62,6 +62,32 @@ public sealed class FileHashServiceTests
     }
 
     [Fact]
+    public async Task ComputeHashesHexAsync_DeduplicatesBeforeApplyingPathLimit()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        string tempDirectory = Path.Combine(Path.GetTempPath(), "filelocker-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        string filePath = Path.Combine(tempDirectory, "payload.txt");
+        await File.WriteAllTextAsync(filePath, "alpha", Encoding.UTF8, cancellationToken);
+
+        try
+        {
+            IReadOnlyDictionary<string, string> hashes = await FileHashService.ComputeHashesHexAsync(
+                Enumerable.Repeat(filePath, FileHashService.MaxBatchHashPaths + 1),
+                "SHA-256",
+                maxDegreeOfParallelism: 1,
+                cancellationToken: cancellationToken);
+
+            Assert.Single(hashes);
+            Assert.True(hashes.ContainsKey(filePath));
+        }
+        finally
+        {
+            Directory.Delete(tempDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ComputeHashHexAsync_ReportsCompletionForEmptyFile()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
@@ -183,6 +209,58 @@ public sealed class FileHashServiceTests
     }
 
     [Fact]
+    public async Task ComputeHashHexAsync_RejectsControlCharactersInFilePath()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashHexAsync(
+                Path.Combine(Path.GetTempPath(), "payload\r\n.txt"),
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("control characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashHexAsync_RejectsUnicodeFormatCharactersInFilePath()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashHexAsync(
+                Path.Combine(Path.GetTempPath(), "payload" + "\u202E" + ".txt"),
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("format characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashHexAsync_RejectsAlternateDataStreamFilePath()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashHexAsync(
+                Path.Combine(Path.GetTempPath(), "payload.txt:stream"),
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashHexAsync_RejectsRelativeFilePath()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashHexAsync(
+                "payload.txt",
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ComputeHashHexAsync_CanceledTokenDoesNotOpenFile()
     {
         using var cancellation = new CancellationTokenSource();
@@ -233,6 +311,81 @@ public sealed class FileHashServiceTests
     }
 
     [Fact]
+    public async Task ComputeHashesHexAsync_RejectsOversizedPathEntries()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                [new string('A', FileHashService.MaxHashPathChars + 1)],
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("Windows path limit", ex.Message);
+    }
+
+    [Fact]
+    public async Task ComputeHashesHexAsync_RejectsControlCharactersInPathEntries()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                [Path.Combine(Path.GetTempPath(), "payload\t.txt")],
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("control characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashesHexAsync_RejectsUnicodeFormatCharactersInPathEntries()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                [Path.Combine(Path.GetTempPath(), "payload" + "\u202E" + ".txt")],
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("format characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashesHexAsync_RejectsAlternateDataStreamPathEntries()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                [Path.Combine(Path.GetTempPath(), "payload.txt:stream")],
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("normal file", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashesHexAsync_RejectsRelativePathEntries()
+    {
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                ["payload.txt"],
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("normal file", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ComputeHashesHexAsync_RejectsTooManyPathsBeforeHashing()
+    {
+        IEnumerable<string> paths = Enumerable.Range(0, FileHashService.MaxBatchHashPaths + 1)
+            .Select(index => Path.Combine(Path.GetTempPath(), $"filelocker-hash-{index:D6}.txt"));
+
+        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            FileHashService.ComputeHashesHexAsync(
+                paths,
+                "SHA-256",
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Contains("too large", ex.Message);
+    }
+
+    [Fact]
     public async Task ComputeHashesHexAsync_CanceledTokenDoesNotEnumeratePaths()
     {
         using var cancellation = new CancellationTokenSource();
@@ -265,6 +418,24 @@ public sealed class FileHashServiceTests
     {
         Assert.Equal(64, FileHashService.GetExpectedHexLength(algorithm));
         Assert.Equal(256, FileHashService.GetDigestBits(algorithm));
+    }
+
+    [Fact]
+    public void NormalizeAlgorithmName_RejectsOversizedAlgorithmNames()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileHashService.NormalizeAlgorithmName(new string('S', FileHashService.MaxHashAlgorithmNameChars + 1)));
+
+        Assert.Contains("Unsupported hash algorithm", ex.Message);
+    }
+
+    [Fact]
+    public void NormalizeAlgorithmName_RejectsUnicodeFormatCharacters()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileHashService.NormalizeAlgorithmName("SHA-256\u202E"));
+
+        Assert.Contains("Unsupported hash algorithm", ex.Message);
     }
 
     private static string ExpectedSha256(byte[] bytes)

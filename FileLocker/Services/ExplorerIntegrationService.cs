@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -36,7 +37,8 @@ internal static class ExplorerIntegrationService
 
         try
         {
-            bool isRegistered = EncryptTargets.All(target => IsTargetRegistered(target, executablePath));
+            string normalizedExecutablePath = NormalizeExecutablePath(executablePath);
+            bool isRegistered = EncryptTargets.All(target => IsTargetRegistered(target, normalizedExecutablePath));
             bool legacyEntriesPresent = EncryptTargets.Any(target => LegacyVerbKeys.Any(legacyKey => SubKeyExists(target.RootPath, legacyKey)));
             string status = isRegistered
                 ? legacyEntriesPresent
@@ -53,6 +55,13 @@ internal static class ExplorerIntegrationService
                 false,
                 $"Explorer integration status could not be read: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
         }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new ExplorerIntegrationState(
+                false,
+                false,
+                $"Explorer integration status could not be read: {SensitiveDataRedactor.RedactMessage(ex.Message)}");
+        }
     }
 
     internal static ExplorerIntegrationState SetEnabled(string executablePath, bool enabled)
@@ -62,10 +71,7 @@ internal static class ExplorerIntegrationService
             return new ExplorerIntegrationState(false, false, "Explorer integration is only available on Windows.");
         }
 
-        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
-        {
-            throw new FileNotFoundException("FileLocker executable was not found.", executablePath);
-        }
+        string normalizedExecutablePath = NormalizeExecutablePath(executablePath);
 
         CleanupLegacyEntries();
 
@@ -73,7 +79,7 @@ internal static class ExplorerIntegrationService
         {
             foreach (ExplorerVerbTarget target in EncryptTargets)
             {
-                RegisterTarget(target, executablePath);
+                RegisterTarget(target, normalizedExecutablePath);
             }
         }
         else
@@ -84,7 +90,7 @@ internal static class ExplorerIntegrationService
             }
         }
 
-        return GetState(executablePath);
+        return GetState(normalizedExecutablePath);
     }
 
     internal static IReadOnlyList<string> GetManagedVerbKeys() =>
@@ -104,6 +110,54 @@ internal static class ExplorerIntegrationService
 
         string expectedCommand = BuildCommand(executablePath, target.Arguments);
         return string.Equals(command, expectedCommand, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string NormalizeExecutablePath(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new FileNotFoundException("FileLocker executable was not found.", executablePath);
+        }
+
+        string trimmedPath = executablePath.Trim();
+        if (trimmedPath.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            throw new ArgumentException("FileLocker executable path is invalid.", nameof(executablePath));
+        }
+
+        if (!Path.IsPathFullyQualified(trimmedPath))
+        {
+            throw new ArgumentException("FileLocker executable path must be fully qualified.", nameof(executablePath));
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(trimmedPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ArgumentException("FileLocker executable path is invalid.", nameof(executablePath), ex);
+        }
+
+        if (ContainsAlternateDataStreamToken(fullPath))
+        {
+            throw new ArgumentException("FileLocker executable path must not target an alternate data stream.", nameof(executablePath));
+        }
+
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("FileLocker executable was not found.", fullPath);
+        }
+
+        return fullPath;
+    }
+
+    private static bool ContainsAlternateDataStreamToken(string path)
+    {
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        string pathWithoutRoot = path.Length > root.Length ? path[root.Length..] : string.Empty;
+        return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
     }
 
     private static bool SubKeyExists(string rootPath, string subKeyName)

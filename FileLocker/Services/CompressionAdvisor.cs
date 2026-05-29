@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
+using System.Security.Cryptography;
 
 namespace FileLocker;
 
@@ -69,6 +72,8 @@ internal static class CompressionAdvisor
             return new CompressionPlan(false, "Compression disabled.", fileSizeBytes);
         }
 
+        filePath = NormalizeCompressionFilePath(filePath);
+
         if (fileSizeBytes <= 0)
         {
             return new CompressionPlan(false, "Empty files are not compressed.", fileSizeBytes);
@@ -85,9 +90,19 @@ internal static class CompressionAdvisor
         }
 
         byte[] sample = ReadCompressionSample(filePath, fileSizeBytes);
-        long estimatedCompressedSize = EstimateCompressedSize(sample, fileSizeBytes);
-        long estimatedSavings = fileSizeBytes - estimatedCompressedSize;
-        long requiredSavings = CalculateMinimumUsefulSavings(fileSizeBytes);
+        long estimatedCompressedSize;
+        long estimatedSavings;
+        long requiredSavings;
+        try
+        {
+            estimatedCompressedSize = EstimateCompressedSize(sample, fileSizeBytes);
+            estimatedSavings = fileSizeBytes - estimatedCompressedSize;
+            requiredSavings = CalculateMinimumUsefulSavings(fileSizeBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sample);
+        }
 
         if (estimatedSavings < requiredSavings)
         {
@@ -101,6 +116,41 @@ internal static class CompressionAdvisor
     {
         string extension = Path.GetExtension(filePath);
         return !string.IsNullOrWhiteSpace(extension) && IncompressibleExtensions.Contains(extension);
+    }
+
+    private static string NormalizeCompressionFilePath(string filePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        string trimmedPath = filePath.Trim();
+        if (trimmedPath.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            throw new ArgumentException("Compression source path contains invalid characters.", nameof(filePath));
+        }
+
+        if (!Path.IsPathFullyQualified(trimmedPath))
+        {
+            throw new ArgumentException("Compression source path must be fully qualified.", nameof(filePath));
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(trimmedPath);
+            string fileName = Path.GetFileName(fullPath);
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (string.IsNullOrWhiteSpace(fileName) ||
+                pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("Compression source path must reference a normal file.", nameof(filePath));
+            }
+
+            return fullPath;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ArgumentException("Compression source path must reference a normal file.", nameof(filePath), ex);
+        }
     }
 
     internal static bool HasUsefulSavings(long originalSizeBytes, long compressedSizeBytes)
@@ -170,11 +220,21 @@ internal static class CompressionAdvisor
     private static long CompressSample(byte[] sample)
     {
         using var output = new MemoryStream();
-        using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+        try
         {
-            gzip.Write(sample, 0, sample.Length);
-        }
+            using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+            {
+                gzip.Write(sample, 0, sample.Length);
+            }
 
-        return output.Length;
+            return output.Length;
+        }
+        finally
+        {
+            if (output.TryGetBuffer(out ArraySegment<byte> compressedSample))
+            {
+                CryptographicOperations.ZeroMemory(compressedSample.AsSpan(0, (int)Math.Min(output.Length, compressedSample.Count)));
+            }
+        }
     }
 }

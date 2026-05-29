@@ -516,7 +516,12 @@ namespace FileLocker
                     break;
                 }
 
-                string path = rawPath.Trim();
+                if (!TryNormalizeMetadataScramblerPath(rawPath, out string path, out string warning))
+                {
+                    AddQueueWarning(result.Warnings, warning);
+                    continue;
+                }
+
                 if (File.Exists(path))
                 {
                     result.FilePaths.Add(path);
@@ -525,7 +530,7 @@ namespace FileLocker
 
                 if (!Directory.Exists(path))
                 {
-                    result.Warnings.Add($"Skipped missing path: {path}");
+                    AddQueueWarning(result.Warnings, $"Skipped missing path: {path}");
                     continue;
                 }
 
@@ -543,7 +548,24 @@ namespace FileLocker
             return result;
         }
 
-        private static IEnumerable<string> EnumerateMetadataFolderFiles(string rootFolderPath, ICollection<string> warnings)
+        internal static bool TryNormalizeMetadataScramblerPath(string? rawPath, out string normalizedPath, out string warning)
+        {
+            normalizedPath = string.Empty;
+            warning = string.Empty;
+
+            try
+            {
+                normalizedPath = RequireExistingPath(rawPath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                warning = $"Skipped invalid metadata path: {GetFriendlyExceptionMessage(ex, "Path validation failed.")}";
+                return false;
+            }
+        }
+
+        private static IEnumerable<string> EnumerateMetadataFolderFiles(string rootFolderPath, List<string> warnings)
         {
             var pendingDirectories = new Stack<string>();
             pendingDirectories.Push(rootFolderPath);
@@ -556,18 +578,7 @@ namespace FileLocker
                     continue;
                 }
 
-                IEnumerable<string> childDirectories;
-                try
-                {
-                    childDirectories = Directory.EnumerateDirectories(currentDirectory);
-                }
-                catch (Exception ex)
-                {
-                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "Folder scan failed.")}");
-                    continue;
-                }
-
-                foreach (string childDirectory in childDirectories)
+                foreach (string childDirectory in EnumerateChildDirectoriesSafely(currentDirectory, warnings))
                 {
                     if (IsMetadataReparsePointDirectory(childDirectory, warnings))
                     {
@@ -577,37 +588,26 @@ namespace FileLocker
                     pendingDirectories.Push(childDirectory);
                 }
 
-                IEnumerable<string> files;
-                try
-                {
-                    files = Directory.EnumerateFiles(currentDirectory);
-                }
-                catch (Exception ex)
-                {
-                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
-                    continue;
-                }
-
-                foreach (string file in files)
+                foreach (string file in EnumerateChildFilesSafely(currentDirectory, warnings))
                 {
                     yield return file;
                 }
             }
         }
 
-        private static bool IsMetadataReparsePointDirectory(string directoryPath, ICollection<string> warnings)
+        private static bool IsMetadataReparsePointDirectory(string directoryPath, List<string> warnings)
         {
             try
             {
                 if ((File.GetAttributes(directoryPath) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint)
                 {
-                    warnings.Add($"Skipped reparse-point folder: {directoryPath}");
+                    AddQueueWarning(warnings, $"Skipped reparse-point folder: {directoryPath}");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                warnings.Add($"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
+                AddQueueWarning(warnings, $"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
             }
 
             return false;

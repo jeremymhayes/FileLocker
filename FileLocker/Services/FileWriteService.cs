@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -9,6 +11,8 @@ namespace FileLocker;
 
 internal static class FileWriteService
 {
+    internal const int MaxResolveAvailablePathAttempts = 1_000;
+
     internal static async Task WriteAllTextAtomicallyAsync(
         string path,
         string contents,
@@ -95,6 +99,11 @@ internal static class FileWriteService
 
         while (File.Exists(candidate) || Directory.Exists(candidate))
         {
+            if (counter > MaxResolveAvailablePathAttempts)
+            {
+                throw new IOException("Could not find an available file name near the requested path.");
+            }
+
             candidate = Path.Combine(directory, $"{fileName}-{counter}{extension}");
             counter++;
         }
@@ -132,10 +141,35 @@ internal static class FileWriteService
 
     private static void ValidateFileTargetPath(string path)
     {
-        if (Path.EndsInDirectorySeparator(path) || string.IsNullOrWhiteSpace(Path.GetFileName(path)))
+        string trimmedPath = path.Trim();
+        if (path.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            throw new ArgumentException("A file path must not contain control characters or Unicode format characters.", nameof(path));
+        }
+
+        if (!Path.IsPathFullyQualified(trimmedPath))
+        {
+            throw new ArgumentException("A file path must be fully qualified.", nameof(path));
+        }
+
+        string fileName = Path.GetFileName(trimmedPath);
+        if (Path.EndsInDirectorySeparator(trimmedPath) || string.IsNullOrWhiteSpace(fileName))
         {
             throw new ArgumentException("A file path must include a file name.", nameof(path));
         }
+
+        if (ContainsAlternateDataStreamToken(trimmedPath))
+        {
+            throw new ArgumentException("A file path must not target an alternate data stream.", nameof(path));
+        }
+    }
+
+    private static bool ContainsAlternateDataStreamToken(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+        return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
     }
 
     private static void ClearInternalBuffer(byte[]? buffer)
@@ -152,6 +186,10 @@ internal static class FileWriteService
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ValidateFileTargetPath(tempPath);
         ValidateFileTargetPath(path);
+        if (!AreSiblingPaths(tempPath, path))
+        {
+            throw new IOException("Atomic file writes require the temporary file to be in the destination directory.");
+        }
 
         if (File.Exists(tempPath) &&
             (File.GetAttributes(tempPath) & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
@@ -231,5 +269,15 @@ internal static class FileWriteService
         {
             // Best effort: the original write failure is more useful to callers.
         }
+    }
+
+    private static bool AreSiblingPaths(string leftPath, string rightPath)
+    {
+        string leftDirectory = Path.GetFullPath(Path.GetDirectoryName(leftPath) ?? Environment.CurrentDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string rightDirectory = Path.GetFullPath(Path.GetDirectoryName(rightPath) ?? Environment.CurrentDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return string.Equals(leftDirectory, rightDirectory, StringComparison.OrdinalIgnoreCase);
     }
 }

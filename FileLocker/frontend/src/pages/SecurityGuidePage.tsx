@@ -1,9 +1,11 @@
-const guideSections = [
-  {
-    title: "Encryption Basics",
-    body:
-      "FileLocker uses AES-256-GCM for file encryption. AES-256 is the encryption algorithm and key size; GCM is an authenticated mode, which means the encrypted file includes integrity data that lets FileLocker detect tampering before restoring output. A .locked file contains encrypted file data plus the information FileLocker needs to identify and validate the file format.",
-  },
+import { getDefaultEncryptionAlgorithm, getEncryptionAlgorithmOptions } from "@/lib/encryptionAlgorithms"
+import type { EncryptionAlgorithmOption } from "@/types/bridge"
+
+type SecurityGuidePageProps = {
+  encryptionAlgorithms?: EncryptionAlgorithmOption[]
+}
+
+const fixedGuideSections = [
   {
     title: "Choosing a Strong Password",
     body:
@@ -41,7 +43,36 @@ const guideSections = [
   },
 ]
 
-export function SecurityGuidePage() {
+function formatList(values: string[]) {
+  if (values.length <= 1) {
+    return values[0] ?? ""
+  }
+
+  if (values.length === 2) {
+    return `${values[0]} and ${values[1]}`
+  }
+
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`
+}
+
+export function SecurityGuidePage({ encryptionAlgorithms }: SecurityGuidePageProps) {
+  const supportedAlgorithms = getEncryptionAlgorithmOptions(encryptionAlgorithms)
+  const defaultAlgorithm = getDefaultEncryptionAlgorithm(supportedAlgorithms)?.label
+  const algorithmList = formatList(supportedAlgorithms.map((algorithm) => algorithm.label))
+  const pngCarrierAlgorithms = formatList(supportedAlgorithms.filter((algorithm) => algorithm.canUsePngCarrier).map((algorithm) => algorithm.label))
+  const pngCarrierText = pngCarrierAlgorithms
+    ? `PNG carrier output uses the older AES-GCM carrier path and is only available with ${pngCarrierAlgorithms}.`
+    : "PNG carrier output is not available for the current encryption options."
+  const guideSections = [
+    {
+      title: "Encryption Basics",
+      body: defaultAlgorithm
+        ? `FileLocker defaults to ${defaultAlgorithm}. New .locked payload options are ${algorithmList}. These are authenticated modes, so the encrypted file carries integrity data that lets FileLocker detect tampering before restoring output. Decryption reads the saved algorithm from the payload header. ${pngCarrierText}`
+        : "No supported file-encryption algorithm is available on this runtime. FileLocker will not offer new encrypted payload creation until the platform crypto support check passes.",
+    },
+    ...fixedGuideSections,
+  ]
+
   return (
     <div className="security-page">
       <section className="section-surface">

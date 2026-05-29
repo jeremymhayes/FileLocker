@@ -1,19 +1,10 @@
 import { useEffect, useRef, useState } from "react"
-import { Bell, Download } from "lucide-react"
+import { Bell, ShieldAlert, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell } from "@/components/layout/AppShell"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Button } from "@/components/ui/button"
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { UpdateDialog } from "@/components/common/UpdateDialog"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { invokeBridge, subscribeToBridgeEvents } from "@/services/bridge"
@@ -26,7 +17,8 @@ import { MetadataScramblerPage } from "@/pages/MetadataScramblerPage"
 import { SecurityGuidePage } from "@/pages/SecurityGuidePage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { AppManagerPage, CustomCleanPage, DriveOptimizerPage, PartitionCleanerPage, RegistryFixerPage, StartupManagerPage } from "@/pages/SystemMaintenancePages"
-import type { DashboardState, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
+import { isSafeLocalPathForReveal, mergeUniquePaths } from "@/lib/format"
+import type { DashboardState, EncryptionAlgorithmOption, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
 
 const pageTitles: Record<PageKey, { title: string; description?: string }> = {
   dashboard: { title: "Dashboard" },
@@ -36,12 +28,12 @@ const pageTitles: Record<PageKey, { title: string; description?: string }> = {
   encode: { title: "Encode Text" },
   metadata: { title: "Metadata Scrambler" },
   "secure-delete": { title: "Secure Delete" },
-  "custom-clean": { title: "Custom Clean" },
+  "custom-clean": { title: "Custom Clean", description: "Remove unnecessary files and free up disk space." },
   "partition-cleaner": { title: "Partition Cleaner" },
   "drive-optimizer": { title: "Drive Optimizer" },
-  "registry-fixer": { title: "Registry Fixer" },
-  "startup-manager": { title: "Startup Manager" },
-  "app-manager": { title: "App Manager" },
+  "registry-fixer": { title: "Registry Fixer", description: "Scan and fix registry issues to improve system stability and performance." },
+  "startup-manager": { title: "Startup Manager", description: "Manage programs that run automatically when Windows starts." },
+  "app-manager": { title: "App Manager", description: "View installed apps, sort by size or publisher, and remove apps you no longer need." },
   settings: { title: "Settings" },
   about: { title: "About" },
   "security-guide": { title: "Security Guide" },
@@ -97,21 +89,32 @@ export function App() {
   useEffect(() => {
     const unsubscribe = subscribeToBridgeEvents((event) => {
       if (event.type === "progress") {
-        setProgressEvents((current) => [...current.slice(-30), event])
+        setProgressEvents((current) => [...current.slice(-29), event])
       }
       if (event.type === "droppedPaths") {
+        const queuedPaths = mergeUniquePaths([], Array.isArray(event.paths) ? event.paths : [])
+        if (queuedPaths.length === 0) {
+          toast.error("No supported file paths were dropped.")
+          return
+        }
+
         const targetPage = acceptsDroppedPaths(activePageRef.current) ? activePageRef.current : "dashboard"
         setDroppedPathsByPage((current) => ({
           ...current,
-          [targetPage]: [...(current[targetPage] ?? []), ...event.paths],
+          [targetPage]: mergeUniquePaths(current[targetPage] ?? [], queuedPaths),
         }))
         if (targetPage === "dashboard" && activePageRef.current !== "dashboard") {
           navigate("dashboard")
         }
-        toast.success(`${event.paths.length} item${event.paths.length === 1 ? "" : "s"} queued from drag and drop.`)
+        toast.success(`${queuedPaths.length} item${queuedPaths.length === 1 ? "" : "s"} queued from drag and drop.`)
       }
       if (event.type === "dropError") {
         toast.error(event.message || "Drag and drop failed.")
+      }
+      if (event.type === "updateAvailable") {
+        if (event.result.isUpdateAvailable && event.result.release) {
+          setStartupUpdate(event.result)
+        }
       }
     })
     return () => {
@@ -150,7 +153,13 @@ export function App() {
 
   async function reveal(path: string) {
     try {
-      await invokeBridge("files.revealPath", { path })
+      const targetPath = path.trim()
+      if (!isSafeLocalPathForReveal(targetPath)) {
+        toast.error("FileLocker can only reveal normal local file or folder paths.")
+        return
+      }
+
+      await invokeBridge("files.revealPath", { path: targetPath })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to open path.")
     }
@@ -278,17 +287,27 @@ export function App() {
             title={pageMeta.title}
             description={pageMeta.description}
             actions={
-              <>
+              activePage === "startup-manager" ? (
+                <Button
+                  variant={initialState.app.isAdministrator ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={() => !initialState.app.isAdministrator && void restartAsAdministrator("startup-manager")}
+                  disabled={initialState.app.isAdministrator}
+                >
+                  {initialState.app.isAdministrator ? <ShieldCheck data-icon="inline-start" /> : <ShieldAlert data-icon="inline-start" />}
+                  {initialState.app.isAdministrator ? "Administrator Mode" : "Restart as Administrator"}
+                </Button>
+              ) : activePage === "app-manager" || activePage === "custom-clean" ? null : (
                 <Button variant="ghost" size="icon" aria-label="Check notifications" onClick={checkNotifications} disabled={isCheckingNotifications}>
                   <Bell className="size-5" aria-hidden />
                 </Button>
-              </>
+              )
             }
           />
         ) : null}
-        {activePage === "dashboard" ? <DashboardPage dashboard={dashboard} onNavigate={navigate} invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={setDashboard} onReveal={reveal} privacyModeEnabled={settings.preferences.incognitoMode} droppedPaths={droppedPathsByPage.dashboard ?? []} onDroppedPathsHandled={() => clearDroppedPaths("dashboard")} /> : null}
-        {activePage === "encrypt" ? <FileOperationPage kind="encrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage.encrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("encrypt")} /> : null}
-        {activePage === "decrypt" ? <FileOperationPage kind="decrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage.decrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("decrypt")} /> : null}
+        {activePage === "dashboard" ? <DashboardPage dashboard={dashboard} onNavigate={navigate} invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={setDashboard} onReveal={reveal} privacyModeEnabled={settings.preferences.incognitoMode} encryptionAlgorithms={initialState.app.encryptionAlgorithms as EncryptionAlgorithmOption[]} droppedPaths={droppedPathsByPage.dashboard ?? []} onDroppedPathsHandled={() => clearDroppedPaths("dashboard")} /> : null}
+        {activePage === "encrypt" ? <FileOperationPage kind="encrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} encryptionAlgorithms={initialState.app.encryptionAlgorithms as EncryptionAlgorithmOption[]} droppedPaths={droppedPathsByPage.encrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("encrypt")} /> : null}
+        {activePage === "decrypt" ? <FileOperationPage kind="decrypt" invoke={invokeBridge} progressEvents={progressEvents} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} encryptionAlgorithms={initialState.app.encryptionAlgorithms as EncryptionAlgorithmOption[]} droppedPaths={droppedPathsByPage.decrypt ?? []} onDroppedPathsHandled={() => clearDroppedPaths("decrypt")} /> : null}
         {activePage === "hash" ? <HashFilesPage invoke={invokeBridge} onDashboardUpdate={setDashboard} dashboard={dashboard} droppedPaths={droppedPathsByPage.hash ?? []} onDroppedPathsHandled={() => clearDroppedPaths("hash")} /> : null}
         {activePage === "encode" ? <EncodeTextPage invoke={invokeBridge} /> : null}
         {activePage === "metadata" ? <MetadataScramblerPage invoke={invokeBridge} droppedPaths={droppedPathsByPage.metadata ?? []} onDroppedPathsHandled={() => clearDroppedPaths("metadata")} /> : null}
@@ -301,43 +320,21 @@ export function App() {
         {activePage === "app-manager" ? <AppManagerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("app-manager")} /> : null}
         {activePage === "settings" ? <SettingsPage app={initialState.app} settings={settings} invoke={invokeBridge} onSettingsUpdate={setSettings} onDashboardUpdate={setDashboard} /> : null}
         {activePage === "about" ? <AboutPage app={initialState.app} onOpenRepository={() => invokeBridge("links.openExternal", { url: initialState.app.repositoryUrl })} /> : null}
-        {activePage === "security-guide" ? <SecurityGuidePage /> : null}
+        {activePage === "security-guide" ? <SecurityGuidePage encryptionAlgorithms={initialState.app.encryptionAlgorithms as EncryptionAlgorithmOption[]} /> : null}
       </AppShell>
-      <AlertDialog
-        open={Boolean(startupUpdate?.isUpdateAvailable && startupUpdate.release)}
+      <UpdateDialog
+        update={startupUpdate}
+        isInstalling={isInstallingStartupUpdate}
+        isSkipping={isSkippingStartupUpdate}
+        onInstall={() => void installStartupUpdate()}
+        onSkip={() => void skipStartupUpdate()}
+        onLater={() => setStartupUpdate(null)}
         onOpenChange={(open) => {
           if (!open && !isInstallingStartupUpdate && !isSkippingStartupUpdate) {
             setStartupUpdate(null)
           }
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogMedia>
-              <Download className="size-4" />
-            </AlertDialogMedia>
-            <AlertDialogTitle>FileLocker {startupUpdate?.release?.displayVersion} is available</AlertDialogTitle>
-            <AlertDialogDescription>
-              You are running {startupUpdate?.currentVersion}. Download and install the update now?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="max-h-48 overflow-y-auto rounded-md border border-border/70 bg-bg-surface/45 p-3 text-sm leading-[1.55] text-secondary">
-            {startupUpdate?.release?.notes?.trim() || startupUpdate?.statusMessage || "No release notes were provided for this release."}
-          </div>
-          <AlertDialogFooter>
-            <Button variant="ghost" onClick={() => void skipStartupUpdate()} disabled={isInstallingStartupUpdate || isSkippingStartupUpdate}>
-              {isSkippingStartupUpdate ? "Skipping" : "Skip Version"}
-            </Button>
-            <AlertDialogCancel disabled={isInstallingStartupUpdate || isSkippingStartupUpdate} onClick={() => setStartupUpdate(null)}>
-              Later
-            </AlertDialogCancel>
-            <Button onClick={() => void installStartupUpdate()} disabled={isInstallingStartupUpdate || isSkippingStartupUpdate}>
-              <Download data-icon="inline-start" />
-              {isInstallingStartupUpdate ? "Launching" : "Download and Install"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      />
       <Toaster />
     </TooltipProvider>
   )

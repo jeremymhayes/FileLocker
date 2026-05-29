@@ -40,25 +40,44 @@ namespace FileLocker
         private const int IV_SIZE = 12; // GCM uses 12-byte IV
         private const int KEY_SIZE = 32;
         private const int TAG_SIZE = 16; // GCM authentication tag
-        private const byte FORMAT_VERSION = 2; // Version for compatibility
-        private const int ARGON2_ITERATIONS = 3;
-        private const int ARGON2_MEMORY_SIZE_KB = 65536;
-        private const int PBKDF2_FALLBACK_ITERATIONS = 600000;
+        private const byte LegacyPayloadFormatVersion = 2;
         private const int MIN_PADDING_SIZE = 1024; // Minimum padding to hide file size
         private const int MAX_PADDING_SIZE = 8192; // Maximum padding
         private const string STEGO_CHUNK_TYPE = "flDR";
         private const string DefaultDropLabelText = "Drop files to start a local encryption run";
         private const string ActiveDropLabelText = "Release to queue items";
         private const int MaxHistoryEntries = 20;
+        private const long MaxStoredJsonBytes = 2L * 1024L * 1024L;
         private const int StrongPasswordMinimumScore = 70;
-        private static readonly string[] EncryptionAlgorithms = ["AES-GCM"];
-        private static readonly string[] HashAlgorithms = ["SHA-256", "SHA-512", "Base64"];
-        private static readonly int[] EncryptionKeySizes = [256];
+        private const int MaxMetadataLabelChars = 256;
+        private const int MaxMetadataNotesChars = 4096;
+        private const int MaxMetadataDateTextChars = 128;
+        private const int MaxLegacyMetadataStringBytes = 32 * 1024;
+        private const int MaxRestoredFileNameChars = 255;
+        internal const int MaxQueueExpansionWarnings = 50;
+        internal const int MaxQueueExpansionWarningChars = 2048;
+        internal const int MaxQueueExpandedFiles = 100_000;
+        internal const int MaxQueueExpandedDirectories = 100_000;
+        internal const int MaxResolveAvailablePathAttempts = 1_000;
+        internal const long MaxPngCarrierSourceBytes = 64L * 1024L * 1024L;
+        internal const long MaxPngCarrierPayloadBytes = 128L * 1024L * 1024L;
+        private static string[] EncryptionAlgorithms => EncryptionAlgorithmCatalog.Definitions
+            .Where(PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime)
+            .Select(definition => definition.DisplayName)
+            .ToArray();
+        private static readonly string[] HashAlgorithms = [FileHashService.Sha256, FileHashService.Sha512, "Base64"];
+        private static int[] EncryptionKeySizes => EncryptionAlgorithmCatalog.Definitions
+            .Where(PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime)
+            .Select(definition => definition.KeySizeBits)
+            .Distinct()
+            .OrderBy(keySizeBits => keySizeBits)
+            .ToArray();
         private static readonly int[] HashKeySizes = [256, 512];
         private static readonly byte[] StegoCarrierPng = Convert.FromBase64String(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII=");
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
+            PropertyNameCaseInsensitive = true,
             WriteIndented = true
         };
 

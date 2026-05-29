@@ -30,13 +30,13 @@ public sealed class BridgeHashManifestTests
     }
 
     [Fact]
-    public void ValidateHashManifestBridgePaths_RejectsMalformedPaths()
+    public void ValidateHashManifestBridgePaths_RejectsControlCharacterPaths()
     {
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
             MainWindow.ValidateHashManifestBridgePaths(["C:\\Temp\\bad\0path.txt"]));
 
-        Assert.Equal("One or more selected paths are invalid.", ex.Message);
-        Assert.IsType<ArgumentException>(ex.InnerException);
+        Assert.Equal("A selected value contains invalid characters.", ex.Message);
+        Assert.Null(ex.InnerException);
     }
 
     [Fact]

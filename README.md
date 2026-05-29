@@ -14,7 +14,7 @@
   </a>
   <img src="https://img.shields.io/badge/Windows-10%20%26%2011-0078D4?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 10 and 11" />
   <img src="https://img.shields.io/badge/Local%20First-No%20Cloud-198754?style=for-the-badge" alt="Local first" />
-  <img src="https://img.shields.io/badge/Encryption-AES--256--GCM-111827?style=for-the-badge" alt="AES-256-GCM" />
+  <img src="https://img.shields.io/badge/Encryption-Modern%20AEAD-111827?style=for-the-badge" alt="Modern AEAD encryption" />
 </p>
 
 <p align="center">
@@ -51,22 +51,22 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current version | `1.2.0.0` |
-| Installer | `FileLocker-Setup-1.2.0.0.exe` |
+| Current version | `1.2.2.0` |
+| Installer | `FileLocker-Setup-1.2.2.0.exe` |
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
+| New `.locked` algorithms | Runtime-supported AEAD options: AES-256-GCM, ChaCha20-Poly1305, AES-256-GCM-SIV |
 | Updates | Optional checks against GitHub Releases |
 | Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
 
-## New In 1.2.0.0
+## New In 1.2.2.0
 
-- Added **Startup Manager** to review startup entries and disable or restore supported entries safely.
-- Added **App Manager** to review installed apps, reveal published install locations, and launch vendor uninstallers after confirmation.
-- Added app leftover cleanup for approved AppData and ProgramData cache, log, temp, and stale app folders.
-- Improved file-operation progress so the current run stays separate from previous activity.
-- Improved error handling so maintenance failures remain visible on the page instead of disappearing after a notification.
-- Improved release validation, installer metadata consistency, and checksum reporting.
+- Fixed the in-app updater install flow so FileLocker closes first, then a helper launches the downloaded installer and removes it after the installer exits.
+- Standardized new `.locked` encryption choices around runtime-supported AEAD algorithms with shared metadata, labels, validation, and payload headers.
+- Added stronger v4 `.locked` payload metadata checks while keeping existing AES-256-GCM payloads decryptable.
+- Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so invalid or unsafe inputs fail earlier with clearer messages.
+- Kept the System Care improvements from 1.2.1.0, including clearer Custom Clean, Startup Manager, Registry Fixer, and App Manager workflows.
 
 ## What You Can Do In The App
 
@@ -102,13 +102,20 @@ One of the biggest quality-of-life details in FileLocker is how folder encryptio
 
 ## Security, In Plain English
 
-FileLocker uses **AES-256-GCM** for encryption. In practical terms, that means:
+FileLocker defaults to **AES-256-GCM** for file encryption and can expose **ChaCha20-Poly1305** and **AES-256-GCM-SIV** for new `.locked` payloads when the local runtime supports the implementation safely. In practical terms, that means:
 
 - your files are encrypted with a strong modern cipher,
+- the selected algorithm is saved in the payload header for automatic decryption,
 - the app can detect tampering before it restores output,
 - and a wrong password should fail safely instead of quietly giving you damaged results.
 
+New `.locked` files use FileLocker's header-authenticated v4 payload format, with explicit algorithm and key-size metadata checked against the authenticated header. Existing AES-256-GCM v3 payloads remain supported for decryption.
+
+The v4 header stores the format version, stable payload algorithm id, KDF id, Argon2id settings, chunk size, nonce prefix, and encrypted key slots. Each key slot has its own salt, nonce, and authentication tag, and encrypted payload chunks carry their own AEAD tags so tampering fails before plaintext is restored.
+
 FileLocker also supports optional extra protection material such as a **keyfile** and **recovery key** for people who want that workflow, but the main experience still works as a normal password-based desktop app.
+
+PNG carrier output uses the older AES-GCM carrier path, is only available with AES-256-GCM, and is capped at 64 MB per source file to avoid the memory pressure of wrapping the payload inside an image. Standard `.locked` files should be used for larger files or when choosing ChaCha20-Poly1305 or AES-256-GCM-SIV.
 
 FileLocker does **not** upload your files or give you a cloud password reset path. If you lose both the password and any recovery material you chose to use, the protected file should be treated as inaccessible.
 
@@ -125,7 +132,7 @@ The app keeps a strong boundary between the interface and the file-handling logi
 ## Download And Install
 
 1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download `FileLocker-Setup-1.2.0.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
+2. Download `FileLocker-Setup-1.2.2.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
 3. Run the installer.
 4. Launch FileLocker from the Start Menu or desktop shortcut.
 
@@ -236,7 +243,8 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
-- [FileLocker 1.2.0.0 release notes](RELEASE_NOTES_1.2.0.0.md)
+- [FileLocker 1.2.2.0 release notes](RELEASE_NOTES_1.2.2.0.md)
+- [FileLocker 1.2.1.0 release notes](RELEASE_NOTES_1.2.1.0.md)
 
 ## Project Documents
 

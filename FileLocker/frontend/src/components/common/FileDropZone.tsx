@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent,
 import { FileText, FolderOpen, MousePointer2, Plus, UploadCloud, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { FileTypeIcon } from "@/components/common/FileTypeIcon"
-import { fileName, formatBytes, mergeUniquePaths } from "@/lib/format"
+import { fileName, formatBytes, getComparableLocalPath, mergeUniquePaths } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 type FileDropZoneProps = {
@@ -195,7 +195,7 @@ export function FileDropZone({
                   className="rounded-md p-1 text-muted transition-colors hover:bg-bg-surface-hover hover:text-primary focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
                   aria-label={`Remove ${fileName(path)}`}
                   disabled={disabled}
-                  onClick={() => onPathsChange(paths.filter((item) => item !== path))}
+                  onClick={() => onPathsChange(paths.filter((item) => getComparableLocalPath(item.trim()) !== getComparableLocalPath(path.trim())))}
                 >
                   <X className="size-4" aria-hidden />
                 </button>

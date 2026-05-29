@@ -19,7 +19,7 @@ namespace FileLocker
 {
     public sealed partial class MainWindow
     {
-        private const string DefaultFileHashAlgorithm = "SHA-256";
+        private const string DefaultFileHashAlgorithm = FileHashService.Sha256;
         private const long AutoHashMaxBytes = 256L * 1024 * 1024;
 
         private HashSelectedFileViewModel? _hashSelectedFile;
@@ -163,13 +163,13 @@ namespace FileLocker
 
         private void SelectHashFile(string? filePath)
         {
-            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            if (!TryNormalizeHashFileSelectionPath(filePath, out string normalizedPath))
             {
                 SetStatus("The selected file could not be found.");
                 return;
             }
 
-            var fileInfo = new FileInfo(filePath);
+            var fileInfo = new FileInfo(normalizedPath);
             if (_isHashingFile && !string.Equals(_hashSelectedFile?.FullPath, fileInfo.FullName, StringComparison.OrdinalIgnoreCase))
             {
                 CancelCurrentHashGeneration();
@@ -196,6 +196,21 @@ namespace FileLocker
             else
             {
                 SetStatus($"Hash file selected: {fileInfo.Name}. Large files wait for manual Generate Hash.");
+            }
+        }
+
+        internal static bool TryNormalizeHashFileSelectionPath(string? filePath, out string normalizedPath)
+        {
+            normalizedPath = string.Empty;
+
+            try
+            {
+                normalizedPath = RequireExistingFile(filePath);
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -590,7 +605,9 @@ namespace FileLocker
                     .OrderByDescending(history => history.TimestampUtc)
                     .Take(5))
                 {
-                    FileOperationResult? result = entry.Results.FirstOrDefault();
+                    FileOperationResult? result = (entry.Results ?? [])
+                        .Where(result => result is not null)
+                        .FirstOrDefault();
                     string fileName = result == null
                         ? "Unknown file"
                         : Path.GetFileName(GetResultDisplayPath(result));
@@ -602,7 +619,7 @@ namespace FileLocker
                     RecentHashItems.Add(new HashRecentItem
                     {
                         FileName = fileName,
-                        Algorithm = entry.Algorithm,
+                        Algorithm = OperationHistoryAlgorithm.NormalizeName(entry.Algorithm),
                         TimestampDisplay = FormatRecentHashTimestamp(entry.TimestampUtc)
                     });
                 }
@@ -657,7 +674,9 @@ namespace FileLocker
                         OriginalSizeBytes = _hashSelectedFile.SizeBytes,
                         OutputSizeBytes = _hashSelectedFile.SizeBytes,
                         ElapsedMilliseconds = elapsedMilliseconds,
-                        HashValue = _generatedFileHash
+                        HashValue = _generatedFileHash,
+                        Algorithm = _hashSelectedAlgorithm,
+                        KeySizeBits = FileHashService.GetDigestBits(_hashSelectedAlgorithm)
                     }
                 ]
             };
@@ -805,7 +824,7 @@ namespace FileLocker
                 return;
             }
 
-            HashAlgorithmHelperText.Text = _hashSelectedAlgorithm == "SHA-512"
+            HashAlgorithmHelperText.Text = _hashSelectedAlgorithm == FileHashService.Sha512
                 ? "SHA-512 produces a longer digest. SHA-256 remains the default recommendation for general file integrity checks."
                 : "SHA-256 is recommended for general file integrity checks.";
         }
@@ -843,17 +862,12 @@ namespace FileLocker
             HashDropHelperText.Text = "Useful for checking file integrity and verifying downloads";
         }
 
-        private static string NormalizeHashInput(string? input)
-        {
-            return HashInputNormalizer.Normalize(input);
-        }
-
         private string ReadSelectedHashAlgorithm()
         {
             string? selected = (HashAlgorithmCombo.SelectedItem as ComboBoxItem)?.Content as string;
             return selected?.Contains("512", StringComparison.OrdinalIgnoreCase) == true
-                ? "SHA-512"
-                : "SHA-256";
+                ? FileHashService.Sha512
+                : FileHashService.Sha256;
         }
 
         private bool CanCopyCurrentHash() => !string.IsNullOrWhiteSpace(_generatedFileHash);

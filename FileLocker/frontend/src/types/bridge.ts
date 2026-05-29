@@ -29,9 +29,13 @@ export type FileOperationResult = {
   compressionRequested: boolean
   compressionApplied: boolean
   compressionReason?: string
+  estimatedCompressedSizeBytes?: number
+  compressedSizeBytes?: number
   elapsedMilliseconds?: number
   failureCategory?: string
   hashValue?: string
+  algorithm?: string
+  keySizeBits?: number
 }
 
 export type HistoryEntry = {
@@ -39,6 +43,8 @@ export type HistoryEntry = {
   timestampUtc: string
   operation: string
   profileName: string
+  algorithm: string
+  keySizeBits: number
   successCount: number
   failureCount: number
   cancelled: boolean
@@ -155,9 +161,23 @@ export type InitialState = {
     isAdministrator: boolean
     canRestartAsAdministrator: boolean
     isDebug: boolean
+    encryptionAlgorithms: EncryptionAlgorithmOption[]
   }
   dashboard: DashboardState
   settings: SettingsState
+}
+
+export type EncryptionAlgorithmOption = {
+  id: string
+  label: string
+  fileFormatName: string
+  keySizeBits: number
+  status: string
+  detail: string
+  bestFor: string
+  supportNote?: string
+  canUsePngCarrier: boolean
+  pngCarrierMaxSourceBytes?: number | null
 }
 
 export type ProgressEvent = {
@@ -179,7 +199,12 @@ export type DropErrorEvent = {
   message: string
 }
 
-export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent
+export type UpdateAvailableEvent = {
+  type: "updateAvailable"
+  result: UpdateCheckResult
+}
+
+export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent | UpdateAvailableEvent
 
 export type FileOperationRequest = {
   operationId: string
@@ -187,6 +212,7 @@ export type FileOperationRequest = {
   password: string
   keyfilePath?: string
   recoveryKey?: string
+  algorithm: string
   compressFiles: boolean
   scrambleNames: boolean
   useSteganography: boolean
@@ -223,12 +249,61 @@ export type StartupItem = {
   canToggle: boolean
   status: string
   warnings: string[]
+  sourceType: string
+  category: "Startup Apps" | "Broken Startup Items" | "Advanced Startup Hooks" | string
+  scope: string
+  publisher: string
+  signatureStatus: string
+  isMicrosoftSigned: boolean
+  commandRaw: string
+  executableResolved: string
+  arguments: string
+  workingDirectory: string
+  sourceLocation: string
+  lastModified: string
+  startupImpact: string
+  confidence: string
+  riskLevel: string
+  disableMethod: string
+  isReadOnlyManaged: boolean
+  backupPayload: string
+  notes: string
+  isIgnored: boolean
+}
+
+export type StartupRestoreRecord = {
+  id: string
+  name: string
+  source: string
+  location: string
+  command: string
+  targetPath?: string
+  timestampUtc: string
+  backupPath: string
+  sourceType: string
+  category: string
+  scope: string
+  originalStatus: string
+  fileLockerVersion: string
+  restoreStatus: string
+  failureDetails: string
+  restoreMethod: string
+  userAction: string
+  resolvedExecutable: string
+  commandStatus: string
+  confidence: string
+  riskLevel: string
 }
 
 export type StartupScanResult = {
   items: StartupItem[]
   enabledCount: number
   disabledCount: number
+  brokenCount: number
+  advancedCount: number
+  restoreRecordCount: number
+  ignoredCount: number
+  restoreRecords: StartupRestoreRecord[]
   warnings: string[]
 }
 
@@ -237,6 +312,26 @@ export type StartupToggleResult = {
   isEnabled: boolean
   backupPath: string
   message: string
+}
+
+export type StartupIgnoreResult = {
+  itemId: string
+  isIgnored: boolean
+  message: string
+}
+
+export type StartupExportResult = {
+  exportPath: string
+  fileName: string
+  itemId: string
+  fullPathsIncluded: boolean
+}
+
+export type StartupOpenLocationResult = {
+  opened: boolean
+  itemId: string
+  targetKind: string
+  target: string
 }
 
 export type InstalledApp = {
@@ -254,6 +349,7 @@ export type InstalledApp = {
   requiresAdministrator: boolean
   canLaunchUninstaller: boolean
   registryKeyPath: string
+  iconDataUri?: string
 }
 
 export type InstalledAppsScanResult = {

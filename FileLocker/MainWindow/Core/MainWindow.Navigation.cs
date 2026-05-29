@@ -119,7 +119,7 @@ namespace FileLocker
 
             foreach (OperationHistoryEntry entry in _operationHistory.OrderByDescending(history => history.TimestampUtc))
             {
-                foreach (FileOperationResult result in entry.Results)
+                foreach (FileOperationResult result in (entry.Results ?? []).Where(result => result is not null))
                 {
                     string displayPath = GetResultDisplayPath(result);
                     string fileName = Path.GetFileName(displayPath);
@@ -239,11 +239,11 @@ namespace FileLocker
         {
             int protectedFiles = _operationHistory
                 .Where(entry => IsEncryptOperation(entry.Operation))
-                .Sum(entry => entry.Results.Count(result => IsSuccessfulDashboardResult(result)));
+                .Sum(entry => EnumerateHistoryResults(entry).Count(IsSuccessfulDashboardResult));
 
             int protectedThisWeek = _operationHistory
                 .Where(entry => IsEncryptOperation(entry.Operation) && IsThisWeek(entry.TimestampUtc))
-                .Sum(entry => entry.Results.Count(result => IsSuccessfulDashboardResult(result)));
+                .Sum(entry => EnumerateHistoryResults(entry).Count(IsSuccessfulDashboardResult));
 
             string protectedDelta = protectedThisWeek > 0
                 ? $"+{protectedThisWeek} this week"
@@ -279,7 +279,9 @@ namespace FileLocker
             int failedOperationsThisWeek = _operationHistory.Count(entry => IsThisWeek(entry.TimestampUtc) && !IsSuccessfulDashboardHistoryEntry(entry));
 
             OperationHistoryEntry? latestEntry = _operationHistory.FirstOrDefault();
-            FileOperationResult? latestResult = latestEntry?.Results.FirstOrDefault();
+            FileOperationResult? latestResult = latestEntry == null
+                ? null
+                : EnumerateHistoryResults(latestEntry).FirstOrDefault();
             string lastOperationName = latestEntry == null
                 ? "No recent activity"
                 : GetDashboardOperationDisplay(latestEntry, latestResult);
@@ -362,7 +364,7 @@ namespace FileLocker
 
             foreach (OperationHistoryEntry entry in _operationHistory.Where(history => IsEncryptOperation(history.Operation)))
             {
-                foreach (FileOperationResult result in entry.Results.Where(IsSuccessfulDashboardResult))
+                foreach (FileOperationResult result in EnumerateHistoryResults(entry).Where(IsSuccessfulDashboardResult))
                 {
                     if (!TryGetTrackedStorageDeltaBytes(result, out long storageDeltaBytes))
                     {
@@ -402,6 +404,11 @@ namespace FileLocker
             }
 
             return (totalSaved, totalAdded, savedThisWeek, addedThisWeek, hasTrackedStorage, trackedFiles, compressionRequested, compressionApplied);
+        }
+
+        private static IEnumerable<FileOperationResult> EnumerateHistoryResults(OperationHistoryEntry entry)
+        {
+            return (entry.Results ?? []).Where(result => result is not null);
         }
 
         private IReadOnlyList<DashboardStorageBreakdownItem> BuildStorageBreakdown((
@@ -518,18 +525,19 @@ namespace FileLocker
         {
             storageDeltaBytes = 0;
 
-            if (!result.CompressionRequested || result.OriginalSizeBytes is not long originalSizeBytes)
+            if ((!result.CompressionRequested && !result.CompressionApplied) ||
+                OperationHistorySanitizer.NormalizeNonNegativeMetric(result.OriginalSizeBytes) is not long originalSizeBytes)
             {
                 return false;
             }
 
-            if (result.CompressedSizeBytes is long compressedSizeBytes)
+            if (OperationHistorySanitizer.NormalizeNonNegativeMetric(result.CompressedSizeBytes) is long compressedSizeBytes)
             {
                 storageDeltaBytes = originalSizeBytes - compressedSizeBytes;
                 return true;
             }
 
-            if (result.EstimatedCompressedSizeBytes is long estimatedCompressedSizeBytes)
+            if (OperationHistorySanitizer.NormalizeNonNegativeMetric(result.EstimatedCompressedSizeBytes) is long estimatedCompressedSizeBytes)
             {
                 storageDeltaBytes = originalSizeBytes - estimatedCompressedSizeBytes;
                 return true;
@@ -543,15 +551,14 @@ namespace FileLocker
             path.Contains("[redacted]", StringComparison.OrdinalIgnoreCase);
 
         private static bool IsSuccessfulDashboardResult(FileOperationResult result) =>
-            string.Equals(result.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(result.Status, "Verified", StringComparison.OrdinalIgnoreCase);
+            OperationHistoryMetrics.IsSuccessfulStatus(result.Status);
 
-        private static bool IsEncryptOperation(string operation) =>
+        private static bool IsEncryptOperation(string? operation) =>
             string.Equals(operation, "Encrypt", StringComparison.OrdinalIgnoreCase);
 
         private static string GetDashboardOperationDisplay(OperationHistoryEntry entry, FileOperationResult? result)
         {
-            if (result != null && string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+            if (result != null && OperationHistoryMetrics.IsFailedStatus(result.Status))
             {
                 return "Failed";
             }
@@ -561,18 +568,18 @@ namespace FileLocker
                 return "Cancelled";
             }
 
-            return entry.Operation.ToLowerInvariant() switch
+            return (entry.Operation ?? string.Empty).ToLowerInvariant() switch
             {
                 "encrypt" => "Encrypted",
                 "decrypt" => "Decrypted",
                 "verify" => "Verified",
-                _ => entry.Operation
+                _ => string.IsNullOrWhiteSpace(entry.Operation) ? OperationHistoryAlgorithm.Unknown : entry.Operation
             };
         }
 
         private static string GetDashboardResultStatus(OperationHistoryEntry entry, FileOperationResult result)
         {
-            if (string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+            if (OperationHistoryMetrics.IsFailedStatus(result.Status))
             {
                 return "Failed";
             }
@@ -587,12 +594,12 @@ namespace FileLocker
 
         private static Brush GetDashboardStatusBrush(OperationHistoryEntry entry, FileOperationResult result)
         {
-            if (string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase) || entry.Cancelled)
+            if (OperationHistoryMetrics.IsFailedStatus(result.Status) || entry.Cancelled)
             {
                 return new SolidColorBrush(Colors.IndianRed);
             }
 
-            return entry.Operation.ToLowerInvariant() switch
+            return (entry.Operation ?? string.Empty).ToLowerInvariant() switch
             {
                 "encrypt" => new SolidColorBrush(Colors.MediumTurquoise),
                 "decrypt" => new SolidColorBrush(Colors.DeepSkyBlue),
@@ -671,7 +678,7 @@ namespace FileLocker
         private static string FormatDashboardFileSize(long bytes)
         {
             string[] sizes = ["B", "KB", "MB", "GB", "TB"];
-            double length = bytes;
+            double length = Math.Max(0, bytes);
             int order = 0;
             while (length >= 1024 && order < sizes.Length - 1)
             {

@@ -1,4 +1,6 @@
 using FileLocker;
+using System.Reflection;
+using System.Text;
 
 namespace FileLocker.Tests;
 
@@ -53,7 +55,7 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
-    public async Task CreateManifestAsync_RejectsOnlyMalformedInputsAsNoFiles()
+    public async Task CreateManifestAsync_RejectsMalformedInputPathCharacters()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         string root = CreateTempDirectory();
@@ -62,7 +64,7 @@ public sealed class HashManifestServiceTests
             InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 HashManifestService.CreateManifestAsync(["C:\\Temp\\bad\0path.txt"], "SHA-256", root, cancellationToken));
 
-            Assert.Equal("No files were available for the hash manifest.", ex.Message);
+            Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -151,6 +153,54 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public async Task CreateManifestAsync_RejectsAlternateDataStreamOutputDirectory()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "alpha.txt");
+            await File.WriteAllTextAsync(filePath, "alpha", TestContext.Current.CancellationToken);
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.CreateManifestAsync(
+                    [filePath],
+                    "SHA-256",
+                    Path.Combine(root, "manifest-output:stream"),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("output folder", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CreateManifestAsync_RejectsRelativeOutputDirectory()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "alpha.txt");
+            await File.WriteAllTextAsync(filePath, "alpha", TestContext.Current.CancellationToken);
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.CreateManifestAsync(
+                    [filePath],
+                    "SHA-256",
+                    "manifest-output",
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("output folder", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CreateManifestAsync_CanceledTokenDoesNotCreateOutputDirectory()
     {
         string root = CreateTempDirectory();
@@ -201,6 +251,162 @@ public sealed class HashManifestServiceTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_DeduplicatesCaseInsensitivePaths()
+    {
+        string[] files = HashManifestService.NormalizeManifestFiles(
+            [@"C:\Root\Alpha.txt", @"c:\root\alpha.txt", @"C:\Root\Beta.txt"],
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal([@"C:\Root\Alpha.txt", @"C:\Root\Beta.txt"], files);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsTooManyFiles()
+    {
+        IEnumerable<string> files = Enumerable
+            .Range(0, HashManifestService.MaxManifestEntries + 1)
+            .Select(index => $@"C:\Root\{index}.txt");
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles(files, TestContext.Current.CancellationToken));
+
+        Assert.Equal("The hash manifest contains too many files.", ex.Message);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsOversizedPathText()
+    {
+        string oversizedPath = @"C:\" + new string('a', FileHashService.MaxHashPathChars + 1);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles([oversizedPath], TestContext.Current.CancellationToken));
+
+        Assert.Equal("A hash manifest file path is too long.", ex.Message);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsControlCharacterPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles(
+                [Path.Combine(Path.GetTempPath(), "manifest\tpayload.txt")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsUnicodeFormatCharacterPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles(
+                [Path.Combine(Path.GetTempPath(), "payload" + "\u202E" + ".txt")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsAlternateDataStreamPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles(
+                [Path.Combine(Path.GetTempPath(), "payload.txt:stream")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestFiles_RejectsRelativePathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestFiles(
+                ["payload.txt"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_DeduplicatesBeforeApplyingLimit()
+    {
+        string[] paths = HashManifestService.NormalizeManifestInputPaths(
+            [@"  C:\Root\Alpha.txt  ", @"c:\root\alpha.txt", @"C:\Root\Beta.txt"],
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal([@"C:\Root\Alpha.txt", @"C:\Root\Beta.txt"], paths);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsOversizedPathText()
+    {
+        string oversizedPath = @"C:\" + new string('a', FileHashService.MaxHashPathChars + 1);
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths([oversizedPath], TestContext.Current.CancellationToken));
+
+        Assert.Equal("A hash manifest input path is too long.", ex.Message);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsControlCharacterPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths(
+                [Path.Combine(Path.GetTempPath(), "manifest\r\npayload.txt")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsUnicodeFormatCharacterPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths(
+                [Path.Combine(Path.GetTempPath(), "payload" + "\u202E" + ".txt")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsAlternateDataStreamPathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths(
+                [Path.Combine(Path.GetTempPath(), "payload.txt:stream")],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsRelativePathText()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths(
+                ["payload.txt"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeManifestInputPaths_RejectsTooManyInputPaths()
+    {
+        IEnumerable<string> paths = Enumerable
+            .Range(0, HashManifestService.MaxManifestEntries + 1)
+            .Select(index => $@"C:\Root\{index}.txt");
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            HashManifestService.NormalizeManifestInputPaths(paths, TestContext.Current.CancellationToken));
+
+        Assert.Equal("The hash manifest contains too many input paths.", ex.Message);
     }
 
     [Fact]
@@ -323,6 +529,92 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public async Task VerifyManifestAsync_RejectsAlternateDataStreamManifestPath()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    Path.Combine(root, "manifest.sha256:stream"),
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("manifest path", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsRelativeManifestPath()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    "manifest.sha256",
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("manifest path", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsAlternateDataStreamRootDirectory()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await File.WriteAllTextAsync(manifestPath, "# empty", TestContext.Current.CancellationToken);
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    Path.Combine(root, "root:stream"),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("root folder", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsRelativeRootDirectory()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await File.WriteAllTextAsync(manifestPath, "# empty", TestContext.Current.CancellationToken);
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    "manifest-root",
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("root folder", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task VerifyManifestAsync_CanceledTokenDoesNotCheckManifestPath()
     {
         using var cancellation = new CancellationTokenSource();
@@ -336,6 +628,35 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public async Task VerifyManifestAsync_RejectsUnsupportedManifestExtension()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "payload.txt");
+            await File.WriteAllTextAsync(filePath, "payload", TestContext.Current.CancellationToken);
+
+            string manifestPath = Path.Combine(root, "manifest.txt");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                $"{new string('a', 64)}  payload.txt",
+                TestContext.Current.CancellationToken);
+
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains(".sha256 or .sha512", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task VerifyManifestAsync_RejectsManifestWithoutEntries()
     {
         string root = CreateTempDirectory();
@@ -344,7 +665,7 @@ public sealed class HashManifestServiceTests
             string manifestPath = Path.Combine(root, "manifest.sha256");
             await File.WriteAllTextAsync(
                 manifestPath,
-                "# FileLocker SHA-256 manifest\r\nnot-a-valid-entry\r\n",
+                "# FileLocker SHA-256 manifest\r\n# no entries\r\n",
                 TestContext.Current.CancellationToken);
 
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -362,15 +683,170 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public async Task VerifyManifestAsync_RejectsMalformedManifestEntries()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "payload.txt");
+            await File.WriteAllTextAsync(filePath, "payload", TestContext.Current.CancellationToken);
+            string sha256 = await FileHashService.ComputeHashHexAsync(
+                filePath,
+                FileHashService.Sha256,
+                cancellationToken: TestContext.Current.CancellationToken);
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                $"{sha256}  payload.txt{Environment.NewLine}not-a-valid-entry",
+                TestContext.Current.CancellationToken);
+
+            InvalidDataException exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("malformed or unsafe", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsOversizedManifestLines()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                $"{new string('a', HashManifestService.MaxManifestLineChars + 1)}{Environment.NewLine}",
+                TestContext.Current.CancellationToken);
+
+            InvalidDataException exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("line that is too long", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsTooManyManifestLines()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await using (var writer = new StreamWriter(manifestPath, append: false, Encoding.UTF8))
+            {
+                for (int index = 0; index <= HashManifestService.MaxManifestLines; index++)
+                {
+                    await writer.WriteLineAsync("# comment");
+                }
+            }
+
+            InvalidDataException exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("too many lines", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(@"..\outside.txt")]
+    [InlineData(@"C:\outside.txt")]
+    [InlineData("payload.txt:stream")]
+    [InlineData("payload\u202E.txt")]
+    public async Task VerifyManifestAsync_RejectsUnsafeManifestEntryPaths(string relativePath)
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "manifest.sha256");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                $"{new string('a', 64)}  {relativePath}",
+                TestContext.Current.CancellationToken);
+
+            InvalidDataException exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("malformed or unsafe", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VerifyManifestAsync_RejectsEntriesThatDoNotMatchManifestAlgorithmLength()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "payload.txt");
+            await File.WriteAllTextAsync(filePath, "payload", TestContext.Current.CancellationToken);
+
+            string sha256 = await FileHashService.ComputeHashHexAsync(
+                filePath,
+                FileHashService.Sha256,
+                cancellationToken: TestContext.Current.CancellationToken);
+            string manifestPath = Path.Combine(root, "manifest.sha512");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                $"{sha256}  payload.txt",
+                TestContext.Current.CancellationToken);
+
+            InvalidDataException exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                HashManifestService.VerifyManifestAsync(
+                    manifestPath,
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("malformed or unsafe", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ParseManifest_IgnoresCommentsAndAbsolutePaths()
     {
-        string content = """
-            # FileLocker SHA-256 manifest
-            2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae  relative.txt
-            2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae  C:\secret.txt
-            2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae  ..\outside.txt
-            2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae  nested/../outside.txt
-            """;
+        string hash = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
+        string content = string.Join(
+            Environment.NewLine,
+            [
+                "# FileLocker SHA-256 manifest",
+                $"{hash}  relative.txt",
+                $@"{hash}  C:\secret.txt",
+                $@"{hash}  ..\outside.txt",
+                $"{hash}  nested/../outside.txt",
+                $"{hash}  payload.txt:stream",
+                $"{hash}  payload\u202E.txt"
+            ]);
 
         List<HashManifestEntry> entries = HashManifestService.ParseManifest(content);
 
@@ -430,6 +906,48 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public void ParseManifest_IgnoresOversizedLines()
+    {
+        string hash = new('a', 64);
+        string content = string.Join(
+            Environment.NewLine,
+            [
+                $"{hash}  alpha.txt",
+                new string('b', HashManifestService.MaxManifestLineChars + 1),
+                $"{hash}  beta.txt"
+            ]);
+
+        List<HashManifestEntry> entries = HashManifestService.ParseManifest(content);
+
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("alpha.txt", entries[0].RelativePath);
+        Assert.Equal("beta.txt", entries[1].RelativePath);
+    }
+
+    [Fact]
+    public void ParseManifest_StopsAfterLineLimit()
+    {
+        string hash = new('a', 64);
+        var builder = new StringBuilder();
+        for (int index = 0; index <= HashManifestService.MaxManifestLines; index++)
+        {
+            builder.AppendLine("# comment");
+        }
+
+        builder.AppendLine($"{hash}  late.txt");
+
+        List<HashManifestEntry> entries = HashManifestService.ParseManifest(builder.ToString());
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
+    public void ParseManifest_RejectsNullContent()
+    {
+        Assert.Throws<ArgumentNullException>(() => HashManifestService.ParseManifest(null!));
+    }
+
+    [Fact]
     public void CreateManifestEnumerationOptions_SkipsReparsePointsAndInaccessibleEntries()
     {
         EnumerationOptions options = HashManifestService.CreateManifestEnumerationOptions();
@@ -451,6 +969,18 @@ public sealed class HashManifestServiceTests
             HashManifestService.GetManifestRelativePath(commonRoot, filePath));
 
         Assert.Contains("common root", ex.Message);
+    }
+
+    [Fact]
+    public void FindCommonDirectory_PreservesFilesystemRoot()
+    {
+        string root = Path.GetPathRoot(Path.GetTempPath())
+            ?? throw new InvalidOperationException("No filesystem root was available for the test.");
+        string child = Path.Combine(root, "FileLockerManifestRoot", "nested");
+
+        string common = InvokeFindCommonDirectory([root, child]);
+
+        Assert.Equal(root, common);
     }
 
     [Fact]
@@ -557,6 +1087,55 @@ public sealed class HashManifestServiceTests
     }
 
     [Fact]
+    public void ExpandFiles_IgnoresAlternateDataStreamPaths()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "alpha.txt");
+            File.WriteAllText(filePath, "alpha");
+
+            string[] files = HashManifestService.ExpandFiles([
+                    Path.Combine(root, "alpha.txt:stream"),
+                    filePath
+                ], TestContext.Current.CancellationToken)
+                .ToArray();
+
+            string singlePath = Assert.Single(files);
+            Assert.Equal(filePath, singlePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExpandFiles_IgnoresRelativeAndUnicodeFormatPaths()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string filePath = Path.Combine(root, "alpha.txt");
+            File.WriteAllText(filePath, "alpha");
+
+            string[] files = HashManifestService.ExpandFiles([
+                    "alpha.txt",
+                    Path.Combine(root, "payload" + "\u202E" + ".txt"),
+                    filePath
+                ], TestContext.Current.CancellationToken)
+                .ToArray();
+
+            string singlePath = Assert.Single(files);
+            Assert.Equal(filePath, singlePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ExpandFiles_SkipsGeneratedManifestFilesDuringDirectoryExpansion()
     {
         string root = CreateTempDirectory();
@@ -622,5 +1201,14 @@ public sealed class HashManifestServiceTests
         string path = Path.Combine(Path.GetTempPath(), $"FileLockerTests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static string InvokeFindCommonDirectory(IReadOnlyList<string> directories)
+    {
+        MethodInfo method = typeof(HashManifestService).GetMethod("FindCommonDirectory", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("FindCommonDirectory method not found.");
+
+        return (string)(method.Invoke(null, [directories])
+            ?? throw new InvalidOperationException("FindCommonDirectory returned null."));
     }
 }

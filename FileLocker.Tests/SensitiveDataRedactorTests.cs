@@ -21,6 +21,24 @@ public sealed class SensitiveDataRedactorTests
     }
 
     [Fact]
+    public void RedactPath_ToleratesControlCharacters()
+    {
+        string redacted = SensitiveDataRedactor.RedactPath(@"D:\Vault\bad" + "\0" + "secret.txt");
+
+        Assert.DoesNotContain('\0', redacted);
+        Assert.StartsWith("[redacted]", redacted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedactPath_ToleratesUnicodeFormatCharacters()
+    {
+        string redacted = SensitiveDataRedactor.RedactPath(@"D:\Vault\bad" + "\u202E" + "secret.txt");
+
+        Assert.DoesNotContain('\u202E', redacted);
+        Assert.StartsWith("[redacted]", redacted, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RedactMessage_RedactsQuotedAbsolutePaths()
     {
         string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open 'D:\Vault\secret.txt'.");
@@ -30,12 +48,67 @@ public sealed class SensitiveDataRedactorTests
     }
 
     [Fact]
+    public void RedactMessage_RedactsMalformedQuotedAbsolutePaths()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open 'D:\Vault\bad" + "\0" + "secret.txt'.");
+
+        Assert.DoesNotContain(@"D:\Vault", redacted);
+        Assert.DoesNotContain('\0', redacted);
+        Assert.Contains("[redacted]", redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_ReplacesUnicodeFormatCharactersInNonPathText()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage("Operation\u202Efailed");
+
+        Assert.Equal("Operation failed", redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_ReplacesControlCharactersInNonPathText()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage("Operation\r\nfailed");
+
+        Assert.Equal("Operation  failed", redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_BoundsOversizedMessages()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(new string('A', SensitiveDataRedactor.MaxRedactedMessageChars + 1024));
+
+        Assert.True(redacted.Length <= SensitiveDataRedactor.MaxRedactedMessageChars);
+        Assert.EndsWith("Message truncated.", redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_RedactsQuotedAbsolutePathsWithUnicodeFormatCharacters()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open 'D:\Vault\bad" + "\u202E" + "secret.txt'.");
+
+        Assert.DoesNotContain(@"D:\Vault", redacted);
+        Assert.DoesNotContain('\u202E', redacted);
+        Assert.Contains("[redacted]", redacted);
+    }
+
+    [Fact]
     public void RedactMessage_RedactsUnquotedAbsolutePaths()
     {
         string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open D:\Vault\secret.txt.");
 
         Assert.DoesNotContain(@"D:\Vault", redacted);
         Assert.Contains(Path.Combine("[redacted]", "secret.txt"), redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_RedactsMalformedUnquotedAbsolutePaths()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open D:\Vault\bad" + "\0" + "secret.txt.");
+
+        Assert.DoesNotContain(@"D:\Vault", redacted);
+        Assert.DoesNotContain('\0', redacted);
+        Assert.Contains("[redacted]", redacted);
     }
 
     [Fact]
@@ -63,6 +136,15 @@ public sealed class SensitiveDataRedactorTests
 
         Assert.DoesNotContain(@"D:\Vault Folder", redacted);
         Assert.Contains(Path.Combine("[redacted]", "secret file.txt"), redacted);
+    }
+
+    [Fact]
+    public void RedactMessage_RedactsUnquotedAbsoluteDirectoryPathsWithSpacedLeaf()
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(@"Could not open D:\Vault Folder\Secret Folder.");
+
+        Assert.DoesNotContain(@"D:\Vault Folder", redacted);
+        Assert.Contains(Path.Combine("[redacted]", "Secret Folder"), redacted);
     }
 
     [Fact]

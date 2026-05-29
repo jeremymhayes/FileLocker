@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Konscious.Security.Cryptography;
+using Org.BouncyCastle.Crypto;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -243,78 +244,28 @@ namespace FileLocker
             }
         }
 
-        private async Task PromptToInstallUpdateAsync(UpdateReleaseInfo release, bool isManualCheck)
+        // The update prompt is rendered in the WebView (React UpdateDialog) rather
+        // than a native ContentDialog, so the entire updater shares the app's UI.
+        // We push the available release to the WebView; the install / skip / later
+        // actions flow back through the updates.* bridge handlers.
+        private Task PromptToInstallUpdateAsync(UpdateReleaseInfo release, bool isManualCheck)
         {
-            var panel = new StackPanel
-            {
-                Spacing = 12,
-                MaxWidth = 520
-            };
+            _ = isManualCheck;
 
-            panel.Children.Add(new TextBlock
+            PostBridgeEvent(new
             {
-                Text = $"FileLocker {release.DisplayVersion} is available. You are currently running {UpdateService.GetCurrentVersionLabel()}.",
-                TextWrapping = TextWrapping.WrapWholeWords
+                type = "updateAvailable",
+                result = new
+                {
+                    currentVersion = UpdateService.GetCurrentVersionLabel(),
+                    isUpdateAvailable = true,
+                    statusMessage = $"FileLocker {release.DisplayVersion} is available.",
+                    release = ToUpdateReleaseDto(release),
+                },
             });
 
-            panel.Children.Add(new TextBlock
-            {
-                Text = "Release notes",
-                FontWeight = FontWeights.SemiBold
-            });
-
-            panel.Children.Add(new ScrollViewer
-            {
-                MaxHeight = 240,
-                Content = new TextBlock
-                {
-                    Text = string.IsNullOrWhiteSpace(release.Notes)
-                        ? "No release notes were provided for this release."
-                        : release.Notes,
-                    IsTextSelectionEnabled = true,
-                    TextWrapping = TextWrapping.WrapWholeWords
-                }
-            });
-
-            var dialog = new ContentDialog
-            {
-                Title = "Update Available",
-                Content = panel,
-                PrimaryButtonText = "Download && Install",
-                SecondaryButtonText = "View Release",
-                CloseButtonText = isManualCheck ? "Not Now" : "Skip This Version",
-                DefaultButton = ContentDialogButton.Primary
-            };
-
-            ContentDialogResult result = await ShowContentDialogAsync(dialog);
-
-            if (result == ContentDialogResult.Primary)
-            {
-                await DownloadAndInstallUpdateAsync(release);
-                return;
-            }
-
-            if (result == ContentDialogResult.Secondary)
-            {
-                try
-                {
-                    OpenWithShell(release.HtmlUrl);
-                }
-                catch (Exception ex)
-                {
-                    SetAboutUpdateStatusText($"Update available: {release.DisplayVersion}");
-                    await ShowErrorDialogAsync($"Unable to open the release page: {GetFriendlyExceptionMessage(ex, "Open failed.")}");
-                }
-
-                return;
-            }
-
-            if (!isManualCheck)
-            {
-                _updateSettings.SkippedVersion = release.DisplayVersion;
-                UpdateService.SaveSettings(_updateSettings);
-                SetAboutUpdateStatusText($"Update available: {release.DisplayVersion} (skipped)");
-            }
+            SetAboutUpdateStatusText($"Update available: {release.DisplayVersion}");
+            return Task.CompletedTask;
         }
 
         private async Task DownloadAndInstallUpdateAsync(UpdateReleaseInfo release)
@@ -347,7 +298,7 @@ namespace FileLocker
 
         private void LaunchInstallerAndExit(string installerPath)
         {
-            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(2));
+            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(1), Environment.ProcessId);
             Close();
         }
 
@@ -596,8 +547,8 @@ namespace FileLocker
                 return;
             }
 
-            _preferences.OutputTimestampPolicy = (OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string
-                ?? "Current time";
+            _preferences.OutputTimestampPolicy = AppPreferencesStore.NormalizeOutputTimestampPolicy(
+                (OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string);
             PersistPreferences();
             UpdateRunSummaryBanner();
             UpdateSafetyBanner();
@@ -722,11 +673,7 @@ namespace FileLocker
 
         private async Task RunExplorerIntegrationScriptAsync(bool unregister)
         {
-            string? executablePath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(executablePath))
-            {
-                throw new InvalidOperationException("The current executable path could not be determined.");
-            }
+            string executablePath = ExplorerIntegrationService.NormalizeExecutablePath(Environment.ProcessPath ?? string.Empty);
 
             string scriptPath = Path.Combine(AppContext.BaseDirectory, "Register-ExplorerIntegration.ps1");
             if (!File.Exists(scriptPath))
@@ -744,6 +691,8 @@ namespace FileLocker
             {
                 throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", scriptPath);
             }
+
+            scriptPath = NormalizeExplorerIntegrationScriptPath(scriptPath);
 
             var startInfo = new ProcessStartInfo
             {
@@ -764,9 +713,11 @@ namespace FileLocker
                 startInfo.ArgumentList.Add("-Unregister");
             }
 
+            const int maxExplorerIntegrationOutputChars = 16 * 1024;
+
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to start PowerShell.");
-            Task<string> stderrTask = process.StandardError.ReadToEndAsync();
-            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+            Task<BoundedTextReadResult> stderrTask = BoundedTextReader.ReadToEndAsync(process.StandardError, maxExplorerIntegrationOutputChars);
+            Task<BoundedTextReadResult> stdoutTask = BoundedTextReader.ReadToEndAsync(process.StandardOutput, maxExplorerIntegrationOutputChars);
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             try
@@ -787,13 +738,55 @@ namespace FileLocker
                 throw new TimeoutException("Explorer integration update timed out.");
             }
 
-            string stderr = await stderrTask;
-            string stdout = await stdoutTask;
+            BoundedTextReadResult stderr = await stderrTask;
+            BoundedTextReadResult stdout = await stdoutTask;
 
             if (process.ExitCode != 0)
             {
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
+                string message = string.IsNullOrWhiteSpace(stderr.Text) ? stdout.Text : stderr.Text;
+                if (stderr.Truncated || stdout.Truncated)
+                {
+                    message = string.IsNullOrWhiteSpace(message)
+                        ? "Explorer integration output was truncated."
+                        : $"{message}{Environment.NewLine}Explorer integration output was truncated.";
+                }
+
+                throw new InvalidOperationException(message);
             }
+        }
+
+        internal static string NormalizeExplorerIntegrationScriptPath(string? scriptPath)
+        {
+            if (string.IsNullOrWhiteSpace(scriptPath))
+            {
+                throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", scriptPath);
+            }
+
+            string trimmedPath = scriptPath.Trim();
+            if (trimmedPath.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format) ||
+                !Path.IsPathFullyQualified(trimmedPath))
+            {
+                throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", scriptPath);
+            }
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(trimmedPath);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", scriptPath, ex);
+            }
+
+            if (ContainsAlternateDataStreamToken(fullPath) ||
+                !string.Equals(Path.GetExtension(fullPath), ".ps1", StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(fullPath))
+            {
+                throw new FileNotFoundException("Register-ExplorerIntegration.ps1 could not be found.", fullPath);
+            }
+
+            return fullPath;
         }
 
         private void CancelRunButton_Click(object sender, RoutedEventArgs e)
@@ -873,17 +866,21 @@ namespace FileLocker
 
         private static string BuildMarkdownReport(OperationHistoryEntry entry, bool includeFullPaths)
         {
+            entry = OperationHistorySanitizer.CloneEntry(entry, includeFullPaths: true);
             var builder = new StringBuilder();
-            builder.AppendLine($"# FileLocker {entry.Operation} Operation Receipt");
+            builder.AppendLine($"# FileLocker {EscapeMarkdown(entry.Operation ?? string.Empty)} Operation Receipt");
             builder.AppendLine();
             builder.AppendLine($"- Timestamp: {entry.TimestampUtc.ToLocalTime():f}");
-            builder.AppendLine($"- Profile: {entry.ProfileName}");
-            builder.AppendLine($"- Algorithm: {entry.Algorithm} ({entry.KeySizeBits}-bit)");
+            builder.AppendLine($"- Profile: {EscapeMarkdown(entry.ProfileName ?? string.Empty)}");
+            builder.AppendLine($"- Algorithm: {EscapeMarkdown(OperationHistoryAlgorithm.Format(entry.Algorithm, entry.KeySizeBits))}");
             builder.AppendLine($"- Keyfile used: {(entry.UsedKeyfile ? "Yes" : "No")}");
             builder.AppendLine($"- Originals removed: {(entry.RemoveOriginalsAfterSuccess ? "Yes" : "No")}");
             builder.AppendLine($"- Secure delete: {(entry.SecureDeleteOriginals ? "Yes" : "No")}");
             builder.AppendLine($"- Verify after write: {(entry.VerifyAfterWrite ? "Yes" : "No")}");
-            builder.AppendLine($"- Backup folder: {(string.IsNullOrWhiteSpace(entry.BackupFolderPath) ? "Not configured" : RenderReportPath(entry.BackupFolderPath, includeFullPaths, "Not configured"))}");
+            string backupFolder = string.IsNullOrWhiteSpace(entry.BackupFolderPath)
+                ? "Not configured"
+                : RenderReportPath(entry.BackupFolderPath, includeFullPaths, "Not configured");
+            builder.AppendLine($"- Backup folder: {EscapeMarkdown(backupFolder)}");
             AppendReceiptMetric(builder, "Original bytes", FormatReportSize(entry.TotalOriginalSizeBytes));
             AppendReceiptMetric(builder, "Output bytes", FormatReportSize(entry.TotalOutputSizeBytes));
             AppendReceiptMetric(builder, "Compression savings", FormatReportSize(entry.TotalStorageSavedBytes));
@@ -894,8 +891,8 @@ namespace FileLocker
                 : string.Empty);
             AppendReceiptMetric(builder, "Failure categories", entry.FailureCategorySummary);
             builder.AppendLine();
-            builder.AppendLine("| Source | Output | Status | Message | Hash | Original | Output | Compression Delta | Compression | Failure |");
-            builder.AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+            builder.AppendLine("| Source | Output | Status | Algorithm | Message | Hash | Original | Output | Compression Delta | Compression | Failure |");
+            builder.AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
             foreach (FileOperationResult result in EnumerateReceiptResults(entry))
             {
@@ -903,6 +900,7 @@ namespace FileLocker
                     $"| {EscapeMarkdown(RenderReportPath(result.SourcePath, includeFullPaths))} " +
                     $"| {EscapeMarkdown(RenderReportPath(result.OutputPath, includeFullPaths, "-"))} " +
                     $"| {EscapeMarkdown(result.Status)} " +
+                    $"| {EscapeMarkdown(FormatReportAlgorithm(result.Algorithm, result.KeySizeBits, "-"))} " +
                     $"| {EscapeMarkdown(RenderReportMessage(result.Message, includeFullPaths))} " +
                     $"| {EscapeMarkdown(result.HashValue ?? "-")} " +
                     $"| {EscapeMarkdown(FormatReportSize(result.OriginalSizeBytes))} " +
@@ -917,8 +915,9 @@ namespace FileLocker
 
         private static string BuildCsvReport(OperationHistoryEntry entry, bool includeFullPaths)
         {
+            entry = OperationHistorySanitizer.CloneEntry(entry, includeFullPaths: true);
             var builder = new StringBuilder();
-            builder.AppendLine("SourcePath,OutputPath,Status,Message,HashValue,BackupPath,OriginalRetained,OutputVerified,OriginalBytes,OutputBytes,CompressionSavedBytes,CompressionAddedBytes,CompressionRequested,CompressionApplied,CompressionReason,CompressedBytes,ElapsedMilliseconds,FailureCategory");
+            builder.AppendLine("SourcePath,OutputPath,Status,Algorithm,KeySizeBits,Message,HashValue,BackupPath,OriginalRetained,OutputVerified,OriginalBytes,OutputBytes,CompressionSavedBytes,CompressionAddedBytes,CompressionRequested,CompressionApplied,CompressionReason,CompressedBytes,ElapsedMilliseconds,FailureCategory");
 
             foreach (FileOperationResult result in EnumerateReceiptResults(entry))
             {
@@ -926,20 +925,22 @@ namespace FileLocker
                     EscapeCsv(RenderReportPath(result.SourcePath, includeFullPaths)),
                     EscapeCsv(RenderReportPath(result.OutputPath, includeFullPaths)),
                     EscapeCsv(result.Status),
+                    EscapeCsv(result.Algorithm ?? string.Empty),
+                    result.KeySizeBits is > 0 ? result.KeySizeBits.GetValueOrDefault().ToString(CultureInfo.InvariantCulture) : string.Empty,
                     EscapeCsv(RenderReportMessage(result.Message, includeFullPaths)),
                     EscapeCsv(result.HashValue ?? string.Empty),
                     EscapeCsv(RenderReportPath(result.BackupPath, includeFullPaths)),
                     result.OriginalRetained ? "true" : "false",
                     result.OutputVerified ? "true" : "false",
-                    result.OriginalSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
-                    result.OutputSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    FormatReportRawMetric(result.OriginalSizeBytes),
+                    FormatReportRawMetric(result.OutputSizeBytes),
                     result.NetStorageSavedBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     result.NetStorageAddedBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     result.CompressionRequested ? "true" : "false",
                     result.CompressionApplied ? "true" : "false",
                     EscapeCsv(RenderReportText(result.CompressionReason, includeFullPaths)),
-                    result.CompressedSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
-                    result.ElapsedMilliseconds?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    FormatReportRawMetric(result.CompressedSizeBytes),
+                    FormatReportRawMetric(result.ElapsedMilliseconds),
                     EscapeCsv(result.FailureCategory ?? string.Empty)));
             }
 
@@ -950,7 +951,7 @@ namespace FileLocker
         {
             if (!string.IsNullOrWhiteSpace(value))
             {
-                builder.AppendLine($"- {label}: {value}");
+                builder.AppendLine($"- {label}: {EscapeMarkdown(value)}");
             }
         }
 
@@ -971,19 +972,31 @@ namespace FileLocker
 
         private static string FormatReportSize(long? bytes)
         {
-            return bytes.HasValue ? FormatDashboardFileSize(bytes.Value) : string.Empty;
+            return OperationHistorySanitizer.NormalizeNonNegativeMetric(bytes) is long nonNegativeBytes
+                ? FormatDashboardFileSize(nonNegativeBytes)
+                : string.Empty;
         }
 
         private static string FormatReportElapsed(long? elapsedMilliseconds)
         {
-            if (!elapsedMilliseconds.HasValue)
+            if (OperationHistorySanitizer.NormalizeNonNegativeMetric(elapsedMilliseconds) is not long nonNegativeElapsedMilliseconds)
             {
                 return string.Empty;
             }
 
-            return elapsedMilliseconds.Value < 1000
-                ? $"{elapsedMilliseconds.Value} ms"
-                : $"{TimeSpan.FromMilliseconds(elapsedMilliseconds.Value).TotalSeconds:0.0} s";
+            return nonNegativeElapsedMilliseconds < 1000
+                ? $"{nonNegativeElapsedMilliseconds} ms"
+                : $"{TimeSpan.FromMilliseconds(nonNegativeElapsedMilliseconds).TotalSeconds:0.0} s";
+        }
+
+        private static string FormatReportRawMetric(long? value)
+        {
+            return OperationHistorySanitizer.NormalizeNonNegativeMetric(value)?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        private static string FormatReportAlgorithm(string? algorithm, int? keySizeBits, string fallback = "")
+        {
+            return OperationHistoryAlgorithm.Format(algorithm, keySizeBits, fallback);
         }
 
         private static string FormatReportDelta(FileOperationResult result)
@@ -1167,18 +1180,91 @@ namespace FileLocker
 
         private static string GetFriendlyExceptionMessage(Exception ex, string fallback)
         {
+            const int maxFriendlyExceptionMessageChars = 2048;
+
+            string NormalizeFriendlyMessage(string? message, string fallbackMessage)
+            {
+                string redacted = SensitiveDataRedactor.RedactMessage(message);
+                if (string.IsNullOrWhiteSpace(redacted))
+                {
+                    return fallbackMessage;
+                }
+
+                if (redacted.Length <= maxFriendlyExceptionMessageChars)
+                {
+                    return redacted;
+                }
+
+                const string truncationMessage = "Message truncated.";
+                string suffix = $"{Environment.NewLine}{truncationMessage}";
+                int bodyLength = Math.Max(0, maxFriendlyExceptionMessageChars - suffix.Length);
+                return redacted[..bodyLength].TrimEnd() + suffix;
+            }
+
+            Exception root = ex.GetBaseException();
+            if (root is CryptographicException or InvalidCipherTextException)
+            {
+                return "The encrypted payload could not be authenticated. The password may be wrong or the file may be corrupted.";
+            }
+
+            if (root is UnauthorizedAccessException unauthorized &&
+                unauthorized.Message.Contains("unlock this payload", StringComparison.OrdinalIgnoreCase))
+            {
+                return "The supplied password, keyfile, or recovery key could not unlock this payload.";
+            }
+
             Exception? current = ex;
             while (current != null)
             {
                 if (!string.IsNullOrWhiteSpace(current.Message))
                 {
-                    return SensitiveDataRedactor.RedactMessage(current.Message);
+                    return NormalizeFriendlyMessage(current.Message, fallback);
                 }
 
                 current = current.InnerException;
             }
 
-            return fallback;
+            return NormalizeFriendlyMessage(fallback, "Operation failed.");
+        }
+
+        private static T? DeserializeProtectedJsonForCurrentUser<T>(byte[] protectedBytes)
+        {
+            byte[]? unprotectedBytes = null;
+            try
+            {
+                unprotectedBytes = AppPreferencesStore.UnprotectForCurrentUser(protectedBytes);
+                return JsonSerializer.Deserialize<T>(unprotectedBytes, JsonOptions);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(unprotectedBytes);
+            }
+        }
+
+        private const string StoredJsonTooLargeMessage = "Stored FileLocker data is too large to read.";
+
+        private static Task<byte[]> ReadStoredJsonBytesAsync(string path)
+        {
+            return BoundedFileReader.ReadAllBytesAsync(path, MaxStoredJsonBytes, StoredJsonTooLargeMessage);
+        }
+
+        private static Task<string> ReadStoredJsonTextAsync(string path)
+        {
+            return BoundedFileReader.ReadAllUtf8TextAsync(path, MaxStoredJsonBytes, StoredJsonTooLargeMessage);
+        }
+
+        private static byte[] ProtectJsonForCurrentUser<T>(T value)
+        {
+            byte[]? jsonBytes = null;
+            try
+            {
+                jsonBytes = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
+                return AppPreferencesStore.ProtectForCurrentUser(jsonBytes);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(jsonBytes);
+            }
         }
 
         private void ShowAdvancedModeWarningButton_Click(object sender, RoutedEventArgs e)
@@ -1209,14 +1295,21 @@ namespace FileLocker
         private async void OpenInstallFolderMenuItem_Click(object sender, RoutedEventArgs e)
         {
             await OpenShellMenuTargetAsync(
-                () =>
-                {
-                    string? processPath = Environment.ProcessPath;
-                    return !string.IsNullOrWhiteSpace(processPath)
-                        ? Path.GetDirectoryName(processPath) ?? GetAppDataDirectory()
-                        : GetAppDataDirectory();
-                },
+                GetValidatedInstallDirectoryOrFallback,
                 "Unable to open the install folder.");
+        }
+
+        private static string GetValidatedInstallDirectoryOrFallback()
+        {
+            try
+            {
+                string executablePath = ExplorerIntegrationService.NormalizeExecutablePath(Environment.ProcessPath ?? string.Empty);
+                return Path.GetDirectoryName(executablePath) ?? GetAppDataDirectory();
+            }
+            catch
+            {
+                return GetAppDataDirectory();
+            }
         }
 
         private async void OpenUpdateDownloadsMenuItem_Click(object sender, RoutedEventArgs e)
@@ -1270,11 +1363,42 @@ namespace FileLocker
                 throw new InvalidOperationException("A file, folder, or link target is required.");
             }
 
+            string normalizedTarget = target.Trim();
+            if (normalizedTarget.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("A file, folder, or link target is invalid.");
+            }
+
+            if (LooksLikeLocalShellPath(normalizedTarget) &&
+                IsInvalidLocalShellPath(normalizedTarget))
+            {
+                throw new InvalidOperationException("A file, folder, or link target must reference a normal file or folder.");
+            }
+
             return new ProcessStartInfo
             {
-                FileName = target.Trim(),
+                FileName = normalizedTarget,
                 UseShellExecute = true
             };
+        }
+
+        private static bool LooksLikeLocalShellPath(string target) =>
+            target.StartsWith(@"\\", StringComparison.Ordinal) ||
+            (target.Length >= 3 &&
+                char.IsLetter(target[0]) &&
+                target[1] == ':' &&
+                target[2] is '\\' or '/');
+
+        private static bool IsInvalidLocalShellPath(string target)
+        {
+            try
+            {
+                return ContainsAlternateDataStreamToken(Path.GetFullPath(target));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return true;
+            }
         }
 
         // Advanced options event handlers

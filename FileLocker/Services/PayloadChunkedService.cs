@@ -1,4 +1,7 @@
 using Konscious.Security.Cryptography;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Modes;
+using Org.BouncyCastle.Crypto.Parameters;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -6,6 +9,10 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+// Both System.Security.Cryptography and Org.BouncyCastle.Crypto.Modes expose a
+// ChaCha20Poly1305 type. This service uses the .NET BCL implementation (Span-based
+// Encrypt/Decrypt); alias it explicitly so the BouncyCastle reference can coexist.
+using ChaCha20Poly1305 = System.Security.Cryptography.ChaCha20Poly1305;
 
 namespace FileLocker;
 
@@ -25,7 +32,8 @@ internal sealed record PayloadWriteInputs(
     byte[]? KeyfileBytes,
     string? RecoveryKey,
     int ChunkSize,
-    byte Flags);
+    byte Flags,
+    byte AlgorithmId = EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm);
 
 internal sealed record PayloadRotateInputs(
     PayloadUnlockInputs CurrentInputs,
@@ -45,6 +53,11 @@ internal sealed record PayloadHeader(
     byte[] NoncePrefix,
     IReadOnlyList<WrappedKeySlot> Slots,
     long CiphertextOffset);
+
+internal sealed record PayloadKdfParameters(
+    int ArgonIterations,
+    int ArgonMemoryKb,
+    int ArgonParallelism);
 
 internal sealed record WrappedKeySlot(
     PayloadKeySlotKind Kind,
@@ -82,8 +95,9 @@ internal sealed class OpenPayloadResult : IDisposable
 internal static class PayloadChunkedService
 {
     private const string Magic = "FLKR";
-    private const byte Version = 3;
-    private const byte AlgorithmIdAes256Gcm = 1;
+    internal const byte LegacyVersion = 3;
+    internal const byte CurrentVersion = 4;
+    private const byte HeaderAuthenticatedVersion = CurrentVersion;
     private const byte KdfIdArgon2Id = 1;
     private const int SaltSize = 32;
     private const int NonceSize = 12;
@@ -91,6 +105,12 @@ internal static class PayloadChunkedService
     private const int DekSize = 32;
     private const int NoncePrefixSize = 8;
     private const int MaxMetadataSize = 64 * 1024 * 1024;
+    private const int MaxChunkSize = 16 * 1024 * 1024;
+    private const int MaxArgonIterations = 10;
+    private const int MinArgonMemoryKb = 1024;
+    private const int MaxArgonMemoryKb = 1024 * 1024;
+    private const int MaxArgonParallelism = 32;
+    private const int MaxKeySlots = 2;
 
     internal static void WritePayload(
         Stream output,
@@ -107,15 +127,16 @@ internal static class PayloadChunkedService
         cancellationToken.ThrowIfCancellationRequested();
 
         byte[] dek = GenerateRandomBytes(DekSize);
-        byte[] noncePrefix = GenerateRandomBytes(NoncePrefixSize);
+        byte[] noncePrefix = GenerateRandomBytes(GetNoncePrefixSize(inputs.AlgorithmId));
+        PayloadKdfParameters kdfParameters = CreateCurrentKdfParameters();
         List<WrappedKeySlot> slots = [];
 
         try
         {
-            slots = CreateWrappedSlots(dek, inputs);
-            WriteHeader(output, inputs, noncePrefix, slots);
+            slots = CreateWrappedSlots(dek, inputs, kdfParameters, noncePrefix);
+            WriteHeader(output, inputs, noncePrefix, slots, kdfParameters);
 
-            using var chunkStream = new ChunkEncryptingStream(output, dek, noncePrefix, inputs.ChunkSize, cancellationToken);
+            using var chunkStream = new ChunkEncryptingStream(output, dek, noncePrefix, inputs.ChunkSize, inputs.AlgorithmId, cancellationToken);
             Span<byte> metadataLength = stackalloc byte[sizeof(int)];
             BinaryPrimitives.WriteInt32LittleEndian(metadataLength, metadataBytes.Length);
             chunkStream.Write(metadataLength);
@@ -138,31 +159,47 @@ internal static class PayloadChunkedService
             throw new ArgumentException("Payload password is required.", nameof(inputs));
         }
 
-        if (inputs.ChunkSize <= 0)
+        ValidateSecretTextLength(inputs.Password, "Payload password");
+        ValidateSecretTextLength(inputs.RecoveryKey, "Payload recovery key");
+
+        if (inputs.ChunkSize <= 0 || inputs.ChunkSize > MaxChunkSize)
         {
-            throw new ArgumentOutOfRangeException(nameof(inputs), "Payload chunk size must be greater than zero.");
+            throw new ArgumentOutOfRangeException(nameof(inputs), "Payload chunk size must be greater than zero and no larger than the supported maximum.");
         }
+
+        if (!EncryptionAlgorithmCatalog.CanEncryptNewPayload(inputs.AlgorithmId))
+        {
+            throw new NotSupportedException("Unsupported payload algorithm for new encryption.");
+        }
+
+        EnsurePayloadAlgorithmRuntimeSupported(inputs.AlgorithmId);
     }
 
     internal static OpenPayloadResult OpenPayload(Stream input, PayloadUnlockInputs unlockInputs, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(unlockInputs);
+        ValidateUnlockInputs(unlockInputs);
         cancellationToken.ThrowIfCancellationRequested();
 
         PayloadHeader header = ReadHeader(input);
+        cancellationToken.ThrowIfCancellationRequested();
         byte[] dek = UnwrapDek(header, unlockInputs);
+        ChunkDecryptingStream? plaintextStream = null;
         try
         {
-            var plaintextStream = new ChunkDecryptingStream(input, dek, header.NoncePrefix, header.ChunkSize, cancellationToken);
+            plaintextStream = new ChunkDecryptingStream(input, dek, header.NoncePrefix, header.ChunkSize, header.AlgorithmId, cancellationToken);
             byte[] metadataLengthBuffer = ReadExactly(plaintextStream, sizeof(int));
             int metadataLength = BinaryPrimitives.ReadInt32LittleEndian(metadataLengthBuffer);
             ValidateMetadataLength(metadataLength);
             byte[] metadataBytes = ReadExactly(plaintextStream, metadataLength);
-            return new OpenPayloadResult(header, metadataBytes, plaintextStream, dek);
+            ChunkDecryptingStream resultStream = plaintextStream;
+            plaintextStream = null;
+            return new OpenPayloadResult(header, metadataBytes, resultStream, dek);
         }
         catch
         {
+            plaintextStream?.Dispose();
             CryptographicOperations.ZeroMemory(dek);
             throw;
         }
@@ -176,9 +213,38 @@ internal static class PayloadChunkedService
         }
     }
 
+    internal static bool IsPayloadAlgorithmRuntimeSupported(byte algorithmId)
+    {
+        try
+        {
+            EnsurePayloadAlgorithmRuntimeSupported(algorithmId);
+            return true;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool CanEncryptNewPayloadOnThisRuntime(EncryptionAlgorithmDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return definition.CanEncryptNewPayloads &&
+            IsPayloadAlgorithmRuntimeSupported(definition.PayloadAlgorithmId);
+    }
+
     internal static PayloadHeader InspectHeader(Stream input)
     {
         ArgumentNullException.ThrowIfNull(input);
+        if (!input.CanSeek)
+        {
+            throw new ArgumentException("Payload header inspection requires a seekable stream.", nameof(input));
+        }
+
         long originalPosition = input.Position;
         try
         {
@@ -196,33 +262,47 @@ internal static class PayloadChunkedService
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         ValidateRotateInputs(inputs);
+        if (!input.CanSeek)
+        {
+            throw new ArgumentException("Payload key rotation requires a seekable input stream.", nameof(input));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         PayloadHeader header = ReadHeader(input);
+        cancellationToken.ThrowIfCancellationRequested();
         byte[] dek = UnwrapDek(header, inputs.CurrentInputs);
         List<WrappedKeySlot> slots = [];
 
         try
         {
+            var kdfParameters = new PayloadKdfParameters(
+                header.ArgonIterations,
+                header.ArgonMemoryKb,
+                header.ArgonParallelism);
+
+            AuthenticatePayloadCiphertext(input, header, dek, cancellationToken);
+
+            var newWriteInputs = new PayloadWriteInputs(
+                inputs.NewPassword,
+                inputs.NewKeyfileBytes,
+                inputs.NewRecoveryKey,
+                header.ChunkSize,
+                header.Flags,
+                header.AlgorithmId);
+
             slots = CreateWrappedSlots(
                 dek,
-                new PayloadWriteInputs(
-                    inputs.NewPassword,
-                    inputs.NewKeyfileBytes,
-                    inputs.NewRecoveryKey,
-                    header.ChunkSize,
-                    header.Flags));
+                newWriteInputs,
+                kdfParameters,
+                header.NoncePrefix);
 
             WriteHeader(
                 output,
-                new PayloadWriteInputs(
-                    inputs.NewPassword,
-                    inputs.NewKeyfileBytes,
-                    inputs.NewRecoveryKey,
-                    header.ChunkSize,
-                    header.Flags),
+                newWriteInputs,
                 header.NoncePrefix,
-                slots);
+                slots,
+                kdfParameters);
 
             input.Position = header.CiphertextOffset;
             CopyRemainingStream(input, output, cancellationToken);
@@ -231,6 +311,27 @@ internal static class PayloadChunkedService
         {
             CryptographicOperations.ZeroMemory(dek);
             ClearWrappedSlots(slots);
+        }
+    }
+
+    private static void AuthenticatePayloadCiphertext(
+        Stream input,
+        PayloadHeader header,
+        byte[] dek,
+        CancellationToken cancellationToken)
+    {
+        input.Position = header.CiphertextOffset;
+        using var plaintext = new ChunkDecryptingStream(input, dek, header.NoncePrefix, header.ChunkSize, header.AlgorithmId, cancellationToken);
+        byte[] buffer = new byte[131072];
+        try
+        {
+            while (plaintext.Read(buffer, 0, buffer.Length) > 0)
+            {
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
         }
     }
 
@@ -265,6 +366,32 @@ internal static class PayloadChunkedService
         {
             throw new ArgumentException("New payload password is required.", nameof(inputs));
         }
+
+        ValidateUnlockInputs(inputs.CurrentInputs);
+        ValidateSecretTextLength(inputs.NewPassword, "New payload password");
+        ValidateSecretTextLength(inputs.NewRecoveryKey, "New payload recovery key");
+    }
+
+    private static void ValidateUnlockInputs(PayloadUnlockInputs inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        ValidateSecretTextLength(inputs.Password, "Payload password");
+        ValidateSecretTextLength(inputs.RecoveryKey, "Payload recovery key");
+        if (string.IsNullOrWhiteSpace(inputs.Password) &&
+            string.IsNullOrWhiteSpace(inputs.RecoveryKey))
+        {
+            throw new ArgumentException("Payload password or recovery key is required.", nameof(inputs));
+        }
+    }
+
+    private static void ValidateSecretTextLength(string? secretText, string description)
+    {
+        if (string.IsNullOrEmpty(secretText))
+        {
+            return;
+        }
+
+        KdfSecretValidator.Validate(secretText, description);
     }
 
     internal static bool LooksLikePayloadV3(Stream input)
@@ -279,7 +406,11 @@ internal static class PayloadChunkedService
         try
         {
             Span<byte> buffer = stackalloc byte[4];
-            if (input.Read(buffer) != buffer.Length)
+            try
+            {
+                input.ReadExactly(buffer);
+            }
+            catch (EndOfStreamException)
             {
                 return false;
             }
@@ -292,18 +423,23 @@ internal static class PayloadChunkedService
         }
     }
 
-    private static void WriteHeader(Stream output, PayloadWriteInputs inputs, byte[] noncePrefix, IReadOnlyList<WrappedKeySlot> slots)
+    private static void WriteHeader(
+        Stream output,
+        PayloadWriteInputs inputs,
+        byte[] noncePrefix,
+        IReadOnlyList<WrappedKeySlot> slots,
+        PayloadKdfParameters kdfParameters)
     {
         using var writer = new BinaryWriter(output, Encoding.UTF8, leaveOpen: true);
         writer.Write(Encoding.ASCII.GetBytes(Magic));
-        writer.Write(Version);
-        writer.Write(AlgorithmIdAes256Gcm);
+        writer.Write(CurrentVersion);
+        writer.Write(inputs.AlgorithmId);
         writer.Write(KdfIdArgon2Id);
         writer.Write(inputs.Flags);
-        writer.Write(3); // Argon2id iterations
-        writer.Write(65536); // Argon2id memory (KB)
-        writer.Write(Math.Clamp(Environment.ProcessorCount, 1, 8));
-        writer.Write(inputs.ChunkSize);
+        WriteInt32LittleEndian(writer, kdfParameters.ArgonIterations);
+        WriteInt32LittleEndian(writer, kdfParameters.ArgonMemoryKb);
+        WriteInt32LittleEndian(writer, kdfParameters.ArgonParallelism);
+        WriteInt32LittleEndian(writer, inputs.ChunkSize);
         writer.Write((byte)noncePrefix.Length);
         writer.Write(noncePrefix);
         writer.Write((byte)slots.Count);
@@ -320,82 +456,116 @@ internal static class PayloadChunkedService
     private static PayloadHeader ReadHeader(Stream input)
     {
         using var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true);
-        string magic = Encoding.ASCII.GetString(reader.ReadBytes(4));
-        if (!string.Equals(magic, Magic, StringComparison.Ordinal))
+        try
         {
-            throw new InvalidDataException("Unsupported payload format.");
-        }
+            string magic = Encoding.ASCII.GetString(ReadRequiredBytes(reader, 4, "magic"));
+            if (!string.Equals(magic, Magic, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Unsupported payload format.");
+            }
 
-        byte version = reader.ReadByte();
-        if (version != Version)
+            byte version = reader.ReadByte();
+            if (version is not LegacyVersion and not CurrentVersion)
+            {
+                throw new InvalidDataException($"Unsupported payload version: {version}.");
+            }
+
+            byte algorithmId = reader.ReadByte();
+            byte kdfId = reader.ReadByte();
+            byte flags = reader.ReadByte();
+            int argonIterations = ReadInt32LittleEndian(reader, "Argon2 iterations");
+            int argonMemoryKb = ReadInt32LittleEndian(reader, "Argon2 memory");
+            int argonParallelism = ReadInt32LittleEndian(reader, "Argon2 parallelism");
+            int chunkSize = ReadInt32LittleEndian(reader, "chunk size");
+            if (!EncryptionAlgorithmCatalog.IsSupportedPayloadAlgorithm(algorithmId))
+            {
+                throw new InvalidDataException("Unsupported payload algorithm.");
+            }
+
+            if (version == LegacyVersion && algorithmId != EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm)
+            {
+                throw new InvalidDataException("Legacy payload headers support only AES-256-GCM.");
+            }
+
+            if (kdfId != KdfIdArgon2Id)
+            {
+                throw new InvalidDataException("Unsupported payload key derivation.");
+            }
+
+            if (argonIterations <= 0 ||
+                argonIterations > MaxArgonIterations ||
+                argonMemoryKb < MinArgonMemoryKb ||
+                argonMemoryKb > MaxArgonMemoryKb ||
+                argonParallelism <= 0 ||
+                argonParallelism > MaxArgonParallelism)
+            {
+                throw new InvalidDataException("Invalid payload key-derivation parameters.");
+            }
+
+            if (chunkSize <= 0 || chunkSize > MaxChunkSize)
+            {
+                throw new InvalidDataException("Invalid payload chunk size.");
+            }
+
+            int noncePrefixLength = reader.ReadByte();
+            if (noncePrefixLength != GetNoncePrefixSize(algorithmId))
+            {
+                throw new InvalidDataException("Invalid payload nonce prefix length.");
+            }
+
+            byte[] noncePrefix = ReadRequiredBytes(reader, noncePrefixLength, "nonce prefix");
+            int slotCount = reader.ReadByte();
+            if (slotCount <= 0)
+            {
+                throw new InvalidDataException("Payload header does not contain any key slots.");
+            }
+
+            if (slotCount > MaxKeySlots)
+            {
+                throw new InvalidDataException("Payload header contains too many key slots.");
+            }
+
+            var slots = new List<WrappedKeySlot>(slotCount);
+            var slotKinds = new HashSet<PayloadKeySlotKind>();
+
+            for (int i = 0; i < slotCount; i++)
+            {
+                var slotKind = (PayloadKeySlotKind)reader.ReadByte();
+                if (slotKind is not PayloadKeySlotKind.Password and not PayloadKeySlotKind.Recovery)
+                {
+                    throw new InvalidDataException("Unsupported payload key-slot kind.");
+                }
+
+                if (!slotKinds.Add(slotKind))
+                {
+                    throw new InvalidDataException("Payload header contains duplicate key-slot kinds.");
+                }
+
+                slots.Add(new WrappedKeySlot(
+                    slotKind,
+                    ReadRequiredBytes(reader, SaltSize, "key-slot salt"),
+                    ReadRequiredBytes(reader, NonceSize, "key-slot nonce"),
+                    ReadRequiredBytes(reader, TagSize, "key-slot tag"),
+                    ReadRequiredBytes(reader, DekSize, "wrapped data-encryption key")));
+            }
+
+            return new PayloadHeader(
+                version,
+                algorithmId,
+                kdfId,
+                flags,
+                argonIterations,
+                argonMemoryKb,
+                argonParallelism,
+                chunkSize,
+                noncePrefix,
+                slots,
+                input.Position);
+        }
+        catch (EndOfStreamException ex)
         {
-            throw new InvalidDataException($"Unsupported payload version: {version}.");
+            throw new InvalidDataException("Payload header is truncated.", ex);
         }
-
-        byte algorithmId = reader.ReadByte();
-        byte kdfId = reader.ReadByte();
-        byte flags = reader.ReadByte();
-        int argonIterations = reader.ReadInt32();
-        int argonMemoryKb = reader.ReadInt32();
-        int argonParallelism = reader.ReadInt32();
-        int chunkSize = reader.ReadInt32();
-        if (algorithmId != AlgorithmIdAes256Gcm)
-        {
-            throw new InvalidDataException("Unsupported payload algorithm.");
-        }
-
-        if (kdfId != KdfIdArgon2Id)
-        {
-            throw new InvalidDataException("Unsupported payload key derivation.");
-        }
-
-        if (argonIterations <= 0 || argonMemoryKb <= 0 || argonParallelism <= 0)
-        {
-            throw new InvalidDataException("Invalid payload key-derivation parameters.");
-        }
-
-        if (chunkSize <= 0)
-        {
-            throw new InvalidDataException("Invalid payload chunk size.");
-        }
-
-        int noncePrefixLength = reader.ReadByte();
-        if (noncePrefixLength != NoncePrefixSize)
-        {
-            throw new InvalidDataException("Invalid payload nonce prefix length.");
-        }
-
-        byte[] noncePrefix = ReadRequiredBytes(reader, noncePrefixLength, "nonce prefix");
-        int slotCount = reader.ReadByte();
-        if (slotCount <= 0)
-        {
-            throw new InvalidDataException("Payload header does not contain any key slots.");
-        }
-
-        var slots = new List<WrappedKeySlot>(slotCount);
-
-        for (int i = 0; i < slotCount; i++)
-        {
-            slots.Add(new WrappedKeySlot(
-                (PayloadKeySlotKind)reader.ReadByte(),
-                ReadRequiredBytes(reader, SaltSize, "key-slot salt"),
-                ReadRequiredBytes(reader, NonceSize, "key-slot nonce"),
-                ReadRequiredBytes(reader, TagSize, "key-slot tag"),
-                ReadRequiredBytes(reader, DekSize, "wrapped data-encryption key")));
-        }
-
-        return new PayloadHeader(
-            version,
-            algorithmId,
-            kdfId,
-            flags,
-            argonIterations,
-            argonMemoryKb,
-            argonParallelism,
-            chunkSize,
-            noncePrefix,
-            slots,
-            input.Position);
     }
 
     private static byte[] ReadRequiredBytes(BinaryReader reader, int count, string description)
@@ -409,16 +579,33 @@ internal static class PayloadChunkedService
         return bytes;
     }
 
-    private static List<WrappedKeySlot> CreateWrappedSlots(byte[] dek, PayloadWriteInputs inputs)
+    private static void WriteInt32LittleEndian(BinaryWriter writer, int value)
+    {
+        Span<byte> buffer = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(buffer, value);
+        writer.Write(buffer);
+    }
+
+    private static int ReadInt32LittleEndian(BinaryReader reader, string description)
+    {
+        byte[] bytes = ReadRequiredBytes(reader, sizeof(int), description);
+        return BinaryPrimitives.ReadInt32LittleEndian(bytes);
+    }
+
+    private static List<WrappedKeySlot> CreateWrappedSlots(
+        byte[] dek,
+        PayloadWriteInputs inputs,
+        PayloadKdfParameters kdfParameters,
+        byte[] noncePrefix)
     {
         var slots = new List<WrappedKeySlot>();
         try
         {
-            slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Password, inputs.Password, inputs.KeyfileBytes, dek));
+            slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Password, inputs.Password, inputs.KeyfileBytes, dek, inputs, kdfParameters, noncePrefix));
 
             if (!string.IsNullOrWhiteSpace(inputs.RecoveryKey))
             {
-                slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Recovery, inputs.RecoveryKey, null, dek));
+                slots.Add(CreateWrappedSlot(PayloadKeySlotKind.Recovery, inputs.RecoveryKey, null, dek, inputs, kdfParameters, noncePrefix));
             }
 
             return slots;
@@ -441,19 +628,35 @@ internal static class PayloadChunkedService
         }
     }
 
-    private static WrappedKeySlot CreateWrappedSlot(PayloadKeySlotKind kind, string secretText, byte[]? keyfileBytes, byte[] dek)
+    private static WrappedKeySlot CreateWrappedSlot(
+        PayloadKeySlotKind kind,
+        string secretText,
+        byte[]? keyfileBytes,
+        byte[] dek,
+        PayloadWriteInputs inputs,
+        PayloadKdfParameters kdfParameters,
+        byte[] noncePrefix)
     {
         byte[] salt = GenerateRandomBytes(SaltSize);
         byte[] nonce = GenerateRandomBytes(NonceSize);
         byte[] tag = new byte[TagSize];
         byte[] wrappedDek = new byte[dek.Length];
-        byte[] kek = DeriveArgon2Key(secretText, salt, keyfileBytes);
+        byte[] kek = DeriveArgon2Key(secretText, salt, keyfileBytes, kdfParameters);
         bool slotAssigned = false;
 
         try
         {
+            byte[] aad = BuildKeySlotAad(
+                CurrentVersion,
+                inputs.AlgorithmId,
+                KdfIdArgon2Id,
+                inputs.Flags,
+                kdfParameters,
+                inputs.ChunkSize,
+                noncePrefix,
+                kind);
             using var aes = new AesGcm(kek, TagSize);
-            aes.Encrypt(nonce, dek, wrappedDek, tag);
+            aes.Encrypt(nonce, dek, wrappedDek, tag, aad);
             WrappedKeySlot slot = new(kind, salt, nonce, tag, wrappedDek);
             slotAssigned = true;
             return slot;
@@ -471,6 +674,63 @@ internal static class PayloadChunkedService
         }
     }
 
+    private static byte[] BuildKeySlotAad(PayloadHeader header, WrappedKeySlot slot)
+    {
+        if (header.Version < HeaderAuthenticatedVersion)
+        {
+            return Array.Empty<byte>();
+        }
+
+        var kdfParameters = new PayloadKdfParameters(
+            header.ArgonIterations,
+            header.ArgonMemoryKb,
+            header.ArgonParallelism);
+
+        return BuildKeySlotAad(
+            header.Version,
+            header.AlgorithmId,
+            header.KdfId,
+            header.Flags,
+            kdfParameters,
+            header.ChunkSize,
+            header.NoncePrefix,
+            slot.Kind);
+    }
+
+    private static byte[] BuildKeySlotAad(
+        byte version,
+        byte algorithmId,
+        byte kdfId,
+        byte flags,
+        PayloadKdfParameters kdfParameters,
+        int chunkSize,
+        byte[] noncePrefix,
+        PayloadKeySlotKind slotKind)
+    {
+        ArgumentNullException.ThrowIfNull(noncePrefix);
+
+        byte[] aad = new byte[Magic.Length + 1 + 1 + 1 + 1 + (sizeof(int) * 4) + 1 + noncePrefix.Length + 1];
+        int offset = 0;
+        offset += Encoding.ASCII.GetBytes(Magic, 0, Magic.Length, aad, offset);
+        aad[offset++] = version;
+        aad[offset++] = algorithmId;
+        aad[offset++] = kdfId;
+        aad[offset++] = flags;
+        BinaryPrimitives.WriteInt32LittleEndian(aad.AsSpan(offset, sizeof(int)), kdfParameters.ArgonIterations);
+        offset += sizeof(int);
+        BinaryPrimitives.WriteInt32LittleEndian(aad.AsSpan(offset, sizeof(int)), kdfParameters.ArgonMemoryKb);
+        offset += sizeof(int);
+        BinaryPrimitives.WriteInt32LittleEndian(aad.AsSpan(offset, sizeof(int)), kdfParameters.ArgonParallelism);
+        offset += sizeof(int);
+        BinaryPrimitives.WriteInt32LittleEndian(aad.AsSpan(offset, sizeof(int)), chunkSize);
+        offset += sizeof(int);
+        aad[offset++] = (byte)noncePrefix.Length;
+        Buffer.BlockCopy(noncePrefix, 0, aad, offset, noncePrefix.Length);
+        offset += noncePrefix.Length;
+        aad[offset] = (byte)slotKind;
+        return aad;
+    }
+
     private static byte[] UnwrapDek(PayloadHeader header, PayloadUnlockInputs unlockInputs)
     {
         foreach (WrappedKeySlot slot in header.Slots)
@@ -478,14 +738,14 @@ internal static class PayloadChunkedService
             switch (slot.Kind)
             {
                 case PayloadKeySlotKind.Password when !string.IsNullOrWhiteSpace(unlockInputs.Password):
-                    if (TryUnwrapDek(slot, unlockInputs.Password!, unlockInputs.KeyfileBytes, out byte[] dekFromPassword))
+                    if (TryUnwrapDek(header, slot, unlockInputs.Password!, unlockInputs.KeyfileBytes, out byte[] dekFromPassword))
                     {
                         return dekFromPassword;
                     }
                     break;
 
                 case PayloadKeySlotKind.Recovery when !string.IsNullOrWhiteSpace(unlockInputs.RecoveryKey):
-                    if (TryUnwrapDek(slot, unlockInputs.RecoveryKey!, null, out byte[] dekFromRecovery))
+                    if (TryUnwrapDek(header, slot, unlockInputs.RecoveryKey!, null, out byte[] dekFromRecovery))
                     {
                         return dekFromRecovery;
                     }
@@ -496,15 +756,25 @@ internal static class PayloadChunkedService
         throw new UnauthorizedAccessException("The supplied password, keyfile, or recovery key could not unlock this payload.");
     }
 
-    private static bool TryUnwrapDek(WrappedKeySlot slot, string secretText, byte[]? keyfileBytes, out byte[] dek)
+    private static bool TryUnwrapDek(
+        PayloadHeader header,
+        WrappedKeySlot slot,
+        string secretText,
+        byte[]? keyfileBytes,
+        out byte[] dek)
     {
-        byte[] kek = DeriveArgon2Key(secretText, slot.Salt, keyfileBytes);
+        byte[] kek = DeriveArgon2Key(
+            secretText,
+            slot.Salt,
+            keyfileBytes,
+            new PayloadKdfParameters(header.ArgonIterations, header.ArgonMemoryKb, header.ArgonParallelism));
         dek = new byte[DekSize];
 
         try
         {
+            byte[] aad = BuildKeySlotAad(header, slot);
             using var aes = new AesGcm(kek, TagSize);
-            aes.Decrypt(slot.Nonce, slot.WrappedDek, slot.Tag, dek);
+            aes.Decrypt(slot.Nonce, slot.WrappedDek, slot.Tag, dek, aad);
             return true;
         }
         catch (CryptographicException)
@@ -519,20 +789,24 @@ internal static class PayloadChunkedService
         }
     }
 
-    private static byte[] DeriveArgon2Key(string secretText, byte[] salt, byte[]? keyfileBytes)
+    private static byte[] DeriveArgon2Key(
+        string secretText,
+        byte[] salt,
+        byte[]? keyfileBytes,
+        PayloadKdfParameters kdfParameters)
     {
         byte[] passwordBytes = Encoding.UTF8.GetBytes(secretText);
         byte[]? combinedSecret = null;
-        byte[] secret = BuildKdfSecret(passwordBytes, keyfileBytes, out combinedSecret);
+        byte[] secret = KdfSecretMaterial.Build(passwordBytes, keyfileBytes, out combinedSecret);
 
         try
         {
             var argon2 = new Argon2id(secret)
             {
                 Salt = salt,
-                DegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 1, 8),
-                Iterations = 3,
-                MemorySize = 65536
+                DegreeOfParallelism = kdfParameters.ArgonParallelism,
+                Iterations = kdfParameters.ArgonIterations,
+                MemorySize = kdfParameters.ArgonMemoryKb
             };
 
             return argon2.GetBytes(DekSize);
@@ -549,43 +823,297 @@ internal static class PayloadChunkedService
         }
     }
 
-    private static byte[] BuildKdfSecret(byte[] passwordBytes, byte[]? keyfileBytes, out byte[]? combinedSecret)
-    {
-        combinedSecret = null;
-        if (keyfileBytes is not { Length: > 0 })
-        {
-            return passwordBytes;
-        }
-
-        combinedSecret = new byte[passwordBytes.Length + keyfileBytes.Length];
-        Buffer.BlockCopy(passwordBytes, 0, combinedSecret, 0, passwordBytes.Length);
-        Buffer.BlockCopy(keyfileBytes, 0, combinedSecret, passwordBytes.Length, keyfileBytes.Length);
-        return SHA256.HashData(combinedSecret);
-    }
-
     private static byte[] GenerateRandomBytes(int length)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
         byte[] bytes = new byte[length];
         RandomNumberGenerator.Fill(bytes);
         return bytes;
     }
 
+    private static PayloadKdfParameters CreateCurrentKdfParameters() =>
+        new(KdfSettings.Argon2IdIterations, KdfSettings.Argon2IdMemoryKb, KdfSettings.Argon2IdParallelism);
+
+    private static int GetNoncePrefixSize(byte algorithmId) => NoncePrefixSize;
+
     private static byte[] ReadExactly(Stream stream, int count)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
         byte[] buffer = new byte[count];
-        int totalRead = 0;
-        while (totalRead < count)
+        try
         {
-            int read = stream.Read(buffer, totalRead, count - totalRead);
-            if (read == 0)
+            int totalRead = 0;
+            while (totalRead < count)
             {
-                throw new EndOfStreamException();
+                int read = stream.Read(buffer, totalRead, count - totalRead);
+                if (read == 0)
+                {
+                    throw new EndOfStreamException();
+                }
+
+                totalRead += read;
             }
 
-            totalRead += read;
+            return buffer;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+            throw;
+        }
+    }
+
+    private static void ValidateBufferRange(byte[] buffer, int offset, int count, string bufferDescription)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (offset > buffer.Length - count)
+        {
+            throw new ArgumentException($"The offset and count exceed the {bufferDescription} buffer length.", nameof(count));
+        }
+    }
+
+    private static void EncryptChunk(
+        byte algorithmId,
+        byte[] key,
+        byte[] noncePrefix,
+        int chunkIndex,
+        ReadOnlySpan<byte> plaintext,
+        byte[] ciphertext,
+        byte[] tag,
+        byte[] aad)
+    {
+        switch (algorithmId)
+        {
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm:
+            {
+                Span<byte> nonce = stackalloc byte[NonceSize];
+                BuildChunkNonce(nonce, noncePrefix, chunkIndex);
+                using var aes = new AesGcm(key, TagSize);
+                aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
+                return;
+            }
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmChaCha20Poly1305:
+            {
+                EnsureChaCha20Poly1305Supported();
+                Span<byte> nonce = stackalloc byte[NonceSize];
+                BuildChunkNonce(nonce, noncePrefix, chunkIndex);
+                using var chacha = new ChaCha20Poly1305(key);
+                chacha.Encrypt(nonce, plaintext, ciphertext, tag, aad);
+                return;
+            }
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256GcmSiv:
+            {
+                byte[] nonce = BuildChunkNonceBytes(NonceSize, noncePrefix, chunkIndex);
+                try
+                {
+                    EncryptBouncyAead(new GcmSivBlockCipher(), key, nonce, plaintext, ciphertext, tag, aad);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(nonce);
+                }
+
+                return;
+            }
+            default:
+                throw new InvalidDataException("Unsupported payload algorithm.");
+        }
+    }
+
+    private static void DecryptChunk(
+        byte algorithmId,
+        byte[] key,
+        byte[] noncePrefix,
+        int chunkIndex,
+        byte[] ciphertext,
+        byte[] tag,
+        byte[] plaintext,
+        byte[] aad)
+    {
+        switch (algorithmId)
+        {
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm:
+            {
+                Span<byte> nonce = stackalloc byte[NonceSize];
+                BuildChunkNonce(nonce, noncePrefix, chunkIndex);
+                using var aes = new AesGcm(key, TagSize);
+                aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+                return;
+            }
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmChaCha20Poly1305:
+            {
+                EnsureChaCha20Poly1305Supported();
+                Span<byte> nonce = stackalloc byte[NonceSize];
+                BuildChunkNonce(nonce, noncePrefix, chunkIndex);
+                using var chacha = new ChaCha20Poly1305(key);
+                chacha.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+                return;
+            }
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256GcmSiv:
+            {
+                byte[] nonce = BuildChunkNonceBytes(NonceSize, noncePrefix, chunkIndex);
+                try
+                {
+                    DecryptBouncyAead(new GcmSivBlockCipher(), key, nonce, ciphertext, tag, plaintext, aad);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(nonce);
+                }
+
+                return;
+            }
+            default:
+                throw new InvalidDataException("Unsupported payload algorithm.");
+        }
+    }
+
+    private static void EnsureChaCha20Poly1305Supported()
+    {
+        if (!ChaCha20Poly1305.IsSupported)
+        {
+            throw new PlatformNotSupportedException("ChaCha20-Poly1305 is not supported on this Windows runtime.");
+        }
+    }
+
+    private static void EnsurePayloadAlgorithmRuntimeSupported(byte algorithmId)
+    {
+        // Every payload algorithm uses AES-GCM for authenticated key-slot wrapping.
+        EnsureAesGcmSupported();
+
+        switch (algorithmId)
+        {
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm:
+                return;
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmChaCha20Poly1305:
+                EnsureChaCha20Poly1305Supported();
+                return;
+            case EncryptionAlgorithmCatalog.PayloadAlgorithmAes256GcmSiv:
+                return;
+            default:
+                throw new InvalidDataException("Unsupported payload algorithm.");
+        }
+    }
+
+    private static void EnsureAesGcmSupported()
+    {
+        if (!AesGcm.IsSupported)
+        {
+            throw new PlatformNotSupportedException("AES-GCM is not supported on this Windows runtime.");
+        }
+    }
+
+    private static byte[] BuildChunkNonceBytes(int nonceSize, byte[] noncePrefix, int chunkIndex)
+    {
+        byte[] nonce = new byte[nonceSize];
+        BuildChunkNonce(nonce, noncePrefix, chunkIndex);
+        return nonce;
+    }
+
+    private static void BuildChunkNonce(Span<byte> nonce, byte[] noncePrefix, int chunkIndex)
+    {
+        ValidateChunkIndex(chunkIndex);
+
+        if (nonce.Length != noncePrefix.Length + sizeof(int))
+        {
+            throw new InvalidDataException("Invalid payload nonce prefix length.");
         }
 
-        return buffer;
+        noncePrefix.CopyTo(nonce[..noncePrefix.Length]);
+        BinaryPrimitives.WriteInt32LittleEndian(nonce[noncePrefix.Length..], chunkIndex);
+    }
+
+    private static byte[] BuildChunkAad(int chunkIndex)
+    {
+        ValidateChunkIndex(chunkIndex);
+
+        byte[] aad = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(aad, chunkIndex);
+        return aad;
+    }
+
+    private static void ValidateChunkIndex(int chunkIndex)
+    {
+        if (chunkIndex < 0 || chunkIndex == int.MaxValue)
+        {
+            throw new InvalidDataException("Payload chunk counter limit exceeded.");
+        }
+    }
+
+    private static void EncryptBouncyAead(
+        IAeadCipher cipher,
+        byte[] key,
+        byte[] nonce,
+        ReadOnlySpan<byte> plaintext,
+        byte[] ciphertext,
+        byte[] tag,
+        byte[] aad)
+    {
+        byte[] plaintextBytes = plaintext.ToArray();
+        byte[]? output = null;
+        try
+        {
+            cipher.Init(true, new AeadParameters(new KeyParameter(key), TagSize * 8, nonce, aad));
+            output = new byte[cipher.GetOutputSize(plaintextBytes.Length)];
+            int length = cipher.ProcessBytes(plaintextBytes, 0, plaintextBytes.Length, output, 0);
+            length += cipher.DoFinal(output, length);
+            if (length != plaintextBytes.Length + TagSize)
+            {
+                throw new CryptographicException("Authenticated encryption produced an unexpected output length.");
+            }
+
+            Buffer.BlockCopy(output, 0, ciphertext, 0, ciphertext.Length);
+            Buffer.BlockCopy(output, ciphertext.Length, tag, 0, tag.Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintextBytes);
+            ClearBuffer(output);
+        }
+    }
+
+    private static void DecryptBouncyAead(
+        IAeadCipher cipher,
+        byte[] key,
+        byte[] nonce,
+        byte[] ciphertext,
+        byte[] tag,
+        byte[] plaintext,
+        byte[] aad)
+    {
+        byte[] combined = new byte[ciphertext.Length + tag.Length];
+        byte[]? output = null;
+        try
+        {
+            Buffer.BlockCopy(ciphertext, 0, combined, 0, ciphertext.Length);
+            Buffer.BlockCopy(tag, 0, combined, ciphertext.Length, tag.Length);
+
+            cipher.Init(false, new AeadParameters(new KeyParameter(key), TagSize * 8, nonce, aad));
+            output = new byte[cipher.GetOutputSize(combined.Length)];
+            int length = cipher.ProcessBytes(combined, 0, combined.Length, output, 0);
+            length += cipher.DoFinal(output, length);
+            if (length != plaintext.Length)
+            {
+                throw new CryptographicException("Authenticated decryption produced an unexpected output length.");
+            }
+
+            Buffer.BlockCopy(output, 0, plaintext, 0, plaintext.Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(combined);
+            ClearBuffer(output);
+        }
+    }
+
+    private static void ClearBuffer(byte[]? buffer)
+    {
+        if (buffer is { Length: > 0 })
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
     }
 
     private sealed class ChunkEncryptingStream : Stream
@@ -595,22 +1123,25 @@ internal static class PayloadChunkedService
         private readonly byte[] _noncePrefix;
         private readonly byte[] _buffer;
         private readonly CancellationToken _cancellationToken;
+        private readonly byte _algorithmId;
         private int _bufferLength;
         private int _chunkIndex;
         private bool _completed;
+        private bool _disposed;
 
-        internal ChunkEncryptingStream(Stream output, byte[] dek, byte[] noncePrefix, int chunkSize, CancellationToken cancellationToken)
+        internal ChunkEncryptingStream(Stream output, byte[] dek, byte[] noncePrefix, int chunkSize, byte algorithmId, CancellationToken cancellationToken)
         {
             _output = output;
             _dek = dek;
             _noncePrefix = noncePrefix;
             _buffer = new byte[chunkSize];
+            _algorithmId = algorithmId;
             _cancellationToken = cancellationToken;
         }
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
-        public override bool CanWrite => true;
+        public override bool CanWrite => !_disposed && !_completed;
         public override long Length => throw new NotSupportedException();
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
 
@@ -623,12 +1154,24 @@ internal static class PayloadChunkedService
                 return;
             }
 
+            EnsureWritable();
+            _cancellationToken.ThrowIfCancellationRequested();
+
             if (_bufferLength > 0)
             {
-                WriteChunk(_buffer.AsSpan(0, _bufferLength));
-                _bufferLength = 0;
+                Span<byte> pendingPlaintext = _buffer.AsSpan(0, _bufferLength);
+                try
+                {
+                    WriteChunk(pendingPlaintext);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(pendingPlaintext);
+                    _bufferLength = 0;
+                }
             }
 
+            _cancellationToken.ThrowIfCancellationRequested();
             Span<byte> sentinel = stackalloc byte[sizeof(int)];
             BinaryPrimitives.WriteInt32LittleEndian(sentinel, 0);
             _output.Write(sentinel);
@@ -641,34 +1184,35 @@ internal static class PayloadChunkedService
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            while (count > 0)
-            {
-                _cancellationToken.ThrowIfCancellationRequested();
-
-                int writable = Math.Min(_buffer.Length - _bufferLength, count);
-                Buffer.BlockCopy(buffer, offset, _buffer, _bufferLength, writable);
-                _bufferLength += writable;
-                offset += writable;
-                count -= writable;
-
-                if (_bufferLength == _buffer.Length)
-                {
-                    WriteChunk(_buffer);
-                    _bufferLength = 0;
-                }
-            }
+            ValidateBufferRange(buffer, offset, count, "source");
+            Write(buffer.AsSpan(offset, count));
         }
 
         public override void Write(ReadOnlySpan<byte> buffer)
         {
-            byte[] temp = buffer.ToArray();
-            try
+            EnsureWritable();
+
+            while (!buffer.IsEmpty)
             {
-                Write(temp, 0, temp.Length);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(temp);
+                _cancellationToken.ThrowIfCancellationRequested();
+
+                int writable = Math.Min(_buffer.Length - _bufferLength, buffer.Length);
+                buffer[..writable].CopyTo(_buffer.AsSpan(_bufferLength));
+                _bufferLength += writable;
+                buffer = buffer[writable..];
+
+                if (_bufferLength == _buffer.Length)
+                {
+                    try
+                    {
+                        WriteChunk(_buffer);
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(_buffer);
+                        _bufferLength = 0;
+                    }
+                }
             }
         }
 
@@ -677,24 +1221,31 @@ internal static class PayloadChunkedService
             if (disposing)
             {
                 CryptographicOperations.ZeroMemory(_buffer);
+                _disposed = true;
             }
 
             base.Dispose(disposing);
         }
 
+        private void EnsureWritable()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(ChunkEncryptingStream));
+            }
+
+            if (_completed)
+            {
+                throw new InvalidOperationException("Payload write stream has already completed.");
+            }
+        }
+
         private void WriteChunk(ReadOnlySpan<byte> plaintext)
         {
-            Span<byte> nonce = stackalloc byte[NonceSize];
-            _noncePrefix.CopyTo(nonce[..NoncePrefixSize]);
-            BinaryPrimitives.WriteInt32LittleEndian(nonce[NoncePrefixSize..], _chunkIndex);
-
             byte[] ciphertext = new byte[plaintext.Length];
             byte[] tag = new byte[TagSize];
-            byte[] aad = BitConverter.GetBytes(_chunkIndex);
-            using (var aes = new AesGcm(_dek, TagSize))
-            {
-                aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
-            }
+            byte[] aad = BuildChunkAad(_chunkIndex);
+            EncryptChunk(_algorithmId, _dek, _noncePrefix, _chunkIndex, plaintext, ciphertext, tag, aad);
 
             Span<byte> lengthBuffer = stackalloc byte[sizeof(int)];
             BinaryPrimitives.WriteInt32LittleEndian(lengthBuffer, plaintext.Length);
@@ -712,21 +1263,24 @@ internal static class PayloadChunkedService
         private readonly byte[] _noncePrefix;
         private readonly int _chunkSize;
         private readonly CancellationToken _cancellationToken;
+        private readonly byte _algorithmId;
         private byte[] _buffer = Array.Empty<byte>();
         private int _bufferOffset;
         private int _chunkIndex;
         private bool _completed;
+        private bool _disposed;
 
-        internal ChunkDecryptingStream(Stream input, byte[] dek, byte[] noncePrefix, int chunkSize, CancellationToken cancellationToken)
+        internal ChunkDecryptingStream(Stream input, byte[] dek, byte[] noncePrefix, int chunkSize, byte algorithmId, CancellationToken cancellationToken)
         {
             _input = input;
             _dek = dek;
             _noncePrefix = noncePrefix;
             _chunkSize = chunkSize;
+            _algorithmId = algorithmId;
             _cancellationToken = cancellationToken;
         }
 
-        public override bool CanRead => true;
+        public override bool CanRead => !_disposed;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
@@ -739,6 +1293,9 @@ internal static class PayloadChunkedService
 
         public override int Read(byte[] buffer, int offset, int count)
         {
+            ValidateBufferRange(buffer, offset, count, "destination");
+            EnsureReadable();
+
             if (count == 0)
             {
                 return 0;
@@ -762,7 +1319,9 @@ internal static class PayloadChunkedService
                 }
 
                 int readable = Math.Min(count, _buffer.Length - _bufferOffset);
-                Buffer.BlockCopy(_buffer, _bufferOffset, buffer, offset, readable);
+                int sourceOffset = _bufferOffset;
+                Buffer.BlockCopy(_buffer, sourceOffset, buffer, offset, readable);
+                CryptographicOperations.ZeroMemory(_buffer.AsSpan(sourceOffset, readable));
                 _bufferOffset += readable;
                 offset += readable;
                 count -= readable;
@@ -779,7 +1338,16 @@ internal static class PayloadChunkedService
                 CryptographicOperations.ZeroMemory(_buffer);
             }
 
+            _disposed = true;
             base.Dispose(disposing);
+        }
+
+        private void EnsureReadable()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(ChunkDecryptingStream));
+            }
         }
 
         private void FillBuffer()
@@ -812,15 +1380,8 @@ internal static class PayloadChunkedService
 
             try
             {
-                Span<byte> nonce = stackalloc byte[NonceSize];
-                _noncePrefix.CopyTo(nonce[..NoncePrefixSize]);
-                BinaryPrimitives.WriteInt32LittleEndian(nonce[NoncePrefixSize..], _chunkIndex);
-                byte[] aad = BitConverter.GetBytes(_chunkIndex);
-
-                using (var aes = new AesGcm(_dek, TagSize))
-                {
-                    aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
-                }
+                byte[] aad = BuildChunkAad(_chunkIndex);
+                DecryptChunk(_algorithmId, _dek, _noncePrefix, _chunkIndex, ciphertext, tag, plaintext, aad);
 
                 if (_buffer.Length > 0)
                 {

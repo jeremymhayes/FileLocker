@@ -17,13 +17,25 @@ namespace FileLocker
 {
     public sealed partial class MainWindow
     {
-        private enum EncodeTextMode
+        internal enum EncodeTextMode
         {
             Encode,
             Decode
         }
 
         private const string DefaultEncodeTextFormat = "Base64";
+        internal const int MaxEncodeTextInputChars = 1024 * 1024;
+        private const int MaxEncodeTextModeChars = 16;
+        private const int MaxEncodeTextFormatChars = 64;
+
+        private static readonly string[] SupportedEncodeTextFormats =
+        [
+            "Base64",
+            "URL",
+            "Hex",
+            "HTML Entities",
+            "UTF-8"
+        ];
 
         private EncodeTextMode _encodeTextMode = EncodeTextMode.Encode;
         private string _encodeTextFormat = DefaultEncodeTextFormat;
@@ -533,25 +545,72 @@ namespace FileLocker
             EncodeRecentConversionsListView.Visibility = RecentEncodeTextItems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         }
 
-        private static string ConvertEncodeText(string input, EncodeTextMode mode, string format, bool preserveLineBreaks)
+        internal static string ConvertEncodeText(string input, EncodeTextMode mode, string format, bool preserveLineBreaks)
         {
+            if (input.Length > MaxEncodeTextInputChars)
+            {
+                throw new InvalidOperationException("Text conversion input is too large.");
+            }
+
+            string normalizedFormat = NormalizeEncodeTextFormat(format);
             string preparedInput = preserveLineBreaks ? input : ReplaceLineBreaksWithSpaces(input);
 
-            return format switch
+            return normalizedFormat switch
             {
                 "URL" => mode == EncodeTextMode.Decode ? DecodeUrl(preparedInput) : WebUtility.UrlEncode(preparedInput) ?? string.Empty,
-                "Hex" => mode == EncodeTextMode.Decode ? DecodeHexToUtf8(preparedInput) : Convert.ToHexString(Encoding.UTF8.GetBytes(preparedInput)),
+                "Hex" => mode == EncodeTextMode.Decode ? DecodeHexToUtf8(preparedInput) : EncodeHexUtf8(preparedInput),
                 "HTML Entities" => mode == EncodeTextMode.Decode ? WebUtility.HtmlDecode(preparedInput) ?? string.Empty : WebUtility.HtmlEncode(preparedInput) ?? string.Empty,
                 "UTF-8" => mode == EncodeTextMode.Decode ? DecodeHexToUtf8(preparedInput) : EncodeUtf8ByteView(preparedInput),
-                _ => mode == EncodeTextMode.Decode ? DecodeBase64ToUtf8(preparedInput) : Convert.ToBase64String(Encoding.UTF8.GetBytes(preparedInput))
+                "Base64" => mode == EncodeTextMode.Decode ? DecodeBase64ToUtf8(preparedInput) : EncodeBase64Utf8(preparedInput),
+                _ => throw new InvalidOperationException("Choose a supported text conversion format.")
             };
+        }
+
+        internal static EncodeTextMode NormalizeEncodeTextMode(string? mode)
+        {
+            string? candidate = mode?.Trim();
+            if (string.IsNullOrEmpty(candidate) ||
+                candidate.Length > MaxEncodeTextModeChars ||
+                candidate.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("Choose encode or decode for text conversion.");
+            }
+
+            return candidate.ToLowerInvariant() switch
+            {
+                "encode" => EncodeTextMode.Encode,
+                "decode" => EncodeTextMode.Decode,
+                _ => throw new InvalidOperationException("Choose encode or decode for text conversion.")
+            };
+        }
+
+        internal static string NormalizeEncodeTextFormat(string? format)
+        {
+            string? candidate = format?.Trim();
+            if (string.IsNullOrEmpty(candidate) ||
+                candidate.Length > MaxEncodeTextFormatChars ||
+                candidate.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("Choose a supported text conversion format.");
+            }
+
+            foreach (string supportedFormat in SupportedEncodeTextFormats)
+            {
+                if (string.Equals(candidate, supportedFormat, StringComparison.OrdinalIgnoreCase))
+                {
+                    return supportedFormat;
+                }
+            }
+
+            throw new InvalidOperationException("Choose a supported text conversion format.");
         }
 
         private static string DecodeBase64ToUtf8(string input)
         {
+            byte[]? bytes = null;
             try
             {
-                byte[] bytes = Convert.FromBase64String(RemoveWhitespace(input));
+                bytes = Convert.FromBase64String(RemoveWhitespace(input));
                 return StrictUtf8.GetString(bytes);
             }
             catch (FormatException ex)
@@ -562,6 +621,10 @@ namespace FileLocker
             {
                 throw new FormatException("Base64 decoded bytes are not valid UTF-8 text.", ex);
             }
+            finally
+            {
+                ClearSensitiveBuffer(bytes);
+            }
         }
 
         private static string DecodeUrl(string input)
@@ -571,9 +634,10 @@ namespace FileLocker
 
         private static string DecodeHexToUtf8(string input)
         {
+            byte[]? bytes = null;
             try
             {
-                byte[] bytes = ParseHexBytes(input);
+                bytes = ParseHexBytes(input);
                 return StrictUtf8.GetString(bytes);
             }
             catch (FormatException ex)
@@ -584,21 +648,51 @@ namespace FileLocker
             {
                 throw new FormatException("Hex decoded bytes are not valid UTF-8 text.", ex);
             }
+            finally
+            {
+                ClearSensitiveBuffer(bytes);
+            }
         }
 
         private static byte[] ParseHexBytes(string input)
         {
-            string normalized = input.Replace("0x", string.Empty, StringComparison.OrdinalIgnoreCase);
-            string hex = new(normalized
-                .Where(character => !char.IsWhiteSpace(character) && character != '-' && character != ':' && character != ',')
-                .ToArray());
+            var builder = new StringBuilder(input.Length);
+            bool atTokenStart = true;
+            for (int index = 0; index < input.Length; index++)
+            {
+                char character = input[index];
+                if (char.IsWhiteSpace(character) || character is '-' or ':' or ',')
+                {
+                    atTokenStart = true;
+                    continue;
+                }
 
+                if (atTokenStart &&
+                    character == '0' &&
+                    index + 1 < input.Length &&
+                    input[index + 1] is 'x' or 'X')
+                {
+                    index++;
+                    atTokenStart = false;
+                    continue;
+                }
+
+                if (!Uri.IsHexDigit(character))
+                {
+                    throw new FormatException("Invalid hex input.");
+                }
+
+                builder.Append(character);
+                atTokenStart = false;
+            }
+
+            string hex = builder.ToString();
             if (hex.Length == 0)
             {
                 return [];
             }
 
-            if (hex.Length % 2 != 0 || hex.Any(character => !Uri.IsHexDigit(character)))
+            if (hex.Length % 2 != 0)
             {
                 throw new FormatException("Invalid hex input.");
             }
@@ -608,7 +702,44 @@ namespace FileLocker
 
         private static string EncodeUtf8ByteView(string input)
         {
-            return string.Join(" ", Encoding.UTF8.GetBytes(input).Select(value => value.ToString("X2", CultureInfo.InvariantCulture)));
+            byte[]? bytes = null;
+            try
+            {
+                bytes = Encoding.UTF8.GetBytes(input);
+                return string.Join(" ", bytes.Select(value => value.ToString("X2", CultureInfo.InvariantCulture)));
+            }
+            finally
+            {
+                ClearSensitiveBuffer(bytes);
+            }
+        }
+
+        private static string EncodeHexUtf8(string input)
+        {
+            byte[]? bytes = null;
+            try
+            {
+                bytes = Encoding.UTF8.GetBytes(input);
+                return Convert.ToHexString(bytes);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(bytes);
+            }
+        }
+
+        private static string EncodeBase64Utf8(string input)
+        {
+            byte[]? bytes = null;
+            try
+            {
+                bytes = Encoding.UTF8.GetBytes(input);
+                return Convert.ToBase64String(bytes);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(bytes);
+            }
         }
 
         private static string RemoveWhitespace(string input)

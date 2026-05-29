@@ -61,6 +61,88 @@ public sealed class EncryptOutputPathAdvisorTests : IDisposable
         Assert.Null(suggestedPath);
     }
 
+    [Fact]
+    public void SuggestForFolderRoots_IgnoresMalformedRoots()
+    {
+        string sourceFolder = Directory.CreateDirectory(Path.Combine(_rootPath, "Source")).FullName;
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([
+            "C:\\Temp\\bad\0path",
+            sourceFolder
+        ]);
+
+        Assert.Equal(Path.Combine(_rootPath, "Source (Encrypted)"), suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForFolderRoots_IgnoresControlCharacterRoots()
+    {
+        string sourceFolder = Directory.CreateDirectory(Path.Combine(_rootPath, "Source")).FullName;
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([
+            "C:\\Temp\\bad\r\npath",
+            sourceFolder
+        ]);
+
+        Assert.Equal(Path.Combine(_rootPath, "Source (Encrypted)"), suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForFolderRoots_IgnoresUnicodeFormatRoots()
+    {
+        string sourceFolder = Directory.CreateDirectory(Path.Combine(_rootPath, "Source")).FullName;
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([
+            Path.Combine(_rootPath, "Bad" + "\u202E"),
+            sourceFolder
+        ]);
+
+        Assert.Equal(Path.Combine(_rootPath, "Source (Encrypted)"), suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForFolderRoots_IgnoresRelativeRoots()
+    {
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots(["Source"]);
+
+        Assert.Null(suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForFolderRoots_IgnoresAlternateDataStreamRoots()
+    {
+        string sourceFolder = Directory.CreateDirectory(Path.Combine(_rootPath, "Source")).FullName;
+
+        string? suggestedPath = EncryptOutputPathAdvisor.SuggestForFolderRoots([
+            Path.Combine(_rootPath, "Bad:stream"),
+            sourceFolder
+        ]);
+
+        Assert.Equal(Path.Combine(_rootPath, "Source (Encrypted)"), suggestedPath);
+    }
+
+    [Fact]
+    public void SuggestForSelectedPaths_IgnoresRelativeFolders()
+    {
+        string relativeFolder = $"FileLocker-Relative-Selection-{Guid.NewGuid():N}";
+        string fullFolder = Path.GetFullPath(relativeFolder);
+        Directory.CreateDirectory(fullFolder);
+
+        try
+        {
+            string? suggestedPath = EncryptOutputPathAdvisor.SuggestForSelectedPaths([relativeFolder]);
+
+            Assert.Null(suggestedPath);
+        }
+        finally
+        {
+            if (Directory.Exists(fullFolder))
+            {
+                Directory.Delete(fullFolder, recursive: true);
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootPath))

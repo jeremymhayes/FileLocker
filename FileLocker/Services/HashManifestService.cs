@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -10,6 +11,10 @@ namespace FileLocker;
 
 internal static class HashManifestService
 {
+    internal const int MaxManifestLineChars = 64 * 1024;
+    internal const int MaxManifestEntries = FileHashService.MaxBatchHashPaths;
+    internal const int MaxManifestLines = MaxManifestEntries + 1024;
+
     internal static async Task<HashManifestResult> CreateManifestAsync(
         IEnumerable<string>? inputPaths,
         string? algorithm,
@@ -20,17 +25,18 @@ internal static class HashManifestService
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
         cancellationToken.ThrowIfCancellationRequested();
 
-        string normalizedAlgorithm = NormalizeAlgorithm(algorithm);
+        string normalizedOutputDirectory = NormalizeManifestPath(outputDirectory, requireLeafName: false, "Hash manifest output folder is invalid.");
+        string normalizedAlgorithm = FileHashService.NormalizeAlgorithmName(algorithm);
         string[] inputs = NormalizeManifestInputPaths(inputPaths, cancellationToken);
-        string[] files = ExpandFiles(inputs, cancellationToken).ToArray();
+        string[] files = NormalizeManifestFiles(ExpandFiles(inputs, cancellationToken), cancellationToken);
         if (files.Length == 0)
         {
             throw new InvalidOperationException("No files were available for the hash manifest.");
         }
 
-        Directory.CreateDirectory(outputDirectory);
-        string extension = normalizedAlgorithm == "SHA-512" ? ".sha512" : ".sha256";
-        string manifestPath = ResolveAvailableManifestPath(Path.Combine(outputDirectory, $"FileLocker-manifest-{DateTime.UtcNow:yyyyMMdd-HHmmss}{extension}"));
+        Directory.CreateDirectory(normalizedOutputDirectory);
+        string extension = normalizedAlgorithm == FileHashService.Sha512 ? ".sha512" : ".sha256";
+        string manifestPath = ResolveAvailableManifestPath(Path.Combine(normalizedOutputDirectory, $"FileLocker-manifest-{DateTime.UtcNow:yyyyMMdd-HHmmss}{extension}"));
         string[] inputRoots = ResolveInputRoots(inputs).ToArray();
         string commonRoot = inputRoots.Length > 0
             ? FindCommonDirectory(inputRoots)
@@ -64,34 +70,57 @@ internal static class HashManifestService
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!File.Exists(manifestPath))
+        string normalizedManifestPath = NormalizeManifestPath(manifestPath, requireLeafName: true, "Hash manifest path is invalid.");
+        string normalizedRootDirectory = NormalizeManifestPath(rootDirectory, requireLeafName: false, "Hash manifest root folder is invalid.");
+
+        if (!File.Exists(normalizedManifestPath))
         {
-            throw new FileNotFoundException("Hash manifest was not found.", manifestPath);
+            throw new FileNotFoundException("Hash manifest was not found.", normalizedManifestPath);
         }
 
-        if (!Directory.Exists(rootDirectory))
+        if (!Directory.Exists(normalizedRootDirectory))
         {
             throw new DirectoryNotFoundException("The manifest root folder was not found.");
         }
 
-        string algorithm = Path.GetExtension(manifestPath).Equals(".sha512", StringComparison.OrdinalIgnoreCase)
-            ? "SHA-512"
-            : "SHA-256";
+        string algorithm = GetManifestAlgorithmFromPath(normalizedManifestPath);
         int entryCount = 0;
         int matched = 0;
         int mismatched = 0;
         int missing = 0;
+        int inspectedLines = 0;
 
-        await foreach (string rawLine in File.ReadLinesAsync(manifestPath, Encoding.UTF8, cancellationToken))
+        await foreach (string rawLine in File.ReadLinesAsync(normalizedManifestPath, Encoding.UTF8, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!TryParseManifestEntry(rawLine, out HashManifestEntry? entry) || entry is null)
+            inspectedLines++;
+            if (inspectedLines > MaxManifestLines)
+            {
+                throw new InvalidDataException("The hash manifest contains too many lines.");
+            }
+
+            if (rawLine.Length > MaxManifestLineChars)
+            {
+                throw new InvalidDataException("The hash manifest contains a line that is too long.");
+            }
+
+            if (IsIgnorableManifestLine(rawLine))
             {
                 continue;
             }
 
+            if (!TryParseManifestEntry(rawLine, algorithm, out HashManifestEntry? entry) || entry is null)
+            {
+                throw new InvalidDataException("The hash manifest contains malformed or unsafe entries.");
+            }
+
             entryCount++;
-            if (!TryResolveManifestEntryPath(rootDirectory, entry.RelativePath, out string filePath) ||
+            if (entryCount > MaxManifestEntries)
+            {
+                throw new InvalidDataException("The hash manifest contains too many entries.");
+            }
+
+            if (!TryResolveManifestEntryPath(normalizedRootDirectory, entry.RelativePath, out string filePath) ||
                 !File.Exists(filePath))
             {
                 missing++;
@@ -120,19 +149,37 @@ internal static class HashManifestService
             throw new InvalidOperationException("The hash manifest does not contain any verifiable file entries.");
         }
 
-        return new HashManifestVerificationResult(manifestPath, entryCount, matched, mismatched, missing);
+        return new HashManifestVerificationResult(normalizedManifestPath, entryCount, matched, mismatched, missing);
     }
 
     internal static List<HashManifestEntry> ParseManifest(string content)
     {
+        ArgumentNullException.ThrowIfNull(content);
+
         var entries = new List<HashManifestEntry>();
         using var reader = new StringReader(content);
         string? rawLine;
+        int inspectedLines = 0;
         while ((rawLine = reader.ReadLine()) is not null)
         {
+            inspectedLines++;
+            if (inspectedLines > MaxManifestLines)
+            {
+                break;
+            }
+
+            if (rawLine.Length > MaxManifestLineChars)
+            {
+                continue;
+            }
+
             if (TryParseManifestEntry(rawLine, out HashManifestEntry? entry) && entry is not null)
             {
                 entries.Add(entry);
+                if (entries.Count >= MaxManifestEntries)
+                {
+                    break;
+                }
             }
         }
 
@@ -144,7 +191,7 @@ internal static class HashManifestService
         foreach (string rawPath in inputPaths.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!TryGetFullPath(rawPath, out string path))
+            if (!TryGetNormalFullPath(rawPath, out string path))
             {
                 continue;
             }
@@ -167,9 +214,10 @@ internal static class HashManifestService
         }
     }
 
-    private static string[] NormalizeManifestInputPaths(IEnumerable<string> inputPaths, CancellationToken cancellationToken)
+    internal static string[] NormalizeManifestInputPaths(IEnumerable<string> inputPaths, CancellationToken cancellationToken)
     {
         var inputs = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string? path in inputPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -178,26 +226,148 @@ internal static class HashManifestService
                 continue;
             }
 
-            if (TryGetFullPath(path, out string fullPath))
+            string normalizedPath = path.Trim();
+            if (normalizedPath.Length > FileHashService.MaxHashPathChars)
             {
+                throw new InvalidOperationException("A hash manifest input path is too long.");
+            }
+
+            if (ContainsControlOrFormatCharacters(normalizedPath))
+            {
+                throw new InvalidOperationException("A hash manifest input path contains invalid characters.");
+            }
+
+            if (!TryGetNormalFullPath(normalizedPath, out string fullPath))
+            {
+                throw new InvalidOperationException("A hash manifest input path contains invalid characters.");
+            }
+
+            if (seen.Add(fullPath))
+            {
+                if (inputs.Count >= MaxManifestEntries)
+                {
+                    throw new InvalidOperationException("The hash manifest contains too many input paths.");
+                }
+
                 inputs.Add(fullPath);
             }
         }
 
-        return inputs.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return inputs.ToArray();
+    }
+
+    internal static string[] NormalizeManifestFiles(IEnumerable<string> files, CancellationToken cancellationToken)
+    {
+        var normalizedFiles = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (file.Length > FileHashService.MaxHashPathChars)
+            {
+                throw new InvalidOperationException("A hash manifest file path is too long.");
+            }
+
+            if (ContainsControlOrFormatCharacters(file))
+            {
+                throw new InvalidOperationException("A hash manifest file path contains invalid characters.");
+            }
+
+            if (!TryGetNormalFullPath(file, out string fullPath))
+            {
+                throw new InvalidOperationException("A hash manifest file path contains invalid characters.");
+            }
+
+            if (!seen.Add(fullPath))
+            {
+                continue;
+            }
+
+            if (normalizedFiles.Count >= MaxManifestEntries)
+            {
+                throw new InvalidOperationException("The hash manifest contains too many files.");
+            }
+
+            normalizedFiles.Add(fullPath);
+        }
+
+        return normalizedFiles.ToArray();
     }
 
     private static bool TryGetFullPath(string path, out string fullPath)
     {
+        fullPath = string.Empty;
+        string trimmedPath = path.Trim();
+        if (trimmedPath.Length == 0 || ContainsControlOrFormatCharacters(trimmedPath))
+        {
+            return false;
+        }
+
         try
         {
-            fullPath = Path.GetFullPath(path);
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                return false;
+            }
+
+            fullPath = Path.GetFullPath(trimmedPath);
             return true;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            fullPath = string.Empty;
             return false;
+        }
+    }
+
+    private static bool TryGetNormalFullPath(string path, out string fullPath)
+    {
+        if (!TryGetFullPath(path, out fullPath))
+        {
+            return false;
+        }
+
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+        return !pathWithoutRoot.Contains(':', StringComparison.Ordinal);
+    }
+
+    private static string NormalizeManifestPath(string path, bool requireLeafName, string errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(path) || ContainsControlOrFormatCharacters(path))
+        {
+            throw new InvalidOperationException(errorMessage);
+        }
+
+        try
+        {
+            string trimmedPath = path.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                throw new InvalidOperationException(errorMessage);
+            }
+
+            string fullPath = Path.GetFullPath(trimmedPath);
+            if (requireLeafName && string.IsNullOrWhiteSpace(Path.GetFileName(fullPath)))
+            {
+                throw new InvalidOperationException(errorMessage);
+            }
+
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(errorMessage);
+            }
+
+            return fullPath;
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new InvalidOperationException(errorMessage, ex);
         }
     }
 
@@ -273,29 +443,6 @@ internal static class HashManifestService
         }
     }
 
-    private static string NormalizeAlgorithm(string? algorithm)
-    {
-        if (string.IsNullOrWhiteSpace(algorithm))
-        {
-            return "SHA-256";
-        }
-
-        string normalized = algorithm.Trim();
-        if (normalized.Equals("SHA-256", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Equals("SHA256", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SHA-256";
-        }
-
-        if (normalized.Equals("SHA-512", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Equals("SHA512", StringComparison.OrdinalIgnoreCase))
-        {
-            return "SHA-512";
-        }
-
-        throw new ArgumentException("Unsupported hash algorithm. Use SHA-256 or SHA-512.", nameof(algorithm));
-    }
-
     private static string FindCommonRoot(IReadOnlyList<string> files)
     {
         string[] directories = files
@@ -306,11 +453,11 @@ internal static class HashManifestService
 
     private static string FindCommonDirectory(IReadOnlyList<string> directories)
     {
-        string common = directories[0].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string common = NormalizeManifestDirectory(directories[0]);
 
         foreach (string directory in directories.Skip(1))
         {
-            string candidate = directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string candidate = NormalizeManifestDirectory(directory);
             while (!IsSameDirectoryOrChild(candidate, common))
             {
                 string? parent = Path.GetDirectoryName(common);
@@ -319,11 +466,24 @@ internal static class HashManifestService
                     return Path.GetPathRoot(common) ?? common;
                 }
 
-                common = parent.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                common = NormalizeManifestDirectory(parent);
             }
         }
 
         return common;
+    }
+
+    private static string NormalizeManifestDirectory(string directory)
+    {
+        string fullPath = Path.GetFullPath(directory);
+        string trimmed = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        string trimmedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return !string.IsNullOrWhiteSpace(root) &&
+            string.Equals(trimmed, trimmedRoot, StringComparison.OrdinalIgnoreCase)
+            ? root
+            : trimmed;
     }
 
     private static bool IsSameDirectoryOrChild(string candidate, string root)
@@ -353,13 +513,18 @@ internal static class HashManifestService
 
     private static bool TryParseManifestEntry(string rawLine, out HashManifestEntry? entry)
     {
+        return TryParseManifestEntry(rawLine, algorithm: null, entry: out entry);
+    }
+
+    private static bool TryParseManifestEntry(string rawLine, string? algorithm, out HashManifestEntry? entry)
+    {
         entry = null;
         if (!TryParseManifestLine(rawLine, out string hashHex, out string escapedPath))
         {
             return false;
         }
 
-        if (!IsSupportedManifestHash(hashHex))
+        if (!IsSupportedManifestHash(hashHex, algorithm))
         {
             return false;
         }
@@ -374,17 +539,23 @@ internal static class HashManifestService
         return true;
     }
 
+    private static bool IsIgnorableManifestLine(string rawLine)
+    {
+        string line = rawLine.TrimStart();
+        return line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal);
+    }
+
     private static bool TryParseManifestLine(string rawLine, out string hashHex, out string escapedPath)
     {
         hashHex = string.Empty;
         escapedPath = string.Empty;
 
-        string line = rawLine.TrimStart();
-        if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
+        if (IsIgnorableManifestLine(rawLine))
         {
             return false;
         }
 
+        string line = rawLine.TrimStart();
         int hashEnd = line.IndexOfAny([' ', '\t']);
         if (hashEnd <= 0)
         {
@@ -447,7 +618,7 @@ internal static class HashManifestService
     private static bool IsSafeManifestRelativePath(string relativePath)
     {
         if (relativePath.Length == 0 ||
-            relativePath.Any(char.IsControl) ||
+            ContainsControlOrFormatCharacters(relativePath) ||
             Path.IsPathFullyQualified(relativePath) ||
             Path.IsPathRooted(relativePath))
         {
@@ -456,12 +627,42 @@ internal static class HashManifestService
 
         return relativePath
             .Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .All(segment => segment is not "." and not "..");
+            .All(segment => segment is not "." and not ".." && !segment.Contains(':', StringComparison.Ordinal));
+    }
+
+    private static bool ContainsControlOrFormatCharacters(string text)
+    {
+        return text.Any(character =>
+            char.IsControl(character) ||
+            CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
     }
 
     internal static bool IsSupportedManifestHash(string hashHex)
     {
         return HashInputNormalizer.IsSupportedHash(hashHex);
+    }
+
+    internal static bool IsSupportedManifestHash(string hashHex, string? algorithm)
+    {
+        return string.IsNullOrWhiteSpace(algorithm)
+            ? HashInputNormalizer.IsSupportedHash(hashHex)
+            : HashInputNormalizer.IsHashForAlgorithm(hashHex, algorithm);
+    }
+
+    internal static string GetManifestAlgorithmFromPath(string manifestPath)
+    {
+        string extension = Path.GetExtension(manifestPath);
+        if (extension.Equals(".sha256", StringComparison.OrdinalIgnoreCase))
+        {
+            return FileHashService.Sha256;
+        }
+
+        if (extension.Equals(".sha512", StringComparison.OrdinalIgnoreCase))
+        {
+            return FileHashService.Sha512;
+        }
+
+        throw new InvalidOperationException("Hash manifests must use a supported .sha256 or .sha512 file extension.");
     }
 
     private static async Task<string?> TryComputeManifestEntryHashAsync(

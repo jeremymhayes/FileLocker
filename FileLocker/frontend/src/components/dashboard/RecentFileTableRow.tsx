@@ -4,6 +4,7 @@ import { FileTypeIcon } from "@/components/common/FileTypeIcon"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { StatusBadge } from "@/components/common/StatusBadge"
+import { isSafeLocalPathForReveal } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { RecentFile } from "@/types/bridge"
 
@@ -14,7 +15,7 @@ type RecentFileTableRowProps = {
 }
 
 export function RecentFileTableRow({ item, active, onReveal }: RecentFileTableRowProps) {
-  const canReveal = /^[a-zA-Z]:\\|^\\\\/.test(item.name)
+  const canReveal = isSafeLocalPathForReveal(item.name)
 
   async function copyName() {
     await navigator.clipboard.writeText(item.name)

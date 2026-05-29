@@ -45,13 +45,13 @@ public sealed class BridgeSecureDeleteTests
     }
 
     [Fact]
-    public void ValidateSecureDeleteBridgePaths_RejectsMalformedPaths()
+    public void ValidateSecureDeleteBridgePaths_RejectsControlCharacterPaths()
     {
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
             MainWindow.ValidateSecureDeleteBridgePaths(["C:\\Temp\\bad\0path.txt"]));
 
-        Assert.Equal("One or more selected paths are invalid.", ex.Message);
-        Assert.IsType<ArgumentException>(ex.InnerException);
+        Assert.Equal("A selected value contains invalid characters.", ex.Message);
+        Assert.Null(ex.InnerException);
     }
 
     [Fact]
@@ -68,5 +68,19 @@ public sealed class BridgeSecureDeleteTests
 
         string singlePath = Assert.Single(validated);
         Assert.Equal(fullPath, singlePath);
+    }
+
+    [Theory]
+    [InlineData("quick", 35, 1)]
+    [InlineData("dod", 1, 3)]
+    [InlineData("gutmann", 1, 35)]
+    [InlineData(null, 35, 3)]
+    [InlineData("custom", 99, 35)]
+    [InlineData("custom", 0, 3)]
+    public void NormalizeSecureDeletePasses_MakesNamedMethodsAuthoritative(string? method, int requestedPasses, int expected)
+    {
+        int passes = MainWindow.NormalizeSecureDeletePasses(requestedPasses, method);
+
+        Assert.Equal(expected, passes);
     }
 }

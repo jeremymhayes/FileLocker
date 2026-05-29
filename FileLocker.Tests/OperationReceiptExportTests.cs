@@ -77,6 +77,89 @@ public sealed class OperationReceiptExportTests
         Assert.Contains("Line one Line two \\| detail", markdown);
     }
 
+    [Fact]
+    public void MarkdownReceipt_EscapesTopLevelUserControlledFields()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry();
+        entry.Operation = "Encrypt\r\nInjected";
+        entry.ProfileName = "Profile\r\n| detail";
+        entry.BackupFolderPath = @"D:\Vault|Backups";
+        entry.FailureCategorySummary = "Failure\r\n| detail";
+
+        string markdown = InvokeReceiptBuilder("BuildMarkdownReport", entry, includeFullPaths: true);
+
+        Assert.DoesNotContain("Encrypt\r\nInjected", markdown);
+        Assert.DoesNotContain("Profile\r\n| detail", markdown);
+        Assert.Contains("# FileLocker Encrypt Injected Operation Receipt", markdown);
+        Assert.Contains("- Profile: Profile \\| detail", markdown);
+        Assert.Contains(@"- Backup folder: D:\Vault\|Backups", markdown);
+        Assert.Contains("- Failure categories: Failure \\| detail", markdown);
+    }
+
+    [Fact]
+    public void ReceiptExport_IncludesResultAlgorithmMetadata()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry();
+        entry.Algorithm = "Mixed payload algorithms";
+        entry.KeySizeBits = 0;
+        entry.Results[0].Algorithm = EncryptionAlgorithmCatalog.ChaCha20Poly1305;
+        entry.Results[0].KeySizeBits = 256;
+
+        string markdown = InvokeReceiptBuilder("BuildMarkdownReport", entry, includeFullPaths: true);
+        string csv = InvokeReceiptBuilder("BuildCsvReport", entry, includeFullPaths: true);
+
+        Assert.Contains("| Completed | ChaCha20-Poly1305 (256-bit) |", markdown);
+        Assert.Contains("Status,Algorithm,KeySizeBits", csv);
+        Assert.Contains("Completed,ChaCha20-Poly1305,256", csv);
+    }
+
+    [Fact]
+    public void CsvReceipt_EscapesFormulaLikeTextCells()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry();
+        entry.Results[0].Status = "=Completed";
+        entry.Results[0].Message = "+Encrypted";
+        entry.Results[0].FailureCategory = "  @Review";
+
+        string csv = InvokeReceiptBuilder("BuildCsvReport", entry, includeFullPaths: true);
+
+        Assert.Contains("'=Completed", csv);
+        Assert.Contains("'+Encrypted", csv);
+        Assert.Contains("'@Review", csv);
+    }
+
+    [Fact]
+    public void ReceiptExport_UsesUnknownAlgorithmForLegacyEntries()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry();
+        entry.Algorithm = null!;
+        entry.KeySizeBits = -1;
+        entry.Results[0].Algorithm = null;
+        entry.Results[0].KeySizeBits = null;
+
+        string markdown = InvokeReceiptBuilder("BuildMarkdownReport", entry, includeFullPaths: true);
+        string csv = InvokeReceiptBuilder("BuildCsvReport", entry, includeFullPaths: true);
+
+        Assert.Contains("- Algorithm: Unknown", markdown);
+        Assert.Contains("| Completed | - |", markdown);
+        Assert.Contains("Completed,Unknown,,Encrypted.", csv);
+    }
+
+    [Fact]
+    public void ReceiptExport_CapsMalformedPathText()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry();
+        entry.Results[0].SourcePath = @"C:\" + new string('a', OperationHistorySanitizer.MaxHistoryPathLength + 100);
+
+        string markdown = InvokeReceiptBuilder("BuildMarkdownReport", entry, includeFullPaths: true);
+        string csv = InvokeReceiptBuilder("BuildCsvReport", entry, includeFullPaths: true);
+
+        Assert.Contains("path truncated", markdown);
+        Assert.Contains("path truncated", csv);
+        Assert.DoesNotContain(new string('a', OperationHistorySanitizer.MaxHistoryPathLength + 100), markdown);
+        Assert.DoesNotContain(new string('a', OperationHistorySanitizer.MaxHistoryPathLength + 100), csv);
+    }
+
     private static string InvokeReceiptBuilder(string methodName, OperationHistoryEntry entry, bool includeFullPaths)
     {
         MethodInfo method = typeof(MainWindow).GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic)
@@ -110,6 +193,8 @@ public sealed class OperationReceiptExportTests
                     Message = "Encrypted.",
                     OriginalRetained = true,
                     OutputVerified = true,
+                    Algorithm = "AES-256-GCM",
+                    KeySizeBits = 256,
                     CompressionRequested = true,
                     CompressionApplied = false,
                     CompressionReason = @"Skipped compression for D:\Vault\secret.txt."

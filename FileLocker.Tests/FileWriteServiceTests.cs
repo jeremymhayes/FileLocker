@@ -238,6 +238,25 @@ public sealed class FileWriteServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public void ReplaceFileWithTemporaryFile_RejectsTempFileOutsideDestinationDirectory()
+    {
+        string destinationDirectory = Path.Combine(_rootPath, "destination");
+        string tempDirectory = Path.Combine(_rootPath, "temp");
+        Directory.CreateDirectory(destinationDirectory);
+        Directory.CreateDirectory(tempDirectory);
+        string tempPath = Path.Combine(tempDirectory, "settings.json.tmp");
+        string path = Path.Combine(destinationDirectory, "settings.json");
+        File.WriteAllText(tempPath, "new", Encoding.UTF8);
+
+        IOException exception = Assert.Throws<IOException>(() =>
+            FileWriteService.ReplaceFileWithTemporaryFile(tempPath, path));
+
+        Assert.Contains("destination directory", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(tempPath));
+        Assert.False(File.Exists(path));
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -277,6 +296,109 @@ public sealed class FileWriteServiceTests : IDisposable
     }
 
     [Fact]
+    public void ResolveAvailablePath_RejectsRelativePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.ResolveAvailablePath("history.json"));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailablePath_RejectsControlCharacters()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.ResolveAvailablePath(Path.Combine(_rootPath, "history\r\n.json")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("control characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void WriteAllTextAtomically_RejectsRelativePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.WriteAllTextAtomically("settings.json", "contents", Encoding.UTF8));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void WriteAllTextAtomically_RejectsControlCharacters()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.WriteAllTextAtomically(Path.Combine(_rootPath, "settings\t.json"), "contents", Encoding.UTF8));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("control characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailablePath_RejectsUnicodeFormatCharacters()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.ResolveAvailablePath(Path.Combine(_rootPath, "history" + "\u202E" + ".json")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("format characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void WriteAllTextAtomically_RejectsUnicodeFormatCharacters()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.WriteAllTextAtomically(Path.Combine(_rootPath, "settings" + "\u202E" + ".json"), "contents", Encoding.UTF8));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("format characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(_rootPath));
+    }
+
+    [Fact]
+    public void ResolveAvailablePath_RejectsAlternateDataStreamTargets()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.ResolveAvailablePath(Path.Combine(_rootPath, "history.json:stream")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailablePath_RejectsAlternateDataStreamParentTargets()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.ResolveAvailablePath(Path.Combine(_rootPath, "exports:stream", "history.json")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void WriteAllTextAtomically_RejectsAlternateDataStreamTargets()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.WriteAllTextAtomically(Path.Combine(_rootPath, "settings.json:stream"), "contents", Encoding.UTF8));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(_rootPath));
+    }
+
+    [Fact]
+    public void WriteAllTextAtomically_RejectsAlternateDataStreamParentTargetsBeforeCreatingDirectory()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            FileWriteService.WriteAllTextAtomically(Path.Combine(_rootPath, "exports:stream", "settings.json"), "contents", Encoding.UTF8));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(_rootPath));
+    }
+
+    [Fact]
     public void ResolveAvailablePath_AddsSuffixForExistingFilesAndDirectories()
     {
         Directory.CreateDirectory(_rootPath);
@@ -287,6 +409,22 @@ public sealed class FileWriteServiceTests : IDisposable
         string availablePath = FileWriteService.ResolveAvailablePath(path);
 
         Assert.Equal(Path.Combine(_rootPath, "FileLocker-history-20260521-120000-2.json"), availablePath);
+    }
+
+    [Fact]
+    public void ResolveAvailablePath_ThrowsAfterTooManyCollisions()
+    {
+        Directory.CreateDirectory(_rootPath);
+        string path = Path.Combine(_rootPath, "FileLocker-history-20260521-120000.json");
+        File.WriteAllText(path, "first");
+        for (int counter = 1; counter <= FileWriteService.MaxResolveAvailablePathAttempts; counter++)
+        {
+            File.WriteAllText(Path.Combine(_rootPath, $"FileLocker-history-20260521-120000-{counter}.json"), "existing");
+        }
+
+        IOException ex = Assert.Throws<IOException>(() => FileWriteService.ResolveAvailablePath(path));
+
+        Assert.Contains("available file name", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose()

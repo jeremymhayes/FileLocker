@@ -42,7 +42,10 @@ namespace FileLocker
             return CaptureProcessingRunOptions(keyfilePath, ReadKeyfileBytesIfConfigured(keyfilePath));
         }
 
-        private ProcessingRunOptions CaptureProcessingRunOptions(string keyfilePath, byte[]? keyfileBytes)
+        private ProcessingRunOptions CaptureProcessingRunOptions(
+            string keyfilePath,
+            byte[]? keyfileBytes,
+            bool encryptingNewPayload = true)
         {
             keyfilePath = keyfilePath.Trim();
             bool useDecryptPageOutputOptions = _currentSection == AppSection.DecryptFiles;
@@ -51,7 +54,7 @@ namespace FileLocker
                 IsCompressModeEnabled,
                 IsScrambleNamesEnabled,
                 IsSteganographyEnabled,
-                GetComboContent(AlgorithmCombo) ?? "AES-GCM",
+                GetComboContent(AlgorithmCombo) ?? EncryptionAlgorithmCatalog.Aes256Gcm,
                 GetComboContent(OperationModeCombo) ?? "Encrypt / Decrypt",
                 ParseKeySizeSelection(),
                 RemoveOriginalsToggle.IsOn,
@@ -64,7 +67,7 @@ namespace FileLocker
                 DecryptRestoreOriginalFilenamesToggle == null || DecryptRestoreOriginalFilenamesToggle.IsOn,
                 useDecryptPageOutputOptions && DecryptPreserveFolderStructureToggle != null && DecryptPreserveFolderStructureToggle.IsOn,
                 PackageFoldersToggle.IsOn,
-                (OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string ?? "Current time",
+                AppPreferencesStore.NormalizeOutputTimestampPolicy((OutputTimestampPolicyCombo.SelectedItem as ComboBoxItem)?.Content as string),
                 BackupFolderBox.Text?.Trim() ?? string.Empty,
                 string.IsNullOrWhiteSpace(keyfilePath) ? null : keyfilePath,
                 keyfileBytes,
@@ -77,19 +80,30 @@ namespace FileLocker
                     MetadataCreatedBox.Text ?? string.Empty,
                     MetadataModifiedBox.Text ?? string.Empty));
 
-            return NormalizeRunOptionsForCurrentMode(rawOptions);
+            return NormalizeRunOptionsForCurrentMode(rawOptions, encryptingNewPayload);
         }
 
-        private ProcessingRunOptions NormalizeRunOptionsForCurrentMode(ProcessingRunOptions options)
+        private ProcessingRunOptions NormalizeRunOptionsForCurrentMode(
+            ProcessingRunOptions options,
+            bool encryptingNewPayload = true)
         {
             byte[]? originalKeyfileBytes = options.KeyfileBytes;
+            string algorithm = encryptingNewPayload
+                ? EncryptionAlgorithmCatalog.NormalizeForNewPayload(options.Algorithm)
+                : EncryptionAlgorithmCatalog.Normalize(options.Algorithm);
+            if (encryptingNewPayload && options.UseSteganography && !EncryptionAlgorithmCatalog.IsAesGcm(algorithm))
+            {
+                throw new InvalidOperationException($"PNG carrier output currently uses {EncryptionAlgorithmCatalog.Aes256Gcm}. Turn off PNG carrier output to use another cipher.");
+            }
+
             ProcessingRunOptions normalized = options with
             {
-                Algorithm = "AES-GCM",
-                KeySizeBits = 256
+                Algorithm = algorithm,
+                KeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(algorithm),
+                Metadata = NormalizeMetadataOverrides(options.Metadata)
             };
 
-            if (_currentExperienceLevel == UserExperienceLevel.Beginner)
+            if (encryptingNewPayload && _currentExperienceLevel == UserExperienceLevel.Beginner)
             {
                 normalized = normalized with
                 {
@@ -109,7 +123,7 @@ namespace FileLocker
                     Metadata = new MetadataOverridesSnapshot(string.Empty, string.Empty, false, string.Empty, string.Empty)
                 };
             }
-            else if (_currentExperienceLevel == UserExperienceLevel.Intermediate)
+            else if (encryptingNewPayload && _currentExperienceLevel == UserExperienceLevel.Intermediate)
             {
                 normalized = normalized with
                 {
@@ -131,6 +145,11 @@ namespace FileLocker
                 normalized = normalized with { VerifyAfterWrite = true };
             }
 
+            if (!normalized.RemoveOriginalsAfterSuccess && normalized.SecureDeleteOriginals)
+            {
+                normalized = normalized with { SecureDeleteOriginals = false };
+            }
+
             if (originalKeyfileBytes is { Length: > 0 } &&
                 !ReferenceEquals(normalized.KeyfileBytes, originalKeyfileBytes))
             {
@@ -138,6 +157,78 @@ namespace FileLocker
             }
 
             return normalized;
+        }
+
+        private static MetadataOverridesSnapshot NormalizeMetadataOverrides(MetadataOverridesSnapshot metadata)
+        {
+            return new MetadataOverridesSnapshot(
+                NormalizeMetadataText(metadata.Label, MaxMetadataLabelChars, allowLineBreaks: false),
+                NormalizeMetadataText(metadata.Notes, MaxMetadataNotesChars, allowLineBreaks: true),
+                metadata.Randomize,
+                NormalizeMetadataText(metadata.CreatedText, MaxMetadataDateTextChars, allowLineBreaks: false),
+                NormalizeMetadataText(metadata.ModifiedText, MaxMetadataDateTextChars, allowLineBreaks: false));
+        }
+
+        private static string NormalizeMetadataText(string? value, int maxChars, bool allowLineBreaks)
+        {
+            if (string.IsNullOrWhiteSpace(value) || maxChars <= 0)
+            {
+                return string.Empty;
+            }
+
+            string trimmed = value.Trim();
+            var builder = new StringBuilder(Math.Min(trimmed.Length, maxChars));
+            bool pendingSpace = false;
+
+            foreach (char ch in trimmed)
+            {
+                if (ch is '\r' or '\n')
+                {
+                    if (allowLineBreaks && builder.Length > 0 && builder[^1] != '\n')
+                    {
+                        builder.Append('\n');
+                        if (builder.Length >= maxChars)
+                        {
+                            break;
+                        }
+                    }
+
+                    pendingSpace = false;
+                    continue;
+                }
+
+                if (char.IsWhiteSpace(ch) ||
+                    char.IsControl(ch) ||
+                    CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.Format)
+                {
+                    pendingSpace = true;
+                    continue;
+                }
+
+                if (pendingSpace && builder.Length > 0 && builder[^1] != '\n')
+                {
+                    if (builder.Length >= maxChars)
+                    {
+                        break;
+                    }
+
+                    builder.Append(' ');
+                }
+
+                if (builder.Length >= maxChars)
+                {
+                    break;
+                }
+
+                builder.Append(ch);
+                pendingSpace = false;
+                if (builder.Length >= maxChars)
+                {
+                    break;
+                }
+            }
+
+            return builder.ToString().Trim();
         }
 
         private static bool CanUseChunkedPayload(string sourcePath, ProcessingRunOptions options)
@@ -150,14 +241,52 @@ namespace FileLocker
             return File.Exists(sourcePath);
         }
 
+        internal static void ValidatePngCarrierSourceSize(long sourceBytes)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(sourceBytes);
+            if (sourceBytes > MaxPngCarrierSourceBytes)
+            {
+                throw new InvalidOperationException(GetPngCarrierSizeLimitMessage());
+            }
+        }
+
+        internal static void ValidatePngCarrierQueueSizes(IEnumerable<QueuedFileItem> queueItems, bool useSteganography)
+        {
+            ArgumentNullException.ThrowIfNull(queueItems);
+            if (!useSteganography)
+            {
+                return;
+            }
+
+            QueuedFileItem? oversizedItem = queueItems.FirstOrDefault(item => item.SizeBytes > MaxPngCarrierSourceBytes);
+            if (oversizedItem is not null)
+            {
+                throw new InvalidOperationException($"{Path.GetFileName(oversizedItem.SourcePath)} is too large for PNG carrier mode. {GetPngCarrierSizeLimitMessage()}");
+            }
+        }
+
+        internal static void ValidatePngCarrierPayloadSize(long payloadBytes)
+        {
+            if (payloadBytes < 0 || payloadBytes > MaxPngCarrierPayloadBytes)
+            {
+                throw new InvalidDataException("PNG carrier payload is too large to load safely. Use standard .locked files for large payloads.");
+            }
+        }
+
+        private static string GetPngCarrierSizeLimitMessage() =>
+            $"PNG carrier mode supports files up to {FormatFileSize(MaxPngCarrierSourceBytes)}. Use standard .locked output for larger files.";
+
         internal static byte[] ComputeSha256ForFile(string filePath, CancellationToken cancellationToken = default)
         {
-            using FileStream stream = File.OpenRead(filePath);
+            string safePath = RequireExistingFile(filePath);
+            using FileStream stream = File.OpenRead(safePath);
             return ComputeStreamHash(stream, cancellationToken);
         }
 
         private static long CalculateSizeHidingPadding(long originalSize)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(originalSize);
+
             long[] buckets =
             [
                 64 * 1024L,
@@ -182,13 +311,26 @@ namespace FileLocker
             }
 
             const long largeBucket = 256L * 1024L * 1024L;
-            long nextBucket = ((originalSize + largeBucket - 1) / largeBucket) * largeBucket;
+            long remainder = originalSize % largeBucket;
+            if (remainder == 0)
+            {
+                return 0;
+            }
+
+            long padding = largeBucket - remainder;
+            if (long.MaxValue - originalSize < padding)
+            {
+                return 0;
+            }
+
+            long nextBucket = originalSize + padding;
             return Math.Max(0, nextBucket - originalSize);
         }
 
         internal static void WriteRandomPadding(Stream stream, long paddingLength, CancellationToken cancellationToken)
         {
-            if (paddingLength <= 0)
+            ArgumentOutOfRangeException.ThrowIfNegative(paddingLength);
+            if (paddingLength == 0)
             {
                 return;
             }
@@ -214,7 +356,8 @@ namespace FileLocker
 
         internal static void SkipBytes(Stream stream, long byteCount, CancellationToken cancellationToken)
         {
-            if (byteCount <= 0)
+            ArgumentOutOfRangeException.ThrowIfNegative(byteCount);
+            if (byteCount == 0)
             {
                 return;
             }
@@ -242,12 +385,43 @@ namespace FileLocker
             }
         }
 
+        internal static void DrainBufferedPayloadPadding(Stream stream, long byteCount, CancellationToken cancellationToken)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(byteCount);
+            if (byteCount == 0)
+            {
+                return;
+            }
+
+            byte[] buffer = new byte[131072];
+            try
+            {
+                long remaining = byteCount;
+                while (remaining > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    int toRead = (int)Math.Min(buffer.Length, remaining);
+                    int read = stream.Read(buffer, 0, toRead);
+                    if (read == 0)
+                    {
+                        return;
+                    }
+
+                    remaining -= read;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(buffer);
+            }
+        }
+
         private static string ComputeSha256Base64ForFile(string filePath, CancellationToken cancellationToken = default)
         {
             return Convert.ToBase64String(ComputeSha256ForFile(filePath, cancellationToken));
         }
 
-        internal static void CopyStreamWithProgress(
+        internal static long CopyStreamWithProgress(
             Stream input,
             Stream output,
             CancellationToken cancellationToken,
@@ -257,6 +431,7 @@ namespace FileLocker
             double endPercent,
             string status)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(totalLength);
             byte[] buffer = new byte[131072];
             try
             {
@@ -267,7 +442,7 @@ namespace FileLocker
                     int read = input.Read(buffer, 0, buffer.Length);
                     if (read == 0)
                     {
-                        break;
+                        return processed;
                     }
 
                     output.Write(buffer, 0, read);
@@ -293,7 +468,8 @@ namespace FileLocker
             double endPercent,
             string status)
         {
-            using FileStream input = File.OpenRead(filePath);
+            string safePath = RequireExistingFile(filePath);
+            using FileStream input = File.OpenRead(safePath);
             using var memory = new MemoryStream();
             try
             {
@@ -328,9 +504,10 @@ namespace FileLocker
             CopyStreamWithProgress(input, output, cancellationToken, data.LongLength, progress, startPercent, endPercent, status);
         }
 
-        private static bool IsPayloadV3File(string filePath)
+        internal static bool IsPayloadV3File(string filePath)
         {
-            using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            string safePath = RequireExistingFile(filePath);
+            using FileStream stream = new(safePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             return PayloadChunkedService.LooksLikePayloadV3(stream);
         }
 
@@ -345,7 +522,7 @@ namespace FileLocker
                 string outputDirectory = customOutputDirectory.Trim();
                 if (sourceRootIsFolder && !string.IsNullOrWhiteSpace(sourceRootPath))
                 {
-                    string normalizedRootPath = Path.GetFullPath(sourceRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    string normalizedRootPath = Path.GetFullPath(sourceRootPath.Trim());
                     string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? normalizedRootPath;
                     string relativeDirectory = Path.GetRelativePath(normalizedRootPath, sourceDirectory);
                     string safeRelativeDirectory = SanitizeRelativeDirectory(relativeDirectory);
@@ -368,8 +545,53 @@ namespace FileLocker
             string parentDirectory = ResolveEncryptOutputDirectory(folderRootPath, customOutputDirectory);
             string baseName = scrambleNames
                 ? GenerateRandomString(18)
-                : $"{Path.GetFileName(folderRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))}_package";
+                : $"{GetFolderDisplayName(folderRootPath)}_package";
             return Path.Combine(parentDirectory, baseName + ENCRYPTED_EXTENSION);
+        }
+
+        internal static string GetFolderDisplayName(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath))
+            {
+                return "Folder";
+            }
+
+            string trimmed = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string name = Path.GetFileName(trimmed);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+
+            string? root = Path.GetPathRoot(folderPath);
+            string rootName = root?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) ?? string.Empty;
+            return GetRootFolderDisplayName(rootName);
+        }
+
+        private static string GetRootFolderDisplayName(string rootName)
+        {
+            if (string.IsNullOrWhiteSpace(rootName))
+            {
+                return "Folder";
+            }
+
+            string candidate = rootName.Trim(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Trim();
+            if (candidate.Length == 2 && candidate[1] == ':' && char.IsLetter(candidate[0]))
+            {
+                return $"{char.ToUpperInvariant(candidate[0])}-drive";
+            }
+
+            foreach (char invalid in Path.GetInvalidFileNameChars())
+            {
+                candidate = candidate.Replace(invalid, '-');
+            }
+
+            candidate = candidate
+                .Replace(Path.DirectorySeparatorChar, '-')
+                .Replace(Path.AltDirectorySeparatorChar, '-')
+                .Trim('-', ' ');
+
+            return string.IsNullOrWhiteSpace(candidate) ? "Folder" : candidate;
         }
 
         private static string GetRelativePathSafe(string rootFolderPath, string filePath)
@@ -382,24 +604,29 @@ namespace FileLocker
         {
             if (string.IsNullOrWhiteSpace(relativePath) ||
                 Path.IsPathFullyQualified(relativePath) ||
-                Path.IsPathRooted(relativePath))
+                Path.IsPathRooted(relativePath) ||
+                Path.EndsInDirectorySeparator(relativePath.Trim()))
             {
                 return false;
             }
 
             return relativePath
-                .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries)
                 .All(segment => segment is not "." and not ".." && IsSafeRestoredFileName(segment));
         }
 
         internal static string ResolveFolderPackageEntryPath(string rootPath, string relativePath)
         {
+            if (!TryNormalizeBoundaryDirectoryPath(rootPath, out string fullRoot))
+            {
+                throw new UnauthorizedAccessException("Folder package restore root is invalid.");
+            }
+
             if (!IsSafeFolderPackageRelativePath(relativePath))
             {
                 throw new UnauthorizedAccessException("Folder package contains an unsafe restore path.");
             }
 
-            string fullRoot = Path.GetFullPath(rootPath.Trim());
             string fullPath = Path.GetFullPath(Path.Combine(fullRoot, relativePath));
             if (!IsSameDirectoryOrChild(fullPath, fullRoot))
             {
@@ -459,6 +686,7 @@ namespace FileLocker
             bool sourceRootIsFolder = false,
             Action<double, string>? progress = null)
         {
+            filePath = RequireExistingFile(filePath);
             ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
 
             if (CanUseChunkedPayload(filePath, options))
@@ -486,6 +714,11 @@ namespace FileLocker
             try
             {
                 progress?.Invoke(5, "Reading source");
+                if (options.UseSteganography)
+                {
+                    ValidatePngCarrierSourceSize(new FileInfo(filePath).Length);
+                }
+
                 salt = GenerateRandomBytes(SALT_SIZE);
                 iv = GenerateRandomBytes(IV_SIZE);
                 key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
@@ -535,11 +768,11 @@ namespace FileLocker
                 metadataBytes = SerializeMetadata(metadata);
                 combined = new byte[4 + metadataBytes.Length + 4 + padding.Length + dataToEncrypt.Length];
                 int offset = 0;
-                Buffer.BlockCopy(BitConverter.GetBytes(metadataBytes.Length), 0, combined, offset, 4);
+                BinaryPrimitives.WriteInt32LittleEndian(combined.AsSpan(offset, sizeof(int)), metadataBytes.Length);
                 offset += 4;
                 Buffer.BlockCopy(metadataBytes, 0, combined, offset, metadataBytes.Length);
                 offset += metadataBytes.Length;
-                Buffer.BlockCopy(BitConverter.GetBytes(padding.Length), 0, combined, offset, 4);
+                BinaryPrimitives.WriteInt32LittleEndian(combined.AsSpan(offset, sizeof(int)), padding.Length);
                 offset += 4;
                 Buffer.BlockCopy(padding, 0, combined, offset, padding.Length);
                 offset += padding.Length;
@@ -577,7 +810,7 @@ namespace FileLocker
                     VerifyWrittenFile(tempPath, outputBytes);
                 }
 
-                File.Move(tempPath, encryptedPath, overwrite: false);
+                PromoteTemporaryOutput(tempPath, encryptedPath);
                 ApplyOutputTimestampPolicy(encryptedPath, filePath, options.OutputTimestampPolicy);
                 long outputSizeBytes = new FileInfo(encryptedPath).Length;
 
@@ -608,7 +841,9 @@ namespace FileLocker
                     CompressionReason = compressionReason,
                     EstimatedCompressedSizeBytes = compressedSizeBytes,
                     CompressedSizeBytes = compressionApplied ? compressedSizeBytes : null,
-                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                    Algorithm = options.Algorithm,
+                    KeySizeBits = options.KeySizeBits
                 };
             }
             catch (OperationCanceledException)
@@ -652,6 +887,7 @@ namespace FileLocker
             Action<double, string>? progress = null,
             string? relativeOutputDirectory = null)
         {
+            filePath = RequireExistingFile(filePath);
             ValidateSecureDeleteSourceFile(filePath, options.RemoveOriginalsAfterSuccess, options.SecureDeleteOriginals);
 
             var elapsed = Stopwatch.StartNew();
@@ -690,7 +926,7 @@ namespace FileLocker
                     VerifyWrittenFile(tempPath, fileData);
                 }
 
-                File.Move(tempPath, finalPath, overwrite: false);
+                PromoteTemporaryOutput(tempPath, finalPath);
                 RestoreFileMetadata(finalPath, metadata);
                 long outputSizeBytes = new FileInfo(finalPath).Length;
 
@@ -720,7 +956,9 @@ namespace FileLocker
                     CompressionReason = metadata.IsCompressed
                         ? "Source payload was compressed before encryption."
                         : "Source payload was not compressed.",
-                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                    Algorithm = metadata.Algorithm,
+                    KeySizeBits = metadata.KeySizeBits
                 };
             }
             catch (OperationCanceledException)
@@ -741,6 +979,7 @@ namespace FileLocker
 
         private FileOperationResult VerifyLockedFile(string filePath, string password, ProcessingRunOptions options, Action<double, string>? progress = null)
         {
+            filePath = RequireExistingFile(filePath);
             if (IsPayloadV3File(filePath))
             {
                 return VerifyLockedFileV3(filePath, password, options, progress);
@@ -752,6 +991,7 @@ namespace FileLocker
             {
                 (FileMetadata metadata, byte[] unlockedFileData) = UnlockFilePayload(filePath, password, options, progress);
                 fileData = unlockedFileData;
+                string displayFileName = ResolveDecryptedFileName(filePath, metadata.OriginalFileName, restoreOriginalFilename: true);
                 progress?.Invoke(100, "Verified");
                 return new FileOperationResult
                 {
@@ -761,7 +1001,9 @@ namespace FileLocker
                     Status = "Completed",
                     OriginalRetained = true,
                     OutputVerified = true,
-                    Message = $"Verified {metadata.OriginalFileName} ({FormatFileSize(fileData.LongLength)}) without writing output."
+                    Message = $"Verified {displayFileName} ({FormatFileSize(fileData.LongLength)}) without writing output.",
+                    Algorithm = metadata.Algorithm,
+                    KeySizeBits = metadata.KeySizeBits
                 };
             }
             finally
@@ -788,9 +1030,13 @@ namespace FileLocker
             string? backupPath = null;
             string encryptedPath = string.Empty;
             string tempPath = string.Empty;
+            byte[]? metadataBytes = null;
 
             try
             {
+                string normalizedAlgorithm = EncryptionAlgorithmCatalog.NormalizeForNewPayload(options.Algorithm);
+                string metadataAlgorithm = EncryptionAlgorithmCatalog.GetFileFormatName(normalizedAlgorithm);
+                int normalizedKeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(normalizedAlgorithm);
                 var fileInfo = new FileInfo(filePath);
                 byte[] contentHash = ComputeSha256ForFile(filePath, _processingCancellation?.Token ?? CancellationToken.None);
                 CompressionPlan compressionPlan = CompressionAdvisor.CreatePlan(filePath, fileInfo.Length, options.CompressFiles);
@@ -806,9 +1052,9 @@ namespace FileLocker
                     IsCompressed = compressionPlan.ShouldCompress,
                     IsSteganographyContainer = false,
                     ContentHashBase64 = Convert.ToBase64String(contentHash),
-                    Algorithm = options.Algorithm,
+                    Algorithm = metadataAlgorithm,
                     Mode = options.Mode,
-                    KeySizeBits = options.KeySizeBits,
+                    KeySizeBits = normalizedKeySizeBits,
                     CustomNote = options.Metadata.Notes,
                     MetadataLabel = string.IsNullOrWhiteSpace(options.Metadata.Label)
                         ? Path.GetFileName(filePath) ?? string.Empty
@@ -828,7 +1074,7 @@ namespace FileLocker
                     metadata.LastWriteTimeUtc = ParseDateOrDefault(options.Metadata.ModifiedText, File.GetLastWriteTimeUtc(filePath)).ToUniversalTime();
                 }
 
-                byte[] metadataBytes = JsonSerializer.SerializeToUtf8Bytes(metadata, JsonOptions);
+                metadataBytes = JsonSerializer.SerializeToUtf8Bytes(metadata, JsonOptions);
                 encryptedPath = ResolveAvailablePath(BuildOutputPath(
                     filePath,
                     options.ScrambleNames,
@@ -876,7 +1122,8 @@ namespace FileLocker
                             options.KeyfileBytes,
                             options.RecoveryKey,
                             131072,
-                            0b0000_0001),
+                            0b0000_0001,
+                            EncryptionAlgorithmCatalog.GetNewPayloadAlgorithmId(normalizedAlgorithm)),
                         _processingCancellation?.Token ?? CancellationToken.None);
                 }
 
@@ -886,7 +1133,7 @@ namespace FileLocker
                     VerifyLockedFileV3(tempPath, password, options, progress);
                 }
 
-                File.Move(tempPath, encryptedPath, overwrite: false);
+                PromoteTemporaryOutput(tempPath, encryptedPath);
                 ApplyOutputTimestampPolicy(encryptedPath, filePath, options.OutputTimestampPolicy);
                 long outputSizeBytes = new FileInfo(encryptedPath).Length;
 
@@ -917,7 +1164,9 @@ namespace FileLocker
                     CompressionReason = compressionPlan.Reason,
                     EstimatedCompressedSizeBytes = compressionPlan.EstimatedCompressedSize,
                     CompressedSizeBytes = compressedSizeBytes,
-                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                    Algorithm = normalizedAlgorithm,
+                    KeySizeBits = normalizedKeySizeBits
                 };
             }
             catch (OperationCanceledException)
@@ -930,6 +1179,10 @@ namespace FileLocker
                 CleanupTemporaryFile(tempPath);
                 throw new InvalidOperationException($"Encryption failed: {GetFriendlyExceptionMessage(ex, "Unknown error while encrypting.")}", ex);
             }
+            finally
+            {
+                ClearSensitiveBuffer(metadataBytes);
+            }
         }
 
         private FileOperationResult DecryptFileAdvancedV3(
@@ -939,6 +1192,8 @@ namespace FileLocker
             Action<double, string>? progress = null,
             string? relativeOutputDirectory = null)
         {
+            filePath = RequireExistingFile(filePath);
+
             var elapsed = Stopwatch.StartNew();
             string? backupPath = null;
             string finalPath = string.Empty;
@@ -956,12 +1211,19 @@ namespace FileLocker
                     _processingCancellation?.Token ?? CancellationToken.None))
                 {
                     progress?.Invoke(10, "Reading payload");
+                    string payloadAlgorithm = EncryptionAlgorithmCatalog.GetDisplayName(payload.Header.AlgorithmId);
 
-                    string metadataJson = Encoding.UTF8.GetString(payload.MetadataBytes);
-                    if (metadataJson.Contains($"\"Kind\":\"{PayloadKinds.FolderPackage}\"", StringComparison.Ordinal))
+                    if (IsFolderPackagePayloadMetadata(payload.MetadataBytes))
                     {
                         FolderPackageMetadata packageMetadata = JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions)
                             ?? throw new InvalidDataException("Folder package metadata is invalid.");
+                        ValidateFolderPackageMetadata(packageMetadata);
+                        ValidatePayloadMetadataAlgorithm(
+                            packageMetadata.Algorithm,
+                            packageMetadata.KeySizeBits,
+                            payload.Header.AlgorithmId,
+                            payload.Header.Version,
+                            "Folder package metadata");
                         result = DecryptFolderPackagePayloadV3(
                             filePath,
                             payload,
@@ -975,6 +1237,12 @@ namespace FileLocker
                         FilePayloadMetadata metadata = JsonSerializer.Deserialize<FilePayloadMetadata>(payload.MetadataBytes, JsonOptions)
                             ?? throw new InvalidDataException("File payload metadata is invalid.");
                         ValidateFilePayloadMetadata(metadata);
+                        ValidatePayloadMetadataAlgorithm(
+                            metadata.Algorithm,
+                            metadata.KeySizeBits,
+                            payload.Header.AlgorithmId,
+                            payload.Header.Version,
+                            "File payload metadata");
 
                         string directory = ResolveDecryptOutputDirectory(filePath, options, relativeOutputDirectory);
                         string outputFileName = ResolveDecryptedFileName(filePath, metadata.OriginalFileName, options.RestoreOriginalFilenames);
@@ -990,8 +1258,18 @@ namespace FileLocker
                         {
                             if (metadata.IsCompressed)
                             {
-                                using var gzip = new GZipStream(payload.PlaintextStream, CompressionMode.Decompress, leaveOpen: true);
-                                CopyStreamWithProgress(gzip, output, _processingCancellation?.Token ?? CancellationToken.None, metadata.OriginalSize, progress, 15, 90, "Decrypting");
+                                long restoredBytes;
+                                using (var gzip = new GZipStream(payload.PlaintextStream, CompressionMode.Decompress, leaveOpen: true))
+                                {
+                                    restoredBytes = CopyStreamWithProgress(gzip, output, _processingCancellation?.Token ?? CancellationToken.None, metadata.OriginalSize, progress, 15, 90, "Decrypting");
+                                }
+
+                                if (restoredBytes != metadata.OriginalSize)
+                                {
+                                    throw new InvalidDataException("File payload decompressed length does not match metadata.");
+                                }
+
+                                DrainBufferedPayloadPadding(payload.PlaintextStream, metadata.ContentPaddingLength, _processingCancellation?.Token ?? CancellationToken.None);
                             }
                             else
                             {
@@ -1010,10 +1288,8 @@ namespace FileLocker
                             }
                         }
 
-                        File.Move(tempPath, finalPath, overwrite: false);
-                        long outputSizeBytes = new FileInfo(finalPath).Length;
                         RestoreFileMetadata(
-                            finalPath,
+                            tempPath,
                             new FileMetadata
                             {
                                 OriginalFileName = metadata.OriginalFileName,
@@ -1023,6 +1299,8 @@ namespace FileLocker
                                 LastAccessTime = metadata.LastAccessTimeUtc,
                                 OriginalAttributes = (System.IO.FileAttributes)metadata.OriginalAttributes
                             });
+                        PromoteTemporaryOutput(tempPath, finalPath);
+                        long outputSizeBytes = new FileInfo(finalPath).Length;
 
                         result = new FileOperationResult
                         {
@@ -1032,14 +1310,18 @@ namespace FileLocker
                             Status = "Completed",
                             OriginalRetained = true,
                             OutputVerified = options.VerifyAfterWrite,
-                            Message = "Decrypted v3 payload and retained source payload.",
+                            Message = $"Decrypted {payloadAlgorithm} v{payload.Header.Version} payload. Source payload retained.",
                             OriginalSizeBytes = encryptedInputSize,
                             OutputSizeBytes = outputSizeBytes,
                             CompressionApplied = metadata.IsCompressed,
                             CompressionReason = metadata.IsCompressed
                                 ? "Source payload was compressed before encryption."
                                 : "Source payload was not compressed.",
-                            ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                            ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                            Algorithm = payloadAlgorithm,
+                            KeySizeBits = metadata.KeySizeBits > 0
+                                ? metadata.KeySizeBits
+                                : EncryptionAlgorithmCatalog.GetKeySizeBits(payloadAlgorithm)
                         };
                     }
                 }
@@ -1048,9 +1330,7 @@ namespace FileLocker
                 {
                     DeleteSourceFile(filePath, options.SecureDeleteOriginals);
                     result.OriginalRetained = false;
-                    result.Message = result.OutputPath is not null && Directory.Exists(result.OutputPath)
-                        ? $"{result.Message} Source payload removed."
-                        : "Decrypted v3 payload and removed source payload.";
+                    result.Message = MarkSourcePayloadRemoved(result.Message);
                 }
 
                 progress?.Invoke(100, "Completed");
@@ -1070,18 +1350,27 @@ namespace FileLocker
 
         private FileOperationResult VerifyLockedFileV3(string filePath, string password, ProcessingRunOptions options, Action<double, string>? progress = null)
         {
+            filePath = RequireExistingFile(filePath);
             using FileStream input = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using OpenPayloadResult payload = PayloadChunkedService.OpenPayload(
                 input,
                 new PayloadUnlockInputs(password, options.KeyfileBytes, options.RecoveryKey),
                 _processingCancellation?.Token ?? CancellationToken.None);
             progress?.Invoke(10, "Inspecting");
+            string payloadAlgorithm = EncryptionAlgorithmCatalog.GetDisplayName(payload.Header.AlgorithmId);
 
-            string metadataJson = Encoding.UTF8.GetString(payload.MetadataBytes);
-            if (metadataJson.Contains($"\"Kind\":\"{PayloadKinds.FolderPackage}\"", StringComparison.Ordinal))
+            if (IsFolderPackagePayloadMetadata(payload.MetadataBytes))
             {
                 FolderPackageMetadata packageMetadata = JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions)
                     ?? throw new InvalidDataException("Folder package metadata is invalid.");
+                ValidateFolderPackageMetadata(packageMetadata);
+                ValidatePayloadMetadataAlgorithm(
+                    packageMetadata.Algorithm,
+                    packageMetadata.KeySizeBits,
+                    payload.Header.AlgorithmId,
+                    payload.Header.Version,
+                    "Folder package metadata");
+                string displayRootName = ResolveFolderPackageRootName(filePath, packageMetadata.RootFolderName, restoreOriginalFilename: true);
                 VerifyFolderPackagePayloadV3(payload, packageMetadata, _processingCancellation?.Token ?? CancellationToken.None, progress);
                 progress?.Invoke(100, "Verified");
                 return new FileOperationResult
@@ -1090,19 +1379,33 @@ namespace FileLocker
                     Status = "Completed",
                     OriginalRetained = true,
                     OutputVerified = true,
-                    Message = $"Verified folder package {packageMetadata.RootFolderName} with {packageMetadata.Entries.Count} entries."
+                    Message = $"Verified {payloadAlgorithm} folder package {displayRootName} with {packageMetadata.Entries.Count} entries.",
+                    Algorithm = payloadAlgorithm,
+                    KeySizeBits = packageMetadata.KeySizeBits > 0
+                        ? packageMetadata.KeySizeBits
+                        : EncryptionAlgorithmCatalog.GetKeySizeBits(payloadAlgorithm)
                 };
             }
 
             FilePayloadMetadata metadata = JsonSerializer.Deserialize<FilePayloadMetadata>(payload.MetadataBytes, JsonOptions)
                 ?? throw new InvalidDataException("File payload metadata is invalid.");
             ValidateFilePayloadMetadata(metadata);
+            ValidatePayloadMetadataAlgorithm(
+                metadata.Algorithm,
+                metadata.KeySizeBits,
+                payload.Header.AlgorithmId,
+                payload.Header.Version,
+                "File payload metadata");
 
             byte[] verifiedHash;
             if (metadata.IsCompressed)
             {
-                using var gzip = new GZipStream(payload.PlaintextStream, CompressionMode.Decompress, leaveOpen: true);
-                verifiedHash = ComputeStreamHash(gzip, _processingCancellation?.Token ?? CancellationToken.None, progress, 15, 95, "Verifying");
+                using (var gzip = new GZipStream(payload.PlaintextStream, CompressionMode.Decompress, leaveOpen: true))
+                {
+                    verifiedHash = ComputeStreamHash(gzip, _processingCancellation?.Token ?? CancellationToken.None, progress, 15, 95, "Verifying");
+                }
+
+                DrainBufferedPayloadPadding(payload.PlaintextStream, metadata.ContentPaddingLength, _processingCancellation?.Token ?? CancellationToken.None);
             }
             else
             {
@@ -1119,18 +1422,131 @@ namespace FileLocker
             }
 
             progress?.Invoke(100, "Verified");
+            string displayFileName = ResolveDecryptedFileName(filePath, metadata.OriginalFileName, restoreOriginalFilename: true);
             return new FileOperationResult
             {
                 SourcePath = filePath,
                 Status = "Completed",
                 OriginalRetained = true,
                 OutputVerified = true,
-                Message = $"Verified {metadata.OriginalFileName} ({FormatFileSize(metadata.OriginalSize)}) without writing output."
+                Message = $"Verified {payloadAlgorithm} payload for {displayFileName} ({FormatFileSize(metadata.OriginalSize)}) without writing output.",
+                Algorithm = payloadAlgorithm,
+                KeySizeBits = metadata.KeySizeBits > 0
+                    ? metadata.KeySizeBits
+                    : EncryptionAlgorithmCatalog.GetKeySizeBits(payloadAlgorithm)
             };
+        }
+
+        private static string MarkSourcePayloadRemoved(string? message)
+        {
+            const string retained = "Source payload retained.";
+            const string removed = "Source payload removed.";
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return removed;
+            }
+
+            return message.Contains(retained, StringComparison.Ordinal)
+                ? message.Replace(retained, removed, StringComparison.Ordinal)
+                : $"{message} {removed}";
+        }
+
+        internal static string ReadPayloadMetadataKind(byte[] metadataBytes)
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(metadataBytes);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw new InvalidDataException("Payload metadata is invalid.");
+                }
+
+                EnsureNoDuplicateJsonPropertiesIgnoreCase(document.RootElement);
+
+                if (!TryGetJsonPropertyIgnoreCase(document.RootElement, nameof(FilePayloadMetadata.Kind), out JsonElement kindElement) ||
+                    kindElement.ValueKind == JsonValueKind.Null)
+                {
+                    return PayloadKinds.File;
+                }
+
+                if (kindElement.ValueKind != JsonValueKind.String)
+                {
+                    throw new InvalidDataException("Payload metadata kind is invalid.");
+                }
+
+                string? kind = kindElement.GetString();
+                if (string.IsNullOrWhiteSpace(kind))
+                {
+                    return PayloadKinds.File;
+                }
+
+                string normalizedKind = kind.Trim();
+                if (string.Equals(normalizedKind, PayloadKinds.File, StringComparison.Ordinal) ||
+                    string.Equals(normalizedKind, PayloadKinds.FolderPackage, StringComparison.Ordinal))
+                {
+                    return normalizedKind;
+                }
+
+                throw new InvalidDataException("Unsupported payload metadata kind.");
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidDataException("Payload metadata is invalid.", ex);
+            }
+        }
+
+        private static void EnsureNoDuplicateJsonPropertiesIgnoreCase(JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (!propertyNames.Add(property.Name))
+                    {
+                        throw new InvalidDataException($"Payload metadata contains duplicate {property.Name} fields.");
+                    }
+
+                    EnsureNoDuplicateJsonPropertiesIgnoreCase(property.Value);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    EnsureNoDuplicateJsonPropertiesIgnoreCase(item);
+                }
+            }
+        }
+
+        private static bool IsFolderPackagePayloadMetadata(byte[] metadataBytes) =>
+            string.Equals(ReadPayloadMetadataKind(metadataBytes), PayloadKinds.FolderPackage, StringComparison.Ordinal);
+
+        private static bool TryGetJsonPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+        {
+            bool found = false;
+            value = default;
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (found)
+                    {
+                        throw new InvalidDataException("Payload metadata contains duplicate kind fields.");
+                    }
+
+                    value = property.Value;
+                    found = true;
+                }
+            }
+
+            return found;
         }
 
         internal static void ValidateFilePayloadMetadata(FilePayloadMetadata metadata)
         {
+            ArgumentNullException.ThrowIfNull(metadata);
+
             if (metadata.OriginalSize < 0)
             {
                 throw new InvalidDataException("File payload metadata contains an invalid original size.");
@@ -1139,6 +1555,195 @@ namespace FileLocker
             if (metadata.ContentPaddingLength < 0)
             {
                 throw new InvalidDataException("File payload metadata contains an invalid padding length.");
+            }
+
+            ValidateRequiredPayloadTimestamp(metadata.CreationTimeUtc, "File payload metadata", "creation");
+            ValidateRequiredPayloadTimestamp(metadata.LastWriteTimeUtc, "File payload metadata", "last write");
+            ValidateOptionalPayloadTimestamp(metadata.LastAccessTimeUtc, "File payload metadata", "last access");
+
+            if (!string.IsNullOrWhiteSpace(metadata.ContentHashBase64))
+            {
+                byte[] hash;
+                try
+                {
+                    hash = Convert.FromBase64String(metadata.ContentHashBase64);
+                }
+                catch (FormatException ex)
+                {
+                    throw new InvalidDataException("File payload metadata contains an invalid content hash.", ex);
+                }
+
+                if (hash.Length != SHA256.HashSizeInBytes)
+                {
+                    throw new InvalidDataException("File payload metadata contains an invalid content hash length.");
+                }
+            }
+        }
+
+        internal static void ValidateFolderPackageMetadata(FolderPackageMetadata metadata)
+        {
+            ArgumentNullException.ThrowIfNull(metadata);
+
+            if (metadata.PackagePaddingLength < 0)
+            {
+                throw new InvalidDataException("Folder package metadata contains an invalid padding length.");
+            }
+
+            if (metadata.Entries is null)
+            {
+                throw new InvalidDataException("Folder package metadata is missing the entry list.");
+            }
+
+            var restorePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long totalEntrySize = 0;
+
+            foreach (FolderPackageEntryMetadata entry in metadata.Entries)
+            {
+                if (entry is null)
+                {
+                    throw new InvalidDataException("Folder package metadata contains an invalid entry.");
+                }
+
+                if (!IsSafeFolderPackageRelativePath(entry.RelativePath))
+                {
+                    throw new InvalidDataException("Folder package metadata contains an unsafe restore path.");
+                }
+
+                string normalizedRelativePath = NormalizeFolderPackageRelativePathForComparison(entry.RelativePath);
+                if (!restorePaths.Add(normalizedRelativePath))
+                {
+                    throw new InvalidDataException("Folder package metadata contains duplicate restore paths.");
+                }
+
+                if (entry.OriginalSize < 0)
+                {
+                    throw new InvalidDataException("Folder package metadata contains an invalid entry size.");
+                }
+
+                try
+                {
+                    checked
+                    {
+                        totalEntrySize += entry.OriginalSize;
+                    }
+                }
+                catch (OverflowException ex)
+                {
+                    throw new InvalidDataException("Folder package metadata contains an invalid total entry size.", ex);
+                }
+
+                ValidateRequiredPayloadTimestamp(entry.CreationTimeUtc, "Folder package metadata", "entry creation");
+                ValidateRequiredPayloadTimestamp(entry.LastWriteTimeUtc, "Folder package metadata", "entry last write");
+                ValidateOptionalPayloadTimestamp(entry.LastAccessTimeUtc, "Folder package metadata", "entry last access");
+
+                if (string.IsNullOrWhiteSpace(entry.ContentHashBase64))
+                {
+                    throw new InvalidDataException("Folder package metadata is missing an entry hash.");
+                }
+
+                byte[] hash;
+                try
+                {
+                    hash = Convert.FromBase64String(entry.ContentHashBase64);
+                }
+                catch (FormatException ex)
+                {
+                    throw new InvalidDataException("Folder package metadata contains an invalid entry hash.", ex);
+                }
+
+                if (hash.Length != SHA256.HashSizeInBytes)
+                {
+                    throw new InvalidDataException("Folder package metadata contains an invalid entry hash length.");
+                }
+            }
+        }
+
+        internal static void ValidatePayloadMetadataAlgorithm(
+            string? metadataAlgorithm,
+            int keySizeBits,
+            byte headerAlgorithmId,
+            byte headerVersion,
+            string metadataDescription)
+        {
+            if (!EncryptionAlgorithmCatalog.IsSupportedPayloadAlgorithm(headerAlgorithmId))
+            {
+                throw new InvalidDataException($"{metadataDescription} references an unsupported payload header algorithm.");
+            }
+
+            int expectedKeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(headerAlgorithmId);
+            bool allowsLegacyAesMetadataDefaults =
+                headerVersion == PayloadChunkedService.LegacyVersion &&
+                headerAlgorithmId == EncryptionAlgorithmCatalog.PayloadAlgorithmAes256Gcm;
+
+            if (string.IsNullOrWhiteSpace(metadataAlgorithm))
+            {
+                if (!allowsLegacyAesMetadataDefaults)
+                {
+                    throw new InvalidDataException($"{metadataDescription} is missing the algorithm name required for this payload header.");
+                }
+            }
+            else
+            {
+                if (!EncryptionAlgorithmCatalog.TryNormalize(metadataAlgorithm, out string normalizedAlgorithm))
+                {
+                    throw new InvalidDataException($"{metadataDescription} contains an unsupported algorithm name.");
+                }
+
+                byte metadataAlgorithmId = EncryptionAlgorithmCatalog.GetPayloadAlgorithmId(normalizedAlgorithm);
+                if (metadataAlgorithmId != headerAlgorithmId)
+                {
+                    throw new InvalidDataException($"{metadataDescription} algorithm does not match the payload header.");
+                }
+            }
+
+            if (keySizeBits != 0 && keySizeBits != expectedKeySizeBits)
+            {
+                throw new InvalidDataException($"{metadataDescription} contains an invalid key size.");
+            }
+
+            if (keySizeBits == 0 && !allowsLegacyAesMetadataDefaults)
+            {
+                throw new InvalidDataException($"{metadataDescription} is missing the key size required for this payload header.");
+            }
+        }
+
+        private static string NormalizeFolderPackageRelativePathForComparison(string relativePath)
+        {
+            string[] segments = relativePath.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+            return string.Join(Path.DirectorySeparatorChar, segments);
+        }
+
+        private static void ValidateRequiredPayloadTimestamp(DateTime timestamp, string metadataDescription, string timestampDescription)
+        {
+            if (timestamp == default)
+            {
+                throw new InvalidDataException($"{metadataDescription} contains an invalid {timestampDescription} timestamp.");
+            }
+
+            ValidatePayloadTimestamp(timestamp, metadataDescription, timestampDescription);
+        }
+
+        private static void ValidateOptionalPayloadTimestamp(DateTime timestamp, string metadataDescription, string timestampDescription)
+        {
+            if (timestamp == default)
+            {
+                return;
+            }
+
+            ValidatePayloadTimestamp(timestamp, metadataDescription, timestampDescription);
+        }
+
+        private static void ValidatePayloadTimestamp(DateTime timestamp, string metadataDescription, string timestampDescription)
+        {
+            try
+            {
+                _ = timestamp.ToFileTimeUtc();
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                throw new InvalidDataException($"{metadataDescription} contains an invalid {timestampDescription} timestamp.", ex);
             }
         }
 
@@ -1159,6 +1764,7 @@ namespace FileLocker
             string? backupPath = null;
             string outputPath = string.Empty;
             string tempPath = string.Empty;
+            byte[]? metadataBytes = null;
             ValidateFolderPackageSourceRoot(rootFolderPath);
 
             if (options.RemoveOriginalsAfterSuccess &&
@@ -1170,17 +1776,20 @@ namespace FileLocker
 
             try
             {
+                string normalizedAlgorithm = EncryptionAlgorithmCatalog.NormalizeForNewPayload(options.Algorithm);
+                string metadataAlgorithm = EncryptionAlgorithmCatalog.GetFileFormatName(normalizedAlgorithm);
+                int normalizedKeySizeBits = EncryptionAlgorithmCatalog.GetKeySizeBits(normalizedAlgorithm);
                 long packageOriginalSizeBytes = workItem.QueueItems.Sum(item => item.SizeBytes);
                 var manifest = new FolderPackageMetadata
                 {
                     RootFolderPath = rootFolderPath,
-                    RootFolderName = Path.GetFileName(rootFolderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                    RootFolderName = GetFolderDisplayName(rootFolderPath),
                     PackageLabel = string.IsNullOrWhiteSpace(options.Metadata.Label)
-                        ? Path.GetFileName(rootFolderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                        ? GetFolderDisplayName(rootFolderPath)
                         : options.Metadata.Label,
                     PackageNote = options.Metadata.Notes,
-                    Algorithm = options.Algorithm,
-                    KeySizeBits = options.KeySizeBits,
+                    Algorithm = metadataAlgorithm,
+                    KeySizeBits = normalizedKeySizeBits,
                     PackagePaddingLength = CalculateSizeHidingPadding(packageOriginalSizeBytes)
                 };
 
@@ -1198,7 +1807,7 @@ namespace FileLocker
                     });
                 }
 
-                byte[] metadataBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
+                metadataBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
                 outputPath = ResolveAvailablePath(BuildFolderPackageOutputPath(rootFolderPath, options.ScrambleNames, options.UseCustomEncryptOutputDirectory ? options.EncryptOutputDirectory : null));
                 tempPath = ResolveTemporaryOutputPath(outputPath);
 
@@ -1246,7 +1855,8 @@ namespace FileLocker
                             options.KeyfileBytes,
                             options.RecoveryKey,
                             131072,
-                            0b0000_0011),
+                            0b0000_0011,
+                            EncryptionAlgorithmCatalog.GetNewPayloadAlgorithmId(normalizedAlgorithm)),
                         _processingCancellation?.Token ?? CancellationToken.None);
                 }
 
@@ -1256,7 +1866,7 @@ namespace FileLocker
                     VerifyLockedFileV3(tempPath, password, options, progress);
                 }
 
-                File.Move(tempPath, outputPath, overwrite: false);
+                PromoteTemporaryOutput(tempPath, outputPath);
                 ApplyOutputTimestampPolicy(outputPath, rootFolderPath, options.OutputTimestampPolicy);
                 long outputSizeBytes = new FileInfo(outputPath).Length;
 
@@ -1285,7 +1895,9 @@ namespace FileLocker
                     CompressionRequested = options.CompressFiles,
                     CompressionApplied = false,
                     CompressionReason = "Folder packages are streamed without per-file compression.",
-                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                    Algorithm = normalizedAlgorithm,
+                    KeySizeBits = normalizedKeySizeBits
                 };
             }
             catch (OperationCanceledException)
@@ -1297,6 +1909,10 @@ namespace FileLocker
             {
                 CleanupTemporaryFile(tempPath);
                 throw new InvalidOperationException($"Folder package encryption failed: {GetFriendlyExceptionMessage(ex, "Unknown error while encrypting the folder package.")}", ex);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(metadataBytes);
             }
         }
 
@@ -1337,20 +1953,24 @@ namespace FileLocker
                     long entryLength = ReadInt64(payload.PlaintextStream);
                     ValidateFolderPackageEntryLength(entry, entryLength);
                     string finalTargetPath = ResolveAvailablePath(targetPath);
-                    using FileStream output = CreateNewOutputFileStream(finalTargetPath);
-                    CopyFixedLengthStream(
-                        payload.PlaintextStream,
-                        output,
-                        entryLength,
-                        _processingCancellation?.Token ?? CancellationToken.None,
-                        (percent, status) =>
-                        {
-                            double adjustedPercent = CalculateFolderPackageProgress(processedBytes, entry.OriginalSize, percent, totalBytes, 10, 90);
-                            progress?.Invoke(adjustedPercent, "Decrypting package");
-                        },
-                        0,
-                        100,
-                        "Decrypting package");
+                    using (FileStream output = CreateNewOutputFileStream(finalTargetPath))
+                    {
+                        CopyFixedLengthStream(
+                            payload.PlaintextStream,
+                            output,
+                            entryLength,
+                            _processingCancellation?.Token ?? CancellationToken.None,
+                            (percent, status) =>
+                            {
+                                double adjustedPercent = CalculateFolderPackageProgress(processedBytes, entry.OriginalSize, percent, totalBytes, 10, 90);
+                                progress?.Invoke(adjustedPercent, "Decrypting package");
+                            },
+                            0,
+                            100,
+                            "Decrypting package");
+                    }
+
+                    ValidateFolderPackageEntryFileHash(finalTargetPath, entry, _processingCancellation?.Token ?? CancellationToken.None);
                     processedBytes += entry.OriginalSize;
                     RestoreFileMetadata(
                         finalTargetPath,
@@ -1364,6 +1984,8 @@ namespace FileLocker
                             OriginalAttributes = (System.IO.FileAttributes)entry.OriginalAttributes
                         });
                 }
+
+                SkipBytes(payload.PlaintextStream, packageMetadata.PackagePaddingLength, _processingCancellation?.Token ?? CancellationToken.None);
 
                 restoreEntriesCompleted = true;
                 bool retained = true;
@@ -1382,12 +2004,16 @@ namespace FileLocker
                     Status = "Completed",
                     OriginalRetained = retained,
                     OutputVerified = true,
-                    Message = $"Restored folder package to {restoreRoot} with {packageMetadata.Entries.Count} files.",
+                    Message = $"Restored {EncryptionAlgorithmCatalog.GetDisplayName(payload.Header.AlgorithmId)} folder package to {restoreRoot} with {packageMetadata.Entries.Count} files.",
                     OriginalSizeBytes = new FileInfo(filePath).Length,
                     OutputSizeBytes = totalBytes,
                     CompressionApplied = false,
                     CompressionReason = "Folder package payload was not compressed.",
-                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds
+                    ElapsedMilliseconds = elapsed.ElapsedMilliseconds,
+                    Algorithm = EncryptionAlgorithmCatalog.GetDisplayName(payload.Header.AlgorithmId),
+                    KeySizeBits = packageMetadata.KeySizeBits > 0
+                        ? packageMetadata.KeySizeBits
+                        : EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.GetDisplayName(payload.Header.AlgorithmId))
                 };
             }
             catch
@@ -1443,8 +2069,23 @@ namespace FileLocker
                 if (!string.IsNullOrWhiteSpace(entry.ContentHashBase64) &&
                     !hash.AsSpan().SequenceEqual(Convert.FromBase64String(entry.ContentHashBase64)))
                 {
-                    throw new UnauthorizedAccessException($"Entry failed integrity validation: {entry.RelativePath}");
+                    throw new UnauthorizedAccessException("Folder package entry failed integrity validation.");
                 }
+            }
+
+            SkipBytes(payload.PlaintextStream, packageMetadata.PackagePaddingLength, cancellationToken);
+        }
+
+        internal static void ValidateFolderPackageEntryFileHash(
+            string filePath,
+            FolderPackageEntryMetadata entry,
+            CancellationToken cancellationToken = default)
+        {
+            byte[] expectedHash = Convert.FromBase64String(entry.ContentHashBase64);
+            byte[] actualHash = ComputeSha256ForFile(filePath, cancellationToken);
+            if (!expectedHash.AsSpan().SequenceEqual(actualHash))
+            {
+                throw new UnauthorizedAccessException("Restored folder package entry failed integrity validation.");
             }
         }
 
@@ -1452,17 +2093,17 @@ namespace FileLocker
         {
             if (entry.OriginalSize < 0)
             {
-                throw new InvalidDataException($"Folder package entry has invalid size metadata: {entry.RelativePath}");
+                throw new InvalidDataException("Folder package entry has invalid size metadata.");
             }
 
             if (payloadLength < 0)
             {
-                throw new InvalidDataException($"Folder package entry has invalid payload length: {entry.RelativePath}");
+                throw new InvalidDataException("Folder package entry has invalid payload length.");
             }
 
             if (payloadLength != entry.OriginalSize)
             {
-                throw new InvalidDataException($"Folder package entry length does not match metadata: {entry.RelativePath}");
+                throw new InvalidDataException("Folder package entry length does not match metadata.");
             }
         }
 
@@ -1479,9 +2120,11 @@ namespace FileLocker
                 return endPercent;
             }
 
-            double currentEntryBytes = Math.Clamp(entryPercent, 0, 100) / 100.0 * Math.Max(0, entryBytes);
+            double safeEntryPercent = double.IsFinite(entryPercent) ? Math.Clamp(entryPercent, 0, 100) : 0;
+            double currentEntryBytes = safeEntryPercent / 100.0 * Math.Max(0, entryBytes);
             double completedRatio = Math.Clamp((processedBytes + currentEntryBytes) / totalBytes, 0, 1);
-            return startPercent + completedRatio * (endPercent - startPercent);
+            double progress = startPercent + completedRatio * (endPercent - startPercent);
+            return double.IsFinite(progress) ? progress : endPercent;
         }
 
         internal static byte[] ComputeStreamHash(
@@ -1533,6 +2176,7 @@ namespace FileLocker
             double endPercent = 100,
             string status = "Processing")
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
             using var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             byte[] buffer = new byte[131072];
             try
@@ -1577,6 +2221,7 @@ namespace FileLocker
             double endPercent = 100,
             string status = "Processing")
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
             byte[] buffer = new byte[131072];
             try
             {
@@ -1618,22 +2263,29 @@ namespace FileLocker
             Directory.CreateDirectory(backupFolderPath);
             string destinationRoot = ResolveAvailableDirectoryPath(Path.Combine(
                 backupFolderPath,
-                $"{Path.GetFileName(sourceFolderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))}_{DateTime.Now:yyyyMMdd_HHmmss}"));
+                $"{GetFolderDisplayName(sourceFolderPath)}_{DateTime.Now:yyyyMMdd_HHmmss}"));
             CopyDirectory(sourceFolderPath, destinationRoot);
             return destinationRoot;
         }
 
         internal static string ResolveAvailableDirectoryPath(string directoryPath)
         {
-            string candidate = directoryPath;
-            int counter = 1;
-            while (Directory.Exists(candidate) || File.Exists(candidate))
+            ValidateNormalOutputPath(directoryPath, allowDirectoryPath: true);
+            if (!Directory.Exists(directoryPath) && !File.Exists(directoryPath))
             {
-                candidate = $"{directoryPath}_{counter}";
-                counter++;
+                return directoryPath;
             }
 
-            return candidate;
+            for (int counter = 1; counter <= MaxResolveAvailablePathAttempts; counter++)
+            {
+                string candidate = $"{directoryPath}_{counter}";
+                if (!Directory.Exists(candidate) && !File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            throw new IOException("Could not find an available directory name near the requested path.");
         }
 
         internal static bool IsBackupFolderInsideSource(string sourceFolderPath, string backupFolderPath)
@@ -1643,13 +2295,12 @@ namespace FileLocker
 
         internal static bool IsDirectoryInsideSource(string sourceFolderPath, string candidateDirectoryPath)
         {
-            if (string.IsNullOrWhiteSpace(sourceFolderPath) || string.IsNullOrWhiteSpace(candidateDirectoryPath))
+            if (!TryNormalizeBoundaryDirectoryPath(sourceFolderPath, out string sourceFullPath) ||
+                !TryNormalizeBoundaryDirectoryPath(candidateDirectoryPath, out string candidateFullPath))
             {
                 return false;
             }
 
-            string sourceFullPath = Path.GetFullPath(sourceFolderPath.Trim());
-            string candidateFullPath = Path.GetFullPath(candidateDirectoryPath.Trim());
             if (IsSameDirectoryOrChild(candidateFullPath, sourceFullPath))
             {
                 return true;
@@ -1660,6 +2311,40 @@ namespace FileLocker
             return sourceResolvedPath != null &&
                 candidateResolvedPath != null &&
                 IsSameDirectoryOrChild(candidateResolvedPath, sourceResolvedPath);
+        }
+
+        private static bool TryNormalizeBoundaryDirectoryPath(string? path, out string fullPath)
+        {
+            fullPath = string.Empty;
+            if (string.IsNullOrWhiteSpace(path) ||
+                path.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                return false;
+            }
+
+            string trimmedPath = path.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                string normalizedPath = Path.GetFullPath(trimmedPath);
+                string root = Path.GetPathRoot(normalizedPath) ?? string.Empty;
+                string pathWithoutRoot = normalizedPath.Length > root.Length ? normalizedPath[root.Length..] : string.Empty;
+                if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                fullPath = normalizedPath;
+                return true;
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return false;
+            }
         }
 
         private static string? TryResolveDirectoryPathThroughExistingParent(string directoryPath)
@@ -1727,14 +2412,28 @@ namespace FileLocker
         {
             Directory.CreateDirectory(destinationFolderPath);
             EnumerationOptions options = CreateUserTreeEnumerationOptions();
+            int copiedDirectories = 0;
             foreach (string directory in Directory.EnumerateDirectories(sourceFolderPath, "*", options))
             {
+                if (copiedDirectories >= MaxQueueExpandedDirectories)
+                {
+                    throw new InvalidOperationException("Source folder is too large to back up safely.");
+                }
+
+                copiedDirectories++;
                 string relative = Path.GetRelativePath(sourceFolderPath, directory);
                 Directory.CreateDirectory(Path.Combine(destinationFolderPath, relative));
             }
 
+            int copiedFiles = 0;
             foreach (string file in Directory.EnumerateFiles(sourceFolderPath, "*", options))
             {
+                if (copiedFiles >= MaxQueueExpandedFiles)
+                {
+                    throw new InvalidOperationException("Source folder is too large to back up safely.");
+                }
+
+                copiedFiles++;
                 string relative = Path.GetRelativePath(sourceFolderPath, file);
                 string destination = Path.Combine(destinationFolderPath, relative);
                 string? directory = Path.GetDirectoryName(destination);
@@ -1844,7 +2543,7 @@ namespace FileLocker
             FolderPackageEntryMetadata? unsafeEntry = metadata.Entries.FirstOrDefault(entry => !IsSafeFolderPackageRelativePath(entry.RelativePath));
             if (unsafeEntry != null)
             {
-                throw new InvalidDataException($"Folder package contains an unsafe restore path: {unsafeEntry.RelativePath}");
+                throw new InvalidDataException("Folder package contains an unsafe restore path.");
             }
 
             List<FolderPackageEntryMetadata> conflictingEntries = metadata.Entries
@@ -1880,19 +2579,31 @@ namespace FileLocker
 
         private FolderPackageMetadata? TryReadFolderPackageMetadata(string filePath, string password, ProcessingRunOptions options)
         {
+            filePath = RequireExistingFile(filePath);
             using FileStream input = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using OpenPayloadResult payload = PayloadChunkedService.OpenPayload(
                 input,
                 new PayloadUnlockInputs(password, options.KeyfileBytes, options.RecoveryKey),
                 CancellationToken.None);
 
-            string metadataJson = Encoding.UTF8.GetString(payload.MetadataBytes);
-            if (!metadataJson.Contains($"\"Kind\":\"{PayloadKinds.FolderPackage}\"", StringComparison.Ordinal))
+            if (!IsFolderPackagePayloadMetadata(payload.MetadataBytes))
             {
                 return null;
             }
 
-            return JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions);
+            FolderPackageMetadata? metadata = JsonSerializer.Deserialize<FolderPackageMetadata>(payload.MetadataBytes, JsonOptions);
+            if (metadata != null)
+            {
+                ValidateFolderPackageMetadata(metadata);
+                ValidatePayloadMetadataAlgorithm(
+                    metadata.Algorithm,
+                    metadata.KeySizeBits,
+                    payload.Header.AlgorithmId,
+                    payload.Header.Version,
+                    "Folder package metadata");
+            }
+
+            return metadata;
         }
 
         private void RotatePayloadKeys(
@@ -1904,24 +2615,27 @@ namespace FileLocker
             string? newRecoveryKey,
             CancellationToken cancellationToken = default)
         {
+            filePath = RequireExistingFile(filePath);
             string tempPath = ResolveTemporaryOutputPath(filePath, ".rotate.tmp");
             try
             {
-                using FileStream input = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                using FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                PayloadChunkedService.RotateKeys(
-                    input,
-                    output,
-                    new PayloadRotateInputs(
-                        new PayloadUnlockInputs(currentPassword, keyfileBytes, currentRecoveryKey),
-                        newPassword,
-                        keyfileBytes,
-                        newRecoveryKey),
-                    cancellationToken);
+                using (FileStream input = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (FileStream output = new(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    PayloadChunkedService.RotateKeys(
+                        input,
+                        output,
+                        new PayloadRotateInputs(
+                            new PayloadUnlockInputs(currentPassword, keyfileBytes, currentRecoveryKey),
+                            newPassword,
+                            keyfileBytes,
+                            newRecoveryKey),
+                        cancellationToken);
 
-                output.Flush();
-                input.Dispose();
-                File.Move(tempPath, filePath, overwrite: true);
+                    output.Flush(flushToDisk: true);
+                }
+
+                FileWriteService.ReplaceFileWithTemporaryFile(tempPath, filePath);
             }
             catch
             {
@@ -1960,7 +2674,7 @@ namespace FileLocker
 
                 using var fs = new MemoryStream(encryptedBytes);
                 byte version = (byte)fs.ReadByte();
-                if (version != FORMAT_VERSION)
+                if (version != LegacyPayloadFormatVersion)
                 {
                     throw new InvalidDataException("Unsupported file format version.");
                 }
@@ -1972,7 +2686,8 @@ namespace FileLocker
                 ReadExact(fs, iv, 0, IV_SIZE);
                 ReadExact(fs, tag, 0, TAG_SIZE);
 
-                ciphertext = new byte[fs.Length - 1 - SALT_SIZE - IV_SIZE - TAG_SIZE];
+                int ciphertextLength = GetLegacyPayloadCiphertextLength(fs.Length);
+                ciphertext = new byte[ciphertextLength];
                 ReadExact(fs, ciphertext, 0, ciphertext.Length);
                 key = DeriveArgon2idKey(password, salt, options.KeyfileBytes);
                 plaintext = new byte[ciphertext.Length];
@@ -2029,6 +2744,23 @@ namespace FileLocker
                     ClearSensitiveBuffer(fileData);
                 }
             }
+        }
+
+        internal static int GetLegacyPayloadCiphertextLength(long payloadLength)
+        {
+            const int legacyEnvelopeOverhead = 1 + SALT_SIZE + IV_SIZE + TAG_SIZE;
+            long ciphertextLength = payloadLength - legacyEnvelopeOverhead;
+            if (ciphertextLength < sizeof(int))
+            {
+                throw new InvalidDataException("Legacy payload is truncated.");
+            }
+
+            if (ciphertextLength > int.MaxValue)
+            {
+                throw new InvalidDataException("Legacy payload is too large to decrypt in memory.");
+            }
+
+            return (int)ciphertextLength;
         }
 
         internal static (int MetadataOffset, int MetadataLength, int PaddingLength, int FileDataOffset) ReadLegacyPayloadLayout(ReadOnlySpan<byte> plaintext)
@@ -2096,6 +2828,11 @@ namespace FileLocker
             _ = FileCleanupService.DeleteTemporaryFiles(tempPath);
         }
 
+        private static void PromoteTemporaryOutput(string tempPath, string finalPath)
+        {
+            FileWriteService.ReplaceFileWithTemporaryFile(tempPath, finalPath);
+        }
+
         private static void VerifyWrittenFile(string path, byte[] expectedBytes)
         {
             byte[] expectedDigest = SHA256.HashData(expectedBytes);
@@ -2141,19 +2878,34 @@ namespace FileLocker
                 }
             }
 
-            File.SetAttributes(path, metadata.OriginalAttributes == 0 ? System.IO.FileAttributes.Normal : metadata.OriginalAttributes);
+            File.SetAttributes(path, NormalizeRestoredFileAttributes(metadata.OriginalAttributes));
+        }
+
+        internal static System.IO.FileAttributes NormalizeRestoredFileAttributes(System.IO.FileAttributes attributes)
+        {
+            const System.IO.FileAttributes restorableFileAttributes =
+                System.IO.FileAttributes.Archive |
+                System.IO.FileAttributes.ReadOnly |
+                System.IO.FileAttributes.Hidden |
+                System.IO.FileAttributes.System |
+                System.IO.FileAttributes.Temporary |
+                System.IO.FileAttributes.NotContentIndexed;
+
+            System.IO.FileAttributes normalized = attributes & restorableFileAttributes;
+            return normalized == 0 ? System.IO.FileAttributes.Normal : normalized;
         }
 
         private void ApplyOutputTimestampPolicy(string outputPath, string sourcePath, string policy)
         {
-            if (string.Equals(policy, "Preserve source timestamps", StringComparison.OrdinalIgnoreCase))
+            policy = AppPreferencesStore.NormalizeOutputTimestampPolicy(policy);
+            if (string.Equals(policy, AppPreferencesStore.PreserveSourceTimestampsPolicy, StringComparison.OrdinalIgnoreCase))
             {
                 File.SetCreationTimeUtc(outputPath, File.GetCreationTimeUtc(sourcePath));
                 File.SetLastWriteTimeUtc(outputPath, File.GetLastWriteTimeUtc(sourcePath));
                 return;
             }
 
-            if (string.Equals(policy, "Randomize", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(policy, AppPreferencesStore.RandomizeTimestampPolicy, StringComparison.OrdinalIgnoreCase))
             {
                 (DateTime created, DateTime modified) = GenerateRandomizedDates();
                 File.SetCreationTimeUtc(outputPath, created);
@@ -2168,6 +2920,8 @@ namespace FileLocker
 
         internal static string CreateBackupCopy(string sourcePath, string backupFolderPath)
         {
+            ValidateSourceDeleteTargetPath(sourcePath);
+            ValidateNormalOutputPath(backupFolderPath, allowDirectoryPath: true);
             if (IsReparsePointPath(sourcePath))
             {
                 throw new IOException("Backup copy does not copy file reparse points.");
@@ -2191,6 +2945,7 @@ namespace FileLocker
 
         internal static void DeleteSourceFile(string sourcePath, bool secureDelete, int secureDeletePasses = 3)
         {
+            ValidateSourceDeleteTargetPath(sourcePath);
             if (secureDelete)
             {
                 SecureDelete(sourcePath, secureDeletePasses);
@@ -2218,23 +2973,24 @@ namespace FileLocker
         private void AppendHistory(string operation, ProcessingRunOptions options, List<FileOperationResult> results, bool cancelled)
         {
             OperationMetricsSummary metrics = OperationHistoryMetrics.Calculate(results);
+            (string historyAlgorithm, int historyKeySizeBits) = ResolveHistoryAlgorithm(options, results);
             var entry = new OperationHistoryEntry
             {
                 Id = Guid.NewGuid().ToString("N"),
                 TimestampUtc = DateTime.UtcNow,
                 Operation = operation,
                 ProfileName = options.ProfileName,
-                Algorithm = options.Algorithm,
+                Algorithm = historyAlgorithm,
                 Mode = options.Mode,
-                KeySizeBits = options.KeySizeBits,
+                KeySizeBits = historyKeySizeBits,
                 UsedKeyfile = options.KeyfileBytes is { Length: > 0 },
                 RemoveOriginalsAfterSuccess = options.RemoveOriginalsAfterSuccess,
                 SecureDeleteOriginals = options.SecureDeleteOriginals,
                 VerifyAfterWrite = options.VerifyAfterWrite,
                 BackupFolderPath = options.BackupFolderPath,
                 Cancelled = cancelled,
-                SuccessCount = results.Count(result => string.Equals(result.Status, "Completed", StringComparison.OrdinalIgnoreCase)),
-                FailureCount = results.Count(result => string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase)),
+                SuccessCount = results.Count(result => OperationHistoryMetrics.IsSuccessfulStatus(result.Status)),
+                FailureCount = results.Count(result => OperationHistoryMetrics.IsFailedStatus(result.Status)),
                 TotalOriginalSizeBytes = metrics.TotalOriginalSizeBytes,
                 TotalOutputSizeBytes = metrics.TotalOutputSizeBytes,
                 TotalStorageSavedBytes = metrics.TotalStorageSavedBytes,
@@ -2255,6 +3011,44 @@ namespace FileLocker
 
             SaveHistory();
             RefreshHistoryItems();
+        }
+
+        private static (string Algorithm, int KeySizeBits) ResolveHistoryAlgorithm(
+            ProcessingRunOptions options,
+            IReadOnlyCollection<FileOperationResult> results)
+        {
+            string[] algorithms = results
+                .Select(result => result.Algorithm)
+                .Where(algorithm => !string.IsNullOrWhiteSpace(algorithm))
+                .Select(algorithm => algorithm!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (algorithms.Length == 0)
+            {
+                return (options.Algorithm, options.KeySizeBits);
+            }
+
+            if (algorithms.Length > 1)
+            {
+                return ("Mixed payload algorithms", 0);
+            }
+
+            int[] keySizes = results
+                .Where(result => string.Equals(result.Algorithm, algorithms[0], StringComparison.OrdinalIgnoreCase))
+                .Select(result => result.KeySizeBits.GetValueOrDefault())
+                .Where(keySize => keySize > 0)
+                .Distinct()
+                .ToArray();
+
+            if (keySizes.Length == 1)
+            {
+                return (algorithms[0], keySizes[0]);
+            }
+
+            return EncryptionAlgorithmCatalog.TryNormalize(algorithms[0], out string normalizedAlgorithm)
+                ? (normalizedAlgorithm, EncryptionAlgorithmCatalog.GetKeySizeBits(normalizedAlgorithm))
+                : (algorithms[0], options.KeySizeBits);
         }
 
         private sealed record PreflightIssue(PreflightSeverity Severity, string Message);
@@ -2290,6 +3084,7 @@ namespace FileLocker
             {
                 try
                 {
+                    ValidateNormalOutputPath(options.BackupFolderPath, allowDirectoryPath: true);
                     Directory.CreateDirectory(options.BackupFolderPath);
                     if (encrypt && options.PackageFolders)
                     {
@@ -2323,6 +3118,7 @@ namespace FileLocker
                 {
                     try
                     {
+                        ValidateNormalOutputPath(options.EncryptOutputDirectory, allowDirectoryPath: true);
                         Directory.CreateDirectory(options.EncryptOutputDirectory);
                         if (options.RemoveOriginalsAfterSuccess && options.PackageFolders)
                         {
@@ -2357,6 +3153,7 @@ namespace FileLocker
                 {
                     try
                     {
+                        ValidateNormalOutputPath(options.DecryptOutputDirectory, allowDirectoryPath: true);
                         Directory.CreateDirectory(options.DecryptOutputDirectory);
                     }
                     catch (Exception ex)
@@ -2420,6 +3217,7 @@ namespace FileLocker
             foreach (PreflightSnapshotItem item in allFiles)
             {
                 string filePath = item.SourcePath;
+                long sourceLength = 0;
                 if (!File.Exists(filePath))
                 {
                     result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"Missing file: {filePath}"));
@@ -2438,6 +3236,7 @@ namespace FileLocker
                 try
                 {
                     using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    sourceLength = stream.Length;
                 }
                 catch (Exception ex)
                 {
@@ -2447,15 +3246,20 @@ namespace FileLocker
 
                 if (encrypt)
                 {
+                    if (options?.UseSteganography == true && sourceLength > MaxPngCarrierSourceBytes)
+                    {
+                        result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"{Path.GetFileName(filePath)} is too large for PNG carrier mode. {GetPngCarrierSizeLimitMessage()}"));
+                    }
+
                     if (filePath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase) ||
-                        TryExtractStegoPayload(filePath) != null)
+                        ContainsStegoPayload(filePath))
                     {
                         result.Issues.Add(new PreflightIssue(PreflightSeverity.Warning, $"{Path.GetFileName(filePath)} already looks encrypted."));
                     }
                 }
                 else if (decryptLike &&
                          !filePath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase) &&
-                         TryExtractStegoPayload(filePath) == null)
+                         !ContainsStegoPayload(filePath))
                 {
                     result.Issues.Add(new PreflightIssue(PreflightSeverity.Error, $"{Path.GetFileName(filePath)} does not look like a FileLocker payload."));
                 }
@@ -2685,7 +3489,7 @@ namespace FileLocker
             string[] segments = normalized
                 .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
                 .Where(segment => segment != "." && segment != "..")
-                .Select(segment => string.Concat(segment.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)))
+                .Select(SanitizeRelativeDirectorySegment)
                 .Where(segment => !string.IsNullOrWhiteSpace(segment))
                 .ToArray();
 
@@ -2697,12 +3501,31 @@ namespace FileLocker
             return Path.Combine(segments);
         }
 
+        private static string SanitizeRelativeDirectorySegment(string segment)
+        {
+            string candidate = string.Concat(segment.Select(ch =>
+                Path.GetInvalidFileNameChars().Contains(ch) ||
+                CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.Format
+                    ? '_'
+                    : ch)).Trim(' ', '.');
+
+            if (candidate.Length > MaxRestoredFileNameChars)
+            {
+                candidate = candidate[..MaxRestoredFileNameChars].Trim(' ', '.');
+            }
+
+            return WindowsFileNameRules.IsReservedDeviceName(candidate)
+                ? $"_{candidate}"
+                : candidate;
+        }
+
         internal static string ResolveDecryptedFileName(string encryptedFilePath, string? originalFileName, bool restoreOriginalFilename)
         {
             if (restoreOriginalFilename && !string.IsNullOrWhiteSpace(originalFileName))
             {
-                string safeOriginalName = Path.GetFileName(originalFileName.Trim());
-                if (IsSafeRestoredFileName(safeOriginalName))
+                string safeOriginalName = Path.GetFileName(originalFileName);
+                if (string.Equals(safeOriginalName, originalFileName, StringComparison.Ordinal) &&
+                    IsSafeRestoredFileName(safeOriginalName))
                 {
                     return safeOriginalName;
                 }
@@ -2719,7 +3542,10 @@ namespace FileLocker
             }
 
             string candidate = fileName.Trim();
-            if (candidate is "." or ".." ||
+            if (!string.Equals(fileName, candidate, StringComparison.Ordinal) ||
+                candidate.Length > MaxRestoredFileNameChars ||
+                candidate is "." or ".." ||
+                candidate.Any(character => CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format) ||
                 !string.Equals(candidate, candidate.TrimEnd(' ', '.'), StringComparison.Ordinal) ||
                 candidate.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
@@ -2733,10 +3559,14 @@ namespace FileLocker
         {
             if (restoreOriginalFilename && !string.IsNullOrWhiteSpace(rootFolderName))
             {
-                string safeRootName = Path.GetFileName(rootFolderName.Trim());
-                if (IsSafeRestoredFileName(safeRootName))
+                string trimmedRootName = rootFolderName.Trim();
+                if (string.Equals(rootFolderName, trimmedRootName, StringComparison.Ordinal))
                 {
-                    return safeRootName;
+                    string safeRootName = Path.GetFileName(rootFolderName);
+                    if (IsSafeRestoredFileName(safeRootName))
+                    {
+                        return safeRootName;
+                    }
                 }
             }
 
@@ -2786,6 +3616,7 @@ namespace FileLocker
 
         private static string ResolveAvailablePath(string preferredPath)
         {
+            ValidateNormalOutputPath(preferredPath, allowDirectoryPath: false);
             if (!File.Exists(preferredPath) && !Directory.Exists(preferredPath))
             {
                 return preferredPath;
@@ -2796,7 +3627,7 @@ namespace FileLocker
             string fileName = Path.GetFileNameWithoutExtension(preferredPath);
             string extension = Path.GetExtension(preferredPath);
 
-            for (int counter = 1; ; counter++)
+            for (int counter = 1; counter <= MaxResolveAvailablePathAttempts; counter++)
             {
                 string candidate = Path.Combine(directory, $"{fileName}_{counter}{extension}");
                 if (!File.Exists(candidate) && !Directory.Exists(candidate))
@@ -2804,11 +3635,13 @@ namespace FileLocker
                     return candidate;
                 }
             }
+
+            throw new IOException("Could not find an available file name near the requested path.");
         }
 
         internal static FileStream CreateNewOutputFileStream(string path)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            ValidateNormalOutputPath(path, allowDirectoryPath: false);
             return new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         }
 
@@ -2818,6 +3651,49 @@ namespace FileLocker
             ArgumentException.ThrowIfNullOrWhiteSpace(suffix);
 
             return ResolveAvailablePath(finalPath + suffix);
+        }
+
+        private static void ValidateNormalOutputPath(string path, bool allowDirectoryPath)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            if (path.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new ArgumentException("An output path must not contain control characters or Unicode format characters.", nameof(path));
+            }
+
+            if (!allowDirectoryPath && Path.EndsInDirectorySeparator(path))
+            {
+                throw new ArgumentException("An output path must include a name.", nameof(path));
+            }
+
+            string trimmedPath = path.Trim();
+            string name = Path.GetFileName(trimmedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new ArgumentException("An output path must include a name.", nameof(path));
+            }
+
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                throw new ArgumentException("An output path must be fully qualified.", nameof(path));
+            }
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(trimmedPath);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new ArgumentException("An output path is invalid.", nameof(path), ex);
+            }
+
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("An output path must not target an alternate data stream.", nameof(path));
+            }
         }
 
         private static string GenerateRandomString(int length)
@@ -2872,7 +3748,7 @@ namespace FileLocker
         {
             byte[] payload = new byte[1 + salt.Length + iv.Length + tag.Length + ciphertext.Length];
             int offset = 0;
-            payload[offset++] = FORMAT_VERSION;
+            payload[offset++] = LegacyPayloadFormatVersion;
             Buffer.BlockCopy(salt, 0, payload, offset, salt.Length);
             offset += salt.Length;
             Buffer.BlockCopy(iv, 0, payload, offset, iv.Length);
@@ -2910,6 +3786,7 @@ namespace FileLocker
 
         private static byte[] EmbedInPngContainer(byte[] payload)
         {
+            ValidatePngCarrierPayloadSize(payload.LongLength);
             int iendIndex = FindIendChunkIndex(StegoCarrierPng);
             if (iendIndex <= 0)
             {
@@ -2934,16 +3811,30 @@ namespace FileLocker
 
         internal static byte[]? TryExtractStegoPayload(string filePath)
         {
-            using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            string safePath = RequireExistingFile(filePath);
+            using FileStream stream = new(safePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return TryReadStegoPayload(stream, readPayload: true, out byte[]? payload) ? payload : null;
+        }
+
+        internal static bool ContainsStegoPayload(string filePath)
+        {
+            string safePath = RequireExistingFile(filePath);
+            using FileStream stream = new(safePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return TryReadStegoPayload(stream, readPayload: false, out _);
+        }
+
+        private static bool TryReadStegoPayload(Stream stream, bool readPayload, out byte[]? payload)
+        {
+            payload = null;
             Span<byte> signature = stackalloc byte[8];
             if (stream.Length < signature.Length || !TryReadExact(stream, signature))
             {
-                return null;
+                return false;
             }
 
             if (!IsPng(signature))
             {
-                return null;
+                return false;
             }
 
             Span<byte> chunkHeader = stackalloc byte[8];
@@ -2963,14 +3854,25 @@ namespace FileLocker
 
                 if (IsChunkType(chunkHeader.Slice(4, 4), STEGO_CHUNK_TYPE))
                 {
-                    byte[] payload = new byte[length];
-                    return TryReadExact(stream, payload) ? payload : null;
+                    if (length > MaxPngCarrierPayloadBytes)
+                    {
+                        return false;
+                    }
+
+                    if (!readPayload)
+                    {
+                        return true;
+                    }
+
+                    ValidatePngCarrierPayloadSize(length);
+                    payload = new byte[length];
+                    return TryReadExact(stream, payload);
                 }
 
                 stream.Seek(length + 4L, SeekOrigin.Current);
             }
 
-            return null;
+            return false;
         }
 
         private static bool TryReadExact(Stream stream, Span<byte> buffer)
@@ -3029,7 +3931,6 @@ namespace FileLocker
             byte[]? typeBytes = null;
             byte[]? chunk = null;
             byte[]? crcInput = null;
-            byte[]? crcBytes = null;
             bool returnsChunk = false;
 
             try
@@ -3042,8 +3943,7 @@ namespace FileLocker
 
                 crcInput = [.. typeBytes, .. data];
                 uint crcValue = ComputeCrc32(crcInput);
-                crcBytes = BitConverter.GetBytes(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(crcValue));
-                Buffer.BlockCopy(crcBytes, 0, chunk, 8 + data.Length, 4);
+                BinaryPrimitives.WriteUInt32BigEndian(chunk.AsSpan(8 + data.Length, 4), crcValue);
 
                 returnsChunk = true;
                 return chunk;
@@ -3052,7 +3952,6 @@ namespace FileLocker
             {
                 ClearSensitiveBuffer(typeBytes);
                 ClearSensitiveBuffer(crcInput);
-                ClearSensitiveBuffer(crcBytes);
                 if (!returnsChunk)
                 {
                     ClearSensitiveBuffer(chunk);
@@ -3091,74 +3990,94 @@ namespace FileLocker
 
         private static FileMetadata DeserializeMetadata(byte[] data)
         {
-            using var stream = new MemoryStream(data);
-            using var reader = new BinaryReader(stream);
-            var metadata = new FileMetadata
+            try
             {
-                OriginalFileName = reader.ReadString(),
-                OriginalSize = reader.ReadInt64(),
-                CreationTime = DateTime.FromBinary(reader.ReadInt64()),
-                LastWriteTime = DateTime.FromBinary(reader.ReadInt64()),
-                IsCompressed = reader.ReadBoolean()
-            };
-
-            if (stream.Position < stream.Length)
-            {
-                metadata.IsSteganographyContainer = reader.ReadBoolean();
-            }
-
-            if (stream.Position < stream.Length)
-            {
-                int hashLength = reader.ReadInt32();
-                if (hashLength > 0 && hashLength <= stream.Length - stream.Position)
+                using var stream = new MemoryStream(data);
+                using var reader = new BinaryReader(stream);
+                var metadata = new FileMetadata
                 {
-                    metadata.ContentHash = reader.ReadBytes(hashLength);
+                    OriginalFileName = reader.ReadString(),
+                    OriginalSize = reader.ReadInt64(),
+                    CreationTime = DateTime.FromBinary(reader.ReadInt64()),
+                    LastWriteTime = DateTime.FromBinary(reader.ReadInt64()),
+                    IsCompressed = reader.ReadBoolean()
+                };
+
+                if (stream.Position < stream.Length)
+                {
+                    metadata.IsSteganographyContainer = reader.ReadBoolean();
                 }
-            }
 
-            if (TryReadString(reader, stream, out string algorithm))
+                if (stream.Position < stream.Length)
+                {
+                    int hashLength = reader.ReadInt32();
+                    if (hashLength > 0 && hashLength <= stream.Length - stream.Position)
+                    {
+                        metadata.ContentHash = reader.ReadBytes(hashLength);
+                    }
+                }
+
+                if (TryReadString(reader, stream, out string algorithm))
+                {
+                    metadata.Algorithm = algorithm;
+                }
+
+                if (TryReadString(reader, stream, out string mode))
+                {
+                    metadata.Mode = mode;
+                }
+
+                if (stream.Position + sizeof(int) <= stream.Length)
+                {
+                    metadata.KeySizeBits = reader.ReadInt32();
+                }
+
+                if (TryReadString(reader, stream, out string note))
+                {
+                    metadata.CustomNote = note;
+                }
+
+                if (TryReadString(reader, stream, out string label))
+                {
+                    metadata.MetadataLabel = label;
+                }
+
+                if (stream.Position + sizeof(long) <= stream.Length)
+                {
+                    metadata.LastAccessTime = DateTime.FromBinary(reader.ReadInt64());
+                }
+
+                if (stream.Position + sizeof(int) <= stream.Length)
+                {
+                    metadata.OriginalAttributes = (System.IO.FileAttributes)reader.ReadInt32();
+                }
+
+                return metadata;
+            }
+            catch (Exception ex) when (ex is EndOfStreamException or IOException or ArgumentException or DecoderFallbackException or FormatException)
             {
-                metadata.Algorithm = algorithm;
+                throw new InvalidDataException("Legacy payload metadata is corrupted.", ex);
             }
-
-            if (TryReadString(reader, stream, out string mode))
-            {
-                metadata.Mode = mode;
-            }
-
-            if (stream.Position + sizeof(int) <= stream.Length)
-            {
-                metadata.KeySizeBits = reader.ReadInt32();
-            }
-
-            if (TryReadString(reader, stream, out string note))
-            {
-                metadata.CustomNote = note;
-            }
-
-            if (TryReadString(reader, stream, out string label))
-            {
-                metadata.MetadataLabel = label;
-            }
-
-            if (stream.Position + sizeof(long) <= stream.Length)
-            {
-                metadata.LastAccessTime = DateTime.FromBinary(reader.ReadInt64());
-            }
-
-            if (stream.Position + sizeof(int) <= stream.Length)
-            {
-                metadata.OriginalAttributes = (System.IO.FileAttributes)reader.ReadInt32();
-            }
-
-            return metadata;
         }
 
         private static bool TryReadString(BinaryReader reader, Stream stream, out string value)
         {
             if (stream.Position < stream.Length)
             {
-                value = reader.ReadString();
+                int byteLength = ReadBinaryStringByteLength(reader, stream);
+                if (byteLength > MaxLegacyMetadataStringBytes ||
+                    byteLength > stream.Length - stream.Position)
+                {
+                    throw new InvalidDataException("Legacy payload metadata contains an invalid text field.");
+                }
+
+                byte[] bytes = reader.ReadBytes(byteLength);
+                if (bytes.Length != byteLength)
+                {
+                    throw new EndOfStreamException();
+                }
+
+                value = StrictUtf8.GetString(bytes);
                 return true;
             }
 
@@ -3166,30 +4085,60 @@ namespace FileLocker
             return false;
         }
 
+        private static int ReadBinaryStringByteLength(BinaryReader reader, Stream stream)
+        {
+            int count = 0;
+            int shift = 0;
+            while (shift < 35)
+            {
+                if (stream.Position >= stream.Length)
+                {
+                    throw new EndOfStreamException();
+                }
+
+                byte current = reader.ReadByte();
+                int chunk = current & 0x7F;
+                if (shift == 28 && chunk > 0x0F)
+                {
+                    throw new FormatException("Legacy payload metadata contains an invalid string length.");
+                }
+
+                count |= chunk << shift;
+                if ((current & 0x80) == 0)
+                {
+                    return count;
+                }
+
+                shift += 7;
+            }
+
+            throw new FormatException("Legacy payload metadata contains an invalid string length.");
+        }
+
         private static byte[] GenerateRandomBytes(int size)
         {
+            ArgumentOutOfRangeException.ThrowIfNegative(size);
             byte[] bytes = new byte[size];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(bytes);
-            }
+
+            RandomNumberGenerator.Fill(bytes);
             return bytes;
         }
 
         private static byte[] DeriveArgon2idKey(string password, byte[] salt, byte[]? keyfileBytes = null)
         {
+            ValidateKdfSecretTextLength(password);
             byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
             byte[]? combinedSecret = null;
-            byte[] secret = BuildKdfSecret(passwordBytes, keyfileBytes, out combinedSecret);
+            byte[] secret = KdfSecretMaterial.Build(passwordBytes, keyfileBytes, out combinedSecret);
 
             try
             {
                 var argon2 = new Argon2id(secret)
                 {
                     Salt = salt,
-                    DegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 1, 8),
-                    Iterations = ARGON2_ITERATIONS,
-                    MemorySize = ARGON2_MEMORY_SIZE_KB
+                    DegreeOfParallelism = KdfSettings.Argon2IdParallelism,
+                    Iterations = KdfSettings.Argon2IdIterations,
+                    MemorySize = KdfSettings.Argon2IdMemoryKb
                 };
 
                 return argon2.GetBytes(KEY_SIZE);
@@ -3208,13 +4157,14 @@ namespace FileLocker
 
         private static byte[] DeriveKey(string password, byte[] salt, byte[]? keyfileBytes, int keySize)
         {
+            ValidateKdfSecretTextLength(password);
             byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
             byte[]? combinedSecret = null;
-            byte[] secret = BuildKdfSecret(passwordBytes, keyfileBytes, out combinedSecret);
+            byte[] secret = KdfSecretMaterial.Build(passwordBytes, keyfileBytes, out combinedSecret);
 
             try
             {
-                using var pbkdf2 = new Rfc2898DeriveBytes(secret, salt, PBKDF2_FALLBACK_ITERATIONS, HashAlgorithmName.SHA256);
+                using var pbkdf2 = new Rfc2898DeriveBytes(secret, salt, KdfSettings.Pbkdf2FallbackIterations, HashAlgorithmName.SHA256);
                 return pbkdf2.GetBytes(keySize);
             }
             finally
@@ -3229,18 +4179,9 @@ namespace FileLocker
             }
         }
 
-        private static byte[] BuildKdfSecret(byte[] passwordBytes, byte[]? keyfileBytes, out byte[]? combinedSecret)
+        internal static void ValidateKdfSecretTextLength(string? secretText)
         {
-            combinedSecret = null;
-            if (keyfileBytes is not { Length: > 0 })
-            {
-                return passwordBytes;
-            }
-
-            combinedSecret = new byte[passwordBytes.Length + keyfileBytes.Length];
-            Buffer.BlockCopy(passwordBytes, 0, combinedSecret, 0, passwordBytes.Length);
-            Buffer.BlockCopy(keyfileBytes, 0, combinedSecret, passwordBytes.Length, keyfileBytes.Length);
-            return SHA256.HashData(combinedSecret);
+            KdfSecretValidator.Validate(secretText, "Password or recovery key");
         }
 
         private static byte[] ComputeSha256(byte[] data)
@@ -3259,6 +4200,7 @@ namespace FileLocker
 
         internal static void SecureDelete(string filePath, int passes = 3)
         {
+            ValidateSourceDeleteTargetPath(filePath);
             if (!File.Exists(filePath))
             {
                 throw new FileNotFoundException("File could not be found for secure delete.", filePath);
@@ -3327,6 +4269,39 @@ namespace FileLocker
                 }
 
                 throw new IOException("Secure delete could not overwrite or remove the file.", new AggregateException(overwriteFailure, ex));
+            }
+        }
+
+        private static void ValidateSourceDeleteTargetPath(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) ||
+                filePath.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new ArgumentException("Source file operations require a valid file path.", nameof(filePath));
+            }
+
+            string trimmedPath = filePath.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                throw new ArgumentException("Source file operations require a fully qualified file path.", nameof(filePath));
+            }
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(trimmedPath);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new ArgumentException("Source file operations require a valid file path.", nameof(filePath), ex);
+            }
+
+            string fileName = Path.GetFileName(fullPath);
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (string.IsNullOrWhiteSpace(fileName) || pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("Source file operations require a normal file path.", nameof(filePath));
             }
         }
 

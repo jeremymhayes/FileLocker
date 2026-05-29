@@ -32,9 +32,12 @@ import { FileTypeIcon } from "@/components/common/FileTypeIcon"
 import { ProgressBar } from "@/components/common/ProgressBar"
 import { ResultList } from "@/components/common/ResultList"
 import { cn } from "@/lib/utils"
-import { fileName, mergeUniquePaths } from "@/lib/format"
+import { fileName, formatBytes, formatDate, getComparableLocalPath, mergeUniquePaths } from "@/lib/format"
 import { getLatestProgressForOperation } from "@/lib/progress"
-import type { DashboardState, FileOperationRequest, FileOperationResult, ProgressEvent } from "@/types/bridge"
+import { DEFAULT_ENCRYPTION_ALGORITHM_ID, getDefaultEncryptionAlgorithm, getEncryptionAlgorithmOptions } from "@/lib/encryptionAlgorithms"
+import { formatAlgorithmLabel } from "@/lib/algorithmLabels"
+import { DEFAULT_OUTPUT_TIMESTAMP_POLICY, OUTPUT_TIMESTAMP_POLICIES, normalizeOutputTimestampPolicy } from "@/lib/outputTimestampPolicies"
+import type { DashboardState, EncryptionAlgorithmOption, FileOperationRequest, FileOperationResult, HistoryEntry, ProgressEvent } from "@/types/bridge"
 
 type OperationResultPayload = {
   operationId: string
@@ -74,11 +77,13 @@ type FileOperationPageProps = {
   onDashboardUpdate: (dashboard: unknown) => void
   onReveal: (path: string) => void
   dashboard?: DashboardState
+  encryptionAlgorithms?: EncryptionAlgorithmOption[]
   droppedPaths?: string[]
   onDroppedPathsHandled?: () => void
 }
 
 const defaultOptions = {
+  algorithm: DEFAULT_ENCRYPTION_ALGORITHM_ID,
   compressFiles: true,
   scrambleNames: false,
   useSteganography: false,
@@ -90,13 +95,16 @@ const defaultOptions = {
   saveNextToEncrypted: true,
   restoreOriginalFilenames: true,
   preserveFolderStructure: true,
-  outputTimestampPolicy: "Current time",
+  outputTimestampPolicy: DEFAULT_OUTPUT_TIMESTAMP_POLICY,
   profileName: "FileLocker",
   randomizeMetadata: false,
 }
 
+const MAX_METADATA_NOTES_CHARS = 4096
+
 const encryptionGuidePoints = [
   "Files are encrypted locally with FileLocker. Nothing is uploaded as part of a normal encryption run.",
+  "The selected cipher is written into new .locked files. Decryption reads it automatically.",
   "Use a strong password and test decryption before deleting important originals.",
   "For large folder jobs, a separate output folder keeps `.locked` files out of the original source tree.",
   "Delete originals stays off by default. Turn it on only when you have verified both your password and your output location.",
@@ -137,7 +145,11 @@ const secureDeleteMethods = [
   },
 ]
 
-export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpdate, onReveal, dashboard, droppedPaths = [], onDroppedPathsHandled }: FileOperationPageProps) {
+function formatHistoryAlgorithm(entry: HistoryEntry): string {
+  return formatAlgorithmLabel(entry.algorithm, entry.keySizeBits)
+}
+
+export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpdate, onReveal, dashboard, encryptionAlgorithms, droppedPaths = [], onDroppedPathsHandled }: FileOperationPageProps) {
   const [paths, setPaths] = useState<string[]>([])
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -171,6 +183,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const Icon = isEncrypt ? Lock : isDecrypt ? Unlock : ShieldCheck
   const destructiveOptionsEnabled = options.removeOriginalsAfterSuccess || options.secureDeleteOriginals
   const hasOperationError = Boolean(operationError)
+  const hasPassword = password.trim().length > 0
+  const hasRecoveryKey = recoveryKey.trim().length > 0
+  const hasUnlockSecret = hasPassword || hasRecoveryKey
   const savesNextToSource = encryptOutputDirectory.trim().length === 0
   const encryptHistory = useMemo(
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Encrypt").slice(0, 6),
@@ -180,14 +195,35 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Decrypt").slice(0, 6),
     [dashboard]
   )
+  const availableEncryptionAlgorithms = useMemo(
+    () => getEncryptionAlgorithmOptions(encryptionAlgorithms),
+    [encryptionAlgorithms]
+  )
+  const defaultEncryptionAlgorithm = getDefaultEncryptionAlgorithm(availableEncryptionAlgorithms)
+  const selectedAlgorithm = availableEncryptionAlgorithms.find((algorithm) => algorithm.id === options.algorithm) ?? defaultEncryptionAlgorithm
+  const hasSupportedEncryptionAlgorithm = Boolean(selectedAlgorithm)
+  const canUsePngCarrier = selectedAlgorithm?.canUsePngCarrier ?? false
+  const pngCarrierMaxSourceBytes = selectedAlgorithm?.pngCarrierMaxSourceBytes
+  const hasOversizedPngCarrierSelection =
+    isEncrypt &&
+    options.useSteganography &&
+    typeof pngCarrierMaxSourceBytes === "number" &&
+    pathDetails.some((item) => !item.isDirectory && item.sizeBytes > pngCarrierMaxSourceBytes)
+  const pathSelectionWarning = hasOversizedPngCarrierSelection && typeof pngCarrierMaxSourceBytes === "number"
+    ? `PNG carrier mode supports files up to ${formatBytes(pngCarrierMaxSourceBytes)}. Turn off PNG carrier output or use standard .locked encryption for larger files.`
+    : pathWarnings[0]
   const passwordStrength = calculatePasswordStrength(password)
-  const passwordsMatch = password.length > 0 && password === confirmPassword
-  const encryptCanStart = paths.length > 0 && password.length > 0 && passwordsMatch && passwordStrength.score >= 70
+  const passwordsMatch = hasPassword && password === confirmPassword
+  const encryptCanStart = hasSupportedEncryptionAlgorithm && !hasOversizedPngCarrierSelection && paths.length > 0 && hasPassword && passwordsMatch && passwordStrength.score >= 70
   const encryptStatusText = hasOperationError
     ? "Failed"
+    : !hasSupportedEncryptionAlgorithm
+      ? "Encryption unavailable"
+    : hasOversizedPngCarrierSelection
+      ? "PNG carrier size limit"
     : paths.length === 0
     ? "Add files or folders"
-    : !password
+    : !hasPassword
       ? "Password required"
       : !passwordsMatch
         ? "Passwords do not match"
@@ -201,14 +237,41 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const decryptOutputSummary = decryptSavesNextToEncrypted
     ? "Next to encrypted files"
     : decryptOutputDirectory.trim()
-  const decryptCanStart = paths.length > 0 && password.length > 0
+  const decryptCanStart = paths.length > 0 && hasUnlockSecret
   const decryptStatusText = hasOperationError
     ? "Failed"
     : paths.length === 0
     ? "Add encrypted files"
-    : !password
-      ? "Waiting for password"
+    : !hasUnlockSecret
+      ? "Waiting for password or recovery key"
       : "Ready to decrypt"
+
+  useEffect(() => {
+    if (!isEncrypt) {
+      return
+    }
+
+    if (!selectedAlgorithm) {
+      setOptions((current) => current.useSteganography ? { ...current, useSteganography: false } : current)
+      return
+    }
+
+    setOptions((current) => {
+      const currentAlgorithm = availableEncryptionAlgorithms.find((algorithm) => algorithm.id === current.algorithm)
+      const nextAlgorithm = currentAlgorithm ?? selectedAlgorithm
+      const nextUseSteganography = nextAlgorithm.canUsePngCarrier ? current.useSteganography : false
+
+      if (current.algorithm === nextAlgorithm.id && current.useSteganography === nextUseSteganography) {
+        return current
+      }
+
+      return {
+        ...current,
+        algorithm: nextAlgorithm.id,
+        useSteganography: nextUseSteganography,
+      }
+    })
+  }, [availableEncryptionAlgorithms, isEncrypt, selectedAlgorithm])
 
   useEffect(() => {
     if (droppedPaths.length === 0) {
@@ -321,6 +384,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     backupFolderPath,
     metadataNotes,
     deleteConfirmation,
+    options.algorithm,
     options.compressFiles,
     options.scrambleNames,
     options.useSteganography,
@@ -383,7 +447,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     }
   }
 
-function removeTarget(path: string) {
+  function removeTarget(path: string) {
     if (isRunning) {
       toast.error("Wait for the current file operation to finish before changing the selected targets.")
       return
@@ -469,19 +533,42 @@ function removeTarget(path: string) {
     }
   }
 
+  function handleAlgorithmChange(nextAlgorithm: string) {
+    const nextAlgorithmOption = availableEncryptionAlgorithms.find((algorithm) => algorithm.id === nextAlgorithm)
+    if (!nextAlgorithmOption) {
+      return
+    }
+
+    setOptions((current) => ({
+      ...current,
+      algorithm: nextAlgorithm,
+      useSteganography: nextAlgorithmOption.canUsePngCarrier ? current.useSteganography : false,
+    }))
+  }
+
   async function run() {
     if (isRunning) {
       return
     }
 
     setSubmitAttempted(true)
+    if (isEncrypt && !selectedAlgorithm) {
+      toast.error("No supported encryption algorithm is available on this device.")
+      return
+    }
+
     if (paths.length === 0) {
       toast.error("Select at least one file or folder.")
       return
     }
 
-    if (!password) {
-      toast.error(isEncrypt ? "Enter a password before encrypting." : "Enter the unlock password.")
+    if (isEncrypt && !hasPassword) {
+      toast.error("Enter a password before encrypting.")
+      return
+    }
+
+    if (!isEncrypt && !hasUnlockSecret) {
+      toast.error("Enter the unlock password or recovery key.")
       return
     }
 
@@ -507,6 +594,9 @@ function removeTarget(path: string) {
         keyfilePath,
         recoveryKey,
         ...options,
+        algorithm: isEncrypt ? selectedAlgorithm?.id ?? options.algorithm : options.algorithm,
+        outputTimestampPolicy: normalizeOutputTimestampPolicy(options.outputTimestampPolicy),
+        useSteganography: options.useSteganography && (!isEncrypt || canUsePngCarrier),
         saveNextToSource: !isEncrypt || normalizedEncryptOutputDirectory.length === 0,
         encryptOutputDirectory: normalizedEncryptOutputDirectory,
         saveNextToEncrypted: !isDecrypt || normalizedDecryptOutputDirectory.length === 0,
@@ -594,7 +684,10 @@ function removeTarget(path: string) {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <div className="font-display text-[1rem] font-semibold tracking-tight text-primary">{entry.profileName || "FileLocker"}</div>
-                              <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{new Date(entry.timestampUtc).toLocaleString()}</div>
+                              <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{formatDate(entry.timestampUtc)}</div>
+                              {formatHistoryAlgorithm(entry) ? (
+                                <div className="mt-1 text-xs text-secondary">{formatHistoryAlgorithm(entry)}</div>
+                              ) : null}
                             </div>
                             <Badge variant="outline">{entry.cancelled ? "Cancelled" : `${entry.successCount} completed / ${entry.failureCount} failed`}</Badge>
                           </div>
@@ -613,24 +706,20 @@ function removeTarget(path: string) {
                 <SectionBody className="px-4 py-3">
                   <div
                     className={cn(
-                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      "flex min-h-[130px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
                       isRunning && "cursor-not-allowed opacity-70"
                     )}
                     role="group"
                     aria-label="Encrypt file drop zone"
-                    aria-describedby="encrypt-drop-zone-description"
                     aria-disabled={isRunning}
                     onDragOver={handleTargetDragOver}
                     onDrop={handleTargetDrop}
                   >
-                    <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
-                      <UploadCloud className="size-5" aria-hidden />
+                    <div className="flex size-7 items-center justify-center rounded-md bg-accent/10 text-accent">
+                      <UploadCloud className="size-4" aria-hidden />
                     </div>
-                    <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop files or folders to encrypt</h3>
-                    <p id="encrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
-                      Choose files manually or bring in whole folders, then decide whether locked output stays beside the source or goes to a separate destination.
-                    </p>
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <h3 className="mt-2.5 font-display text-base font-semibold tracking-tight text-primary">Drop files or folders to encrypt</h3>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
@@ -640,7 +729,6 @@ function removeTarget(path: string) {
                         Browse Folder
                       </Button>
                     </div>
-                    <p className="mt-3 text-xs text-secondary">Supports files, folders, and batch encryption.</p>
                   </div>
                 </SectionBody>
               </Section>
@@ -662,18 +750,18 @@ function removeTarget(path: string) {
                   </div>
                 </SectionHeader>
                 <SectionBody className="px-4 py-3">
-                  {pathWarnings.length > 0 ? (
-                    <div className="mb-3 rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm leading-snug text-secondary">
-                      {pathWarnings[0]}
+                  {pathSelectionWarning ? (
+                    <div className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/8 px-3 py-2 text-sm leading-snug text-secondary">
+                      {pathSelectionWarning}
                     </div>
                   ) : null}
 
                   {paths.length === 0 ? (
-                    <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm text-secondary">
+                    <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm text-secondary">
                       No files selected. Drop files above or choose files to continue.
                     </div>
                   ) : (
-                    <div className="overflow-hidden rounded-md border border-border/80 bg-background/35">
+                    <div className="overflow-hidden rounded-md border border-border/60 bg-bg-subtle/35">
                       <div className="grid grid-cols-[minmax(0,1.8fr)_minmax(150px,0.9fr)_100px_120px_56px] gap-3 border-b border-border/80 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                         <span>Name</span>
                         <span>Type</span>
@@ -769,16 +857,9 @@ function removeTarget(path: string) {
                     </div>
                   </div>
 
-                  <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                      <div>
-                        <div className="font-display text-[1rem] font-semibold tracking-tight text-amber-300">Important</div>
-                        <p className="mt-1 text-sm leading-snug text-secondary">
-                          FileLocker uses local encryption. Your password is never stored or transmitted, and you are solely responsible for keeping it safe.
-                        </p>
-                      </div>
-                    </div>
+                  <div className="app-inline-notice app-inline-notice-warning">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                    <span>Your password is never stored or transmitted. You are solely responsible for keeping it safe.</span>
                   </div>
                 </SectionBody>
               </Section>
@@ -806,17 +887,37 @@ function removeTarget(path: string) {
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
                   <Field label="Algorithm">
-                    <Select value="AES-256-GCM" onValueChange={() => undefined} disabled={isRunning}>
+                    <Select value={selectedAlgorithm?.id ?? ""} onValueChange={handleAlgorithmChange} disabled={isRunning || !selectedAlgorithm}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Algorithm" />
+                        <SelectValue placeholder={selectedAlgorithm ? "Algorithm" : "No supported algorithms"} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="AES-256-GCM">AES-256-GCM</SelectItem>
+                          {availableEncryptionAlgorithms.map((algorithm) => (
+                            <SelectItem key={algorithm.id} value={algorithm.id}>{algorithm.label}</SelectItem>
+                          ))}
                         </SelectGroup>
                       </SelectContent>
                     </Select>
                   </Field>
+
+                  {selectedAlgorithm ? (
+                    <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-display text-sm font-semibold tracking-tight text-primary">{selectedAlgorithm.label}</span>
+                        <Badge variant="outline">{selectedAlgorithm.status}</Badge>
+                      </div>
+                      <p className="mt-2 text-sm leading-snug text-secondary">{selectedAlgorithm.detail}</p>
+                      <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">{selectedAlgorithm.bestFor}</p>
+                      {selectedAlgorithm.supportNote ? (
+                        <p className="mt-2 text-xs leading-snug text-muted">{selectedAlgorithm.supportNote}</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-destructive/35 bg-destructive/10 px-3 py-3 text-sm leading-snug text-red-100">
+                      No supported file-encryption algorithm is available on this device.
+                    </div>
+                  )}
 
                   <Field label="Output Location">
                     <div className="flex flex-col gap-2 sm:flex-row">
@@ -864,18 +965,18 @@ function removeTarget(path: string) {
                     </div>
                   </Field>
                   <Field label="Metadata Note">
-                    <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" disabled={isRunning} />
+                    <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" maxLength={MAX_METADATA_NOTES_CHARS} disabled={isRunning} />
                   </Field>
                   <Field label="Timestamp Policy">
-                    <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
+                    <Select value={normalizeOutputTimestampPolicy(options.outputTimestampPolicy)} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
                       <SelectTrigger>
                         <SelectValue placeholder="Timestamp policy" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="Current time">Current time</SelectItem>
-                          <SelectItem value="Preserve source timestamps">Preserve source timestamps</SelectItem>
-                          <SelectItem value="Randomize">Randomize</SelectItem>
+                          {OUTPUT_TIMESTAMP_POLICIES.map((policy) => (
+                            <SelectItem key={policy.id} value={policy.id}>{policy.label}</SelectItem>
+                          ))}
                         </SelectGroup>
                       </SelectContent>
                     </Select>
@@ -883,9 +984,12 @@ function removeTarget(path: string) {
                   <div className="flex flex-col gap-3">
                     <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} disabled={isRunning} />
                     <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} disabled={isRunning} />
-                    <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning} />
+                    <Toggle label="PNG carrier output" checked={options.useSteganography && canUsePngCarrier} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning || !canUsePngCarrier} />
                     <Toggle label="Use secure delete for removals" checked={options.secureDeleteOriginals} onChange={(value) => setOptions({ ...options, secureDeleteOriginals: value })} disabled={isRunning} />
                   </div>
+                  {!canUsePngCarrier && selectedAlgorithm ? (
+                    <p className="text-sm leading-snug text-muted">PNG carrier output uses the older AES-GCM payload path, so it is disabled for {selectedAlgorithm.label}.</p>
+                  ) : null}
                 </SectionBody>
               </Section>
 
@@ -897,7 +1001,7 @@ function removeTarget(path: string) {
                   <SummaryRow icon={Files} label="Files selected" value={String(paths.length)} />
                   <SummaryRow icon={HardDrive} label="Total size" value={paths.length > 0 ? totalSizeDisplay : "Calculated at run start"} />
                   <SummaryRow icon={FolderOpen} label="Output" value={encryptOutputSummary} />
-                  <SummaryRow icon={Lock} label="Mode" value="AES-256-GCM" />
+                  <SummaryRow icon={Lock} label="Mode" value={selectedAlgorithm?.label ?? "Unavailable"} />
                   <SummaryRow icon={hasOperationError ? AlertTriangle : encryptCanStart ? CheckCircle2 : Clock3} label="Status" value={encryptStatusText} good={encryptCanStart && !hasOperationError} />
                 </SectionBody>
                 <SectionFooter className="flex flex-col gap-2 border-t border-border bg-transparent px-4 py-3">
@@ -936,16 +1040,10 @@ function removeTarget(path: string) {
                 </SectionFooter>
               </Section>
 
-              <Section className="overflow-hidden rounded-md border border-amber-500/35 bg-transparent py-0 shadow-none ring-0">
-                <SectionBody className="px-4 py-3">
-                  <div className="flex items-start gap-2.5">
-                    <ShieldAlert className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                    <p className="text-sm leading-snug text-secondary">
-                      Delete originals stays off by default. If you enable it, verify your password and output location first.
-                    </p>
-                  </div>
-                </SectionBody>
-              </Section>
+              <div className="app-inline-notice app-inline-notice-warning">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                <p className="text-sm leading-snug text-secondary">Delete originals stays off by default. If you enable it, verify your password and output location first.</p>
+              </div>
             </aside>
           </div>
         </div>
@@ -1015,7 +1113,10 @@ function removeTarget(path: string) {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <div className="font-display text-[1rem] font-semibold tracking-tight text-primary">{entry.profileName || "FileLocker"}</div>
-                              <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{new Date(entry.timestampUtc).toLocaleString()}</div>
+                              <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{formatDate(entry.timestampUtc)}</div>
+                              {formatHistoryAlgorithm(entry) ? (
+                                <div className="mt-1 text-xs text-secondary">{formatHistoryAlgorithm(entry)}</div>
+                              ) : null}
                             </div>
                             <Badge variant="outline">{entry.cancelled ? "Cancelled" : `${entry.successCount} completed / ${entry.failureCount} failed`}</Badge>
                           </div>
@@ -1034,24 +1135,20 @@ function removeTarget(path: string) {
                 <SectionBody className="px-4 py-3">
                   <div
                     className={cn(
-                      "flex min-h-[150px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
+                      "flex min-h-[130px] flex-col items-center justify-center rounded-md border border-dashed border-accent/55 bg-bg-dropzone px-4 py-4 text-center transition-colors hover:border-accent/70",
                       isRunning && "cursor-not-allowed opacity-70"
                     )}
                     role="group"
                     aria-label="Decrypt file drop zone"
-                    aria-describedby="decrypt-drop-zone-description"
                     aria-disabled={isRunning}
                     onDragOver={handleTargetDragOver}
                     onDrop={handleTargetDrop}
                   >
-                    <div className="flex size-8 items-center justify-center rounded-md border border-accent/35 bg-accent/12 text-accent">
-                      <UploadCloud className="size-5" aria-hidden />
+                    <div className="flex size-7 items-center justify-center rounded-md bg-accent/10 text-accent">
+                      <UploadCloud className="size-4" aria-hidden />
                     </div>
-                    <h3 className="mt-3 font-display text-lg font-semibold tracking-tight text-primary">Drag &amp; drop encrypted files to decrypt</h3>
-                    <p id="decrypt-drop-zone-description" className="mt-1 max-w-2xl text-sm leading-snug text-secondary">
-                      Choose locked files manually or bring in a folder, then restore original contents with the password or recovery material you already trust.
-                    </p>
-                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <h3 className="mt-2.5 font-display text-base font-semibold tracking-tight text-primary">Drop encrypted files to decrypt</h3>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <Button variant="default" onClick={() => void pickFiles()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse Files
@@ -1061,7 +1158,6 @@ function removeTarget(path: string) {
                         Browse Folder
                       </Button>
                     </div>
-                    <p className="mt-3 text-xs text-secondary">Supports FileLocker encrypted files and batch decryption.</p>
                   </div>
                 </SectionBody>
               </Section>
@@ -1083,18 +1179,18 @@ function removeTarget(path: string) {
                   </div>
                 </SectionHeader>
                 <SectionBody className="px-4 py-3">
-                  {pathWarnings.length > 0 ? (
-                    <div className="mb-3 rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm leading-snug text-secondary">
-                      {pathWarnings[0]}
+                  {pathSelectionWarning ? (
+                    <div className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/8 px-3 py-2 text-sm leading-snug text-secondary">
+                      {pathSelectionWarning}
                     </div>
                   ) : null}
 
                   {paths.length === 0 ? (
-                    <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm text-secondary">
+                    <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm text-secondary">
                       No encrypted files selected. Drop locked files above or choose files to continue.
                     </div>
                   ) : (
-                    <div className="overflow-hidden rounded-md border border-border/80 bg-background/35">
+                    <div className="overflow-hidden rounded-md border border-border/60 bg-bg-subtle/35">
                       <div className="grid grid-cols-[minmax(0,1.9fr)_minmax(150px,0.8fr)_100px_150px_56px] gap-3 border-b border-border/80 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                         <span>Name</span>
                         <span>Type</span>
@@ -1114,8 +1210,8 @@ function removeTarget(path: string) {
                         }))).map((item) => {
                           const itemStatus = isDescribingPaths
                             ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
-                            : !password
-                              ? { label: "Password required", dotClass: "bg-accent-orange", textClass: "text-accent-orange" }
+                            : !hasUnlockSecret
+                              ? { label: "Unlock material required", dotClass: "bg-accent-orange", textClass: "text-accent-orange" }
                               : item.isDirectory
                                 ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
                                 : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
@@ -1170,16 +1266,9 @@ function removeTarget(path: string) {
                     Enter the password used when these files were encrypted. If this job also uses a recovery key or keyfile, you can add them below.
                   </p>
 
-                  <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-3">
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                      <div>
-                        <div className="font-display text-[1rem] font-semibold tracking-tight text-amber-300">Important</div>
-                        <p className="mt-1 text-sm leading-snug text-secondary">
-                          FileLocker cannot recover files if the password is incorrect or lost.
-                        </p>
-                      </div>
-                    </div>
+                  <div className="app-inline-notice app-inline-notice-warning">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                    <span>FileLocker cannot recover files if the password is incorrect or lost.</span>
                   </div>
                 </SectionBody>
               </Section>
@@ -1256,7 +1345,7 @@ function removeTarget(path: string) {
                   <SummaryRow icon={Files} label="Files selected" value={String(paths.length)} />
                   <SummaryRow icon={HardDrive} label="Total size" value={paths.length > 0 ? totalSizeDisplay : "Calculated at run start"} />
                   <SummaryRow icon={FolderOpen} label="Output" value={decryptOutputSummary} />
-                  <SummaryRow icon={Unlock} label="Mode" value="AES-256-GCM" />
+                  <SummaryRow icon={Unlock} label="Mode" value="Auto-detect from payload" />
                   <SummaryRow icon={hasOperationError ? AlertTriangle : decryptCanStart ? CheckCircle2 : Clock3} label="Status" value={decryptStatusText} good={decryptCanStart && !hasOperationError} />
                 </SectionBody>
                 <SectionFooter className="flex flex-col gap-2 border-t border-border bg-transparent px-4 py-3">
@@ -1295,16 +1384,10 @@ function removeTarget(path: string) {
                 </SectionFooter>
               </Section>
 
-              <Section className="overflow-hidden rounded-md border border-amber-500/35 bg-transparent py-0 shadow-none ring-0">
-                <SectionBody className="px-4 py-3">
-                  <div className="flex items-start gap-2.5">
-                    <ShieldAlert className="mt-0.5 size-4 text-amber-400" aria-hidden />
-                    <p className="text-sm leading-snug text-secondary">
-                      If you turn on encrypted-file removal, confirm your password and output location first so you do not lose the only copy you can still open.
-                    </p>
-                  </div>
-                </SectionBody>
-              </Section>
+              <div className="app-inline-notice app-inline-notice-warning">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+                <p className="text-sm leading-snug text-secondary">If you turn on encrypted-file removal, confirm your password and output location first so you do not lose the only copy you can still open.</p>
+              </div>
             </aside>
           </div>
         </div>
@@ -1342,7 +1425,8 @@ function removeTarget(path: string) {
         <div className="grid gap-4 md:grid-cols-2">
           <Field label={isEncrypt ? "Password" : "Unlock Password"}>
             <PasswordInput value={password} onChange={setPassword} placeholder={isEncrypt ? "Password" : "Unlock password"} label={isEncrypt ? "Password" : "Unlock Password"} disabled={isRunning} />
-            {submitAttempted && !password ? <p className="mt-2 text-sm text-accent-red">{isEncrypt ? "Password is required." : "Unlock password is required."}</p> : null}
+            {submitAttempted && isEncrypt && !hasPassword ? <p className="mt-2 text-sm text-accent-red">Password is required.</p> : null}
+            {submitAttempted && !isEncrypt && !hasUnlockSecret ? <p className="mt-2 text-sm text-accent-red">Enter the unlock password or recovery key.</p> : null}
           </Field>
           {isEncrypt ? (
             <Field label="Confirm Password">
@@ -1367,7 +1451,7 @@ function removeTarget(path: string) {
         <div className="grid border-t border-border md:grid-cols-2 md:[&>*:nth-child(odd)]:border-r">
           {isEncrypt ? <Toggle label="Compress before encryption" checked={options.compressFiles} onChange={(value) => setOptions({ ...options, compressFiles: value })} disabled={isRunning} /> : null}
           {isEncrypt ? <Toggle label="Scramble output names" checked={options.scrambleNames} onChange={(value) => setOptions({ ...options, scrambleNames: value })} disabled={isRunning} /> : null}
-          {isEncrypt ? <Toggle label="PNG carrier output" checked={options.useSteganography} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning} /> : null}
+          {isEncrypt ? <Toggle label="PNG carrier output" checked={options.useSteganography && canUsePngCarrier} onChange={(value) => setOptions({ ...options, useSteganography: value })} disabled={isRunning || !canUsePngCarrier} /> : null}
           {isEncrypt ? <Toggle label="Package folders" checked={options.packageFolders} onChange={(value) => setOptions({ ...options, packageFolders: value })} disabled={isRunning} /> : null}
           <Toggle label="Verify after write" checked={options.verifyAfterWrite} onChange={(value) => setOptions({ ...options, verifyAfterWrite: value })} disabled={isRunning} />
           <Toggle label={isEncrypt ? "Delete originals after success" : "Delete encrypted files after success"} checked={options.removeOriginalsAfterSuccess} onChange={(value) => setOptions({ ...options, removeOriginalsAfterSuccess: value })} disabled={isRunning} />
@@ -1436,18 +1520,18 @@ function removeTarget(path: string) {
             </div>
           </Field>
           <Field label="Metadata Note">
-            <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" disabled={isRunning} />
+            <Input value={metadataNotes} onChange={(event) => setMetadataNotes(event.target.value)} placeholder="Optional metadata note" maxLength={MAX_METADATA_NOTES_CHARS} disabled={isRunning} />
           </Field>
           <Field label="Timestamp Policy">
-            <Select value={options.outputTimestampPolicy} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
+            <Select value={normalizeOutputTimestampPolicy(options.outputTimestampPolicy)} onValueChange={(value) => setOptions({ ...options, outputTimestampPolicy: value })} disabled={isRunning}>
               <SelectTrigger>
                 <SelectValue placeholder="Timestamp policy" />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="Current time">Current time</SelectItem>
-                  <SelectItem value="Preserve source timestamps">Preserve source timestamps</SelectItem>
-                  <SelectItem value="Randomize">Randomize</SelectItem>
+                  {OUTPUT_TIMESTAMP_POLICIES.map((policy) => (
+                    <SelectItem key={policy.id} value={policy.id}>{policy.label}</SelectItem>
+                  ))}
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -1757,7 +1841,7 @@ export function SecureDeletePage({
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
                             <div className="font-display text-[1rem] font-semibold tracking-tight text-primary">{entry.profileName || "FileLocker"}</div>
-                            <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{new Date(entry.timestampUtc).toLocaleString()}</div>
+                            <div className="mt-1 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{formatDate(entry.timestampUtc)}</div>
                           </div>
                           <Badge variant="outline">{entry.cancelled ? "Cancelled" : `${entry.successCount} completed / ${entry.failureCount} failed`}</Badge>
                         </div>
@@ -1854,17 +1938,17 @@ export function SecureDeletePage({
               </SectionHeader>
               <SectionBody className="px-4 py-3">
                 {pathWarnings.length > 0 ? (
-                  <div className="mb-3 rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm leading-snug text-secondary">
+                  <div className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/8 px-3 py-2 text-sm leading-snug text-secondary">
                     {pathWarnings[0]}
                   </div>
                 ) : null}
 
                 {paths.length === 0 ? (
-                  <div className="rounded-md border border-border/80 bg-background/35 px-3 py-3 text-sm text-secondary">
+                  <div className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-3 text-sm text-secondary">
                     No delete targets selected. Drop files above or choose files to continue.
                   </div>
                 ) : (
-                  <div className="overflow-x-auto rounded-md border border-border/80 bg-background/35">
+                  <div className="overflow-x-auto rounded-md border border-border/60 bg-bg-subtle/35">
                     <div className="min-w-[920px]">
                       <div className="grid grid-cols-[minmax(0,1.65fr)_140px_100px_minmax(0,1.35fr)_110px_56px] gap-3 border-b border-border/80 px-3 py-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                         <span>Name</span>
@@ -1985,7 +2069,7 @@ export function SecureDeletePage({
                       key={method.id}
                       type="button"
                       className={cn(
-                        "flex w-full items-start gap-2.5 rounded-md border border-border/80 bg-background/35 px-3 py-2 text-left transition-colors hover:border-accent/60 hover:bg-background/55",
+                        "flex w-full items-start gap-2.5 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2 text-left transition-colors hover:border-accent/60 hover:bg-background/55",
                         isSelected && "border-accent/70 bg-accent/10",
                         isRunning && "cursor-not-allowed opacity-60"
                       )}
@@ -2033,7 +2117,7 @@ export function SecureDeletePage({
               </SectionBody>
             </Section>
 
-            <Section className="overflow-hidden rounded-md border border-amber-500/35 bg-transparent py-0 shadow-none ring-0">
+            <Section className="overflow-hidden rounded-md border border-amber-400/35 bg-transparent py-0 shadow-none ring-0">
               <SectionBody className="px-4 py-3">
                 <div className="flex items-start gap-2.5">
                   <ShieldAlert className="mt-0.5 size-4 text-amber-400" aria-hidden />
@@ -2049,7 +2133,7 @@ export function SecureDeletePage({
                 <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Ready Check</SectionTitle>
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
-                <div className="rounded-md border border-border/80 bg-background/35">
+                <div className="rounded-md border border-border/60 bg-bg-subtle/35">
                   <Toggle label="I understand these selected items will be removed" checked={confirmed} onChange={setConfirmed} disabled={isRunning} />
                 </div>
                 <p className="text-sm leading-snug text-secondary">
@@ -2109,20 +2193,12 @@ function OperationErrorNotice({ message }: { message: string }) {
 }
 
 function areSameLocalPath(left: string, right: string) {
-  return normalizeComparablePath(left) === normalizeComparablePath(right)
-}
-
-function normalizeComparablePath(path: string) {
-  return path
-    .trim()
-    .replaceAll("/", "\\")
-    .replace(/[\\]+$/, "")
-    .toLowerCase()
+  return getComparableLocalPath(left.trim()) === getComparableLocalPath(right.trim())
 }
 
 function SummaryRow({ icon: Icon, label, value, good = false }: SummaryRowProps) {
   return (
-    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/80 bg-background/35 px-3 py-2">
+    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2">
       <div className="flex min-w-0 items-center gap-2.5">
         <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md border", good ? "border-accent-green/30 bg-accent-green/10 text-accent-green" : "border-border/70 bg-background/35 text-secondary")}>
           <Icon className="size-4" aria-hidden />
