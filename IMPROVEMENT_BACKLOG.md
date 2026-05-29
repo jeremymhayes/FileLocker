@@ -280,6 +280,8 @@ This backlog tracks small, safe iterations for the current checkout. Items are o
 - [x] Keep the repeated React PNG-carrier toggle disabled for algorithms that cannot use the carrier path.
 - [x] Normalize and deduplicate React-selected local paths before they reach file, hash, metadata, and secure-delete bridge requests.
 - [x] Filter malformed React encryption algorithm bridge entries before option rendering.
+- [x] Treat explicit empty or fully invalid React encryption algorithm bridge lists as unavailable instead of falling back to built-in options.
+- [x] Cover React encryption algorithm option filtering and fallback semantics with a focused utility test.
 - [x] Reuse the shared React comparable-path helper for both adding and removing selected local paths.
 - [x] Normalize Hash Files picker replacement selections through the same path helper used by drag/drop additions.
 - [x] Use the shared React comparable-path helper when removing paths from the reusable drop-zone component.

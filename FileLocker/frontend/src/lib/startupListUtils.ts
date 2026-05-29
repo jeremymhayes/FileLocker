@@ -65,7 +65,7 @@ export function filterStartupItems(items: StartupItem[], filters: StartupItemFil
       return false
     }
 
-    if (filters.sourceFilter !== "all" && (item.sourceType || item.source) !== filters.sourceFilter) {
+    if (filters.sourceFilter !== "all" && firstText(item.sourceType, item.source) !== filters.sourceFilter) {
       return false
     }
 
@@ -80,10 +80,10 @@ export function filterStartupItems(items: StartupItem[], filters: StartupItemFil
       item.sourceType,
       item.scope,
       item.status,
-      item.commandRaw || item.command,
-      item.executableResolved || item.targetPath || "",
-      item.sourceLocation || item.location,
-    ].some((value) => value.toLowerCase().includes(normalizedQuery))
+      firstText(item.commandRaw, item.command),
+      firstText(item.executableResolved, item.targetPath),
+      firstText(item.sourceLocation, item.location),
+    ].some((value) => safeText(value).toLowerCase().includes(normalizedQuery))
   })
 }
 
@@ -106,38 +106,38 @@ export function sortStartupItems(items: StartupItem[], sortKey: StartupSortKey) 
   ])
   sorted.sort((a, b) => {
     if (sortKey === "enabled") {
-      return Number(b.isEnabled) - Number(a.isEnabled) || a.name.localeCompare(b.name)
+      return Number(b.isEnabled) - Number(a.isEnabled) || compareByName(a, b)
     }
 
     if (sortKey === "source") {
-      return (a.sourceType || a.source).localeCompare(b.sourceType || b.source) || a.name.localeCompare(b.name)
+      return compareText(firstText(a.sourceType, a.source), firstText(b.sourceType, b.source)) || compareByName(a, b)
     }
 
     if (sortKey === "scope") {
-      return (a.scope || "").localeCompare(b.scope || "") || a.name.localeCompare(b.name)
+      return compareText(a.scope, b.scope) || compareByName(a, b)
     }
 
     if (sortKey === "risk") {
-      return (riskRank.get(a.riskLevel) ?? 9) - (riskRank.get(b.riskLevel) ?? 9) || a.name.localeCompare(b.name)
+      return (riskRank.get(a.riskLevel) ?? 9) - (riskRank.get(b.riskLevel) ?? 9) || compareByName(a, b)
     }
 
     if (sortKey === "confidence") {
-      return (confidenceRank.get(a.confidence) ?? 9) - (confidenceRank.get(b.confidence) ?? 9) || a.name.localeCompare(b.name)
+      return (confidenceRank.get(a.confidence) ?? 9) - (confidenceRank.get(b.confidence) ?? 9) || compareByName(a, b)
     }
 
     if (sortKey === "signature") {
-      return Number(b.isMicrosoftSigned) - Number(a.isMicrosoftSigned) || (a.signatureStatus || "").localeCompare(b.signatureStatus || "") || a.name.localeCompare(b.name)
+      return Number(b.isMicrosoftSigned) - Number(a.isMicrosoftSigned) || compareText(a.signatureStatus, b.signatureStatus) || compareByName(a, b)
     }
 
     if (sortKey === "impact") {
-      return (impactRank.get(a.startupImpact) ?? 9) - (impactRank.get(b.startupImpact) ?? 9) || a.name.localeCompare(b.name)
+      return (impactRank.get(a.startupImpact) ?? 9) - (impactRank.get(b.startupImpact) ?? 9) || compareByName(a, b)
     }
 
     if (sortKey === "publisher") {
-      return (a.publisher || "").localeCompare(b.publisher || "") || a.name.localeCompare(b.name)
+      return compareText(a.publisher, b.publisher) || compareByName(a, b)
     }
 
-    return a.name.localeCompare(b.name)
+    return compareByName(a, b)
   })
   return sorted
 }
@@ -149,4 +149,27 @@ export function groupStartupItems(items: StartupItem[]) {
       items: items.filter((item) => item.category === category),
     }))
     .filter((group) => group.items.length > 0)
+}
+
+function compareByName(a: StartupItem, b: StartupItem) {
+  return compareText(a.name, b.name)
+}
+
+function safeText(value: unknown) {
+  return typeof value === "string" ? value : ""
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    const text = safeText(value)
+    if (text) {
+      return text
+    }
+  }
+
+  return ""
+}
+
+function compareText(left: unknown, right: unknown) {
+  return safeText(left).localeCompare(safeText(right))
 }

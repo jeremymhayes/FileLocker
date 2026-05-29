@@ -132,4 +132,32 @@ assert.deepEqual(
   ]
 )
 
+const malformedItems = [
+  {
+    ...baseItem,
+    id: "malformed",
+    name: undefined,
+    source: undefined,
+    location: undefined,
+    command: undefined,
+    targetPath: undefined,
+    sourceType: { label: "Registry" },
+    scope: undefined,
+    publisher: undefined,
+    signatureStatus: undefined,
+    commandRaw: undefined,
+    executableResolved: undefined,
+    sourceLocation: undefined,
+    startupImpact: undefined,
+    confidence: undefined,
+    riskLevel: undefined,
+  },
+  items[0],
+]
+
+assert.deepEqual(filterStartupItems(malformedItems, { ...baseFilters, query: "alpha" }).map((item) => item.id), ["alpha"])
+assert.deepEqual(filterStartupItems(malformedItems, { ...baseFilters, sourceFilter: "Registry" }).map((item) => item.id), ["alpha"])
+assert.deepEqual(sortStartupItems(malformedItems, "publisher").map((item) => item.id), ["malformed", "alpha"])
+assert.deepEqual(sortStartupItems(malformedItems, "source").map((item) => item.id), ["malformed", "alpha"])
+
 console.log("Startup list utility tests passed.")

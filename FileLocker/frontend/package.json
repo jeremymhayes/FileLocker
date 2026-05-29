@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build && node scripts/copy-public-files.mjs",
     "test:startup": "node scripts/test-startup-list-utils.mjs",
+    "test:encryption-algorithms": "node scripts/test-encryption-algorithms.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {

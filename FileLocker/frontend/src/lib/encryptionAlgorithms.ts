@@ -84,16 +84,15 @@ function isBoundedAlgorithmText(value: unknown, maxLength: number, required: boo
   )
 }
 
-export function getEncryptionAlgorithmOptions(encryptionAlgorithms?: EncryptionAlgorithmOption[]) {
+export function getEncryptionAlgorithmOptions(encryptionAlgorithms?: EncryptionAlgorithmOption[] | null) {
   if (encryptionAlgorithms == null) {
     return FALLBACK_ENCRYPTION_ALGORITHMS
   }
 
-  const options = encryptionAlgorithms.filter(isEncryptionAlgorithmOption)
-  return options.length > 0 ? options : FALLBACK_ENCRYPTION_ALGORITHMS
+  return encryptionAlgorithms.filter(isEncryptionAlgorithmOption)
 }
 
-export function getDefaultEncryptionAlgorithm(encryptionAlgorithms?: EncryptionAlgorithmOption[]) {
+export function getDefaultEncryptionAlgorithm(encryptionAlgorithms?: EncryptionAlgorithmOption[] | null) {
   const options = getEncryptionAlgorithmOptions(encryptionAlgorithms)
   return (
     options.find((algorithm) => algorithm.id === DEFAULT_ENCRYPTION_ALGORITHM_ID) ??
