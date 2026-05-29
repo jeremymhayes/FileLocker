@@ -175,6 +175,74 @@ public sealed class BridgePathValidationTests
     }
 
     [Fact]
+    public void TryNormalizeMetadataScramblerPath_ReturnsFullPathForExistingFile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string filePath = Path.Combine(root, "photo.jpg");
+        File.WriteAllText(filePath, "metadata");
+
+        try
+        {
+            bool result = MainWindow.TryNormalizeMetadataScramblerPath($"  {filePath}  ", out string normalizedPath, out string warning);
+
+            Assert.True(result);
+            Assert.Equal(Path.GetFullPath(filePath), normalizedPath);
+            Assert.Equal(string.Empty, warning);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("photo.jpg")]
+    [InlineData("C:\\Temp\\photo.jpg:stream")]
+    [InlineData("C:\\Temp\\photo\u202E.jpg")]
+    public void TryNormalizeMetadataScramblerPath_RejectsUnsafePaths(string path)
+    {
+        bool result = MainWindow.TryNormalizeMetadataScramblerPath(path, out string normalizedPath, out string warning);
+
+        Assert.False(result);
+        Assert.Equal(string.Empty, normalizedPath);
+        Assert.False(string.IsNullOrWhiteSpace(warning));
+    }
+
+    [Fact]
+    public void TryNormalizeHashFileSelectionPath_ReturnsFullPathForExistingFile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string filePath = Path.Combine(root, "payload.txt");
+        File.WriteAllText(filePath, "payload");
+
+        try
+        {
+            bool result = MainWindow.TryNormalizeHashFileSelectionPath($"  {filePath}  ", out string normalizedPath);
+
+            Assert.True(result);
+            Assert.Equal(Path.GetFullPath(filePath), normalizedPath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("payload.txt")]
+    [InlineData("C:\\Temp\\payload.txt:stream")]
+    [InlineData("C:\\Temp\\payload\u202E.txt")]
+    public void TryNormalizeHashFileSelectionPath_RejectsUnsafePaths(string path)
+    {
+        bool result = MainWindow.TryNormalizeHashFileSelectionPath(path, out string normalizedPath);
+
+        Assert.False(result);
+        Assert.Equal(string.Empty, normalizedPath);
+    }
+
+    [Fact]
     public void IsPayloadV3File_RejectsRelativePathBeforeOpening()
     {
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>

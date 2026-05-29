@@ -61,26 +61,46 @@ internal static class UpdateService
     };
 
     private const string InstallerCleanupPathEnvironmentVariable = "FILELOCKER_UPDATER_INSTALLER_PATH";
+    private const string InstallerCleanupDelayEnvironmentVariable = "FILELOCKER_UPDATER_STARTUP_DELAY_MS";
+    private const string InstallerCleanupWaitPidEnvironmentVariable = "FILELOCKER_UPDATER_WAIT_PID";
+
+    private static readonly string InstallerCleanupPowerShellPath = Path.Combine(
+        Environment.SystemDirectory,
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe");
 
     internal static string GitHubRepositoryUrl => $"https://github.com/{Owner}/{Repo}";
 
-    internal static ProcessStartInfo CreateInstallerCleanupStartInfo(string installerPath, TimeSpan startupDelay)
+    internal static ProcessStartInfo CreateInstallerCleanupStartInfo(
+        string installerPath,
+        TimeSpan startupDelay,
+        int? processIdToWaitFor = null)
     {
         string normalizedInstallerPath = NormalizeInstallerPath(installerPath);
         var startInfo = new ProcessStartInfo
         {
-            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
-            Arguments = CreateInstallerCleanupCommand(startupDelay),
+            FileName = InstallerCleanupPowerShellPath,
+            Arguments = CreateInstallerCleanupCommand(),
             CreateNoWindow = true,
             UseShellExecute = false,
             WindowStyle = ProcessWindowStyle.Hidden
         };
 
         startInfo.Environment[InstallerCleanupPathEnvironmentVariable] = normalizedInstallerPath;
+        startInfo.Environment[InstallerCleanupDelayEnvironmentVariable] = GetStartupDelayMilliseconds(startupDelay).ToString(CultureInfo.InvariantCulture);
+        if (processIdToWaitFor is > 0)
+        {
+            startInfo.Environment[InstallerCleanupWaitPidEnvironmentVariable] = processIdToWaitFor.Value.ToString(CultureInfo.InvariantCulture);
+        }
+
         return startInfo;
     }
 
-    internal static Process StartInstallerAndDeleteWhenClosed(string installerPath, TimeSpan startupDelay)
+    internal static Process StartInstallerAndDeleteWhenClosed(
+        string installerPath,
+        TimeSpan startupDelay,
+        int? processIdToWaitFor = null)
     {
         string normalizedInstallerPath = NormalizeInstallerPath(installerPath);
         if (!File.Exists(normalizedInstallerPath))
@@ -88,7 +108,7 @@ internal static class UpdateService
             throw new FileNotFoundException("The update installer could not be found.", normalizedInstallerPath);
         }
 
-        ProcessStartInfo startInfo = CreateInstallerCleanupStartInfo(normalizedInstallerPath, startupDelay);
+        ProcessStartInfo startInfo = CreateInstallerCleanupStartInfo(normalizedInstallerPath, startupDelay, processIdToWaitFor);
         return Process.Start(startInfo)
             ?? throw new InvalidOperationException("Unable to launch the update installer.");
     }
@@ -137,14 +157,41 @@ internal static class UpdateService
     private static bool ContainsUnsafeFormattingCharacter(char character) =>
         char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format;
 
-    internal static string CreateInstallerCleanupCommand(TimeSpan startupDelay)
+    private static int GetStartupDelayMilliseconds(TimeSpan startupDelay)
     {
-        int delaySeconds = Math.Clamp((int)Math.Ceiling(Math.Max(0, startupDelay.TotalSeconds)), 0, 60);
-        string delayCommand = delaySeconds > 0
-            ? $"timeout /t {delaySeconds} /nobreak >nul & "
-            : string.Empty;
+        double delayMilliseconds = Math.Ceiling(Math.Max(0, startupDelay.TotalMilliseconds));
+        return (int)Math.Clamp(delayMilliseconds, 0, 60_000);
+    }
 
-        return $"/d /c {delayCommand}start /wait \"\" \"%{InstallerCleanupPathEnvironmentVariable}%\" & del /f /q \"%{InstallerCleanupPathEnvironmentVariable}%\"";
+    internal static string CreateInstallerCleanupCommand()
+    {
+        string script = string.Join(
+            "\n",
+            "$ErrorActionPreference = 'SilentlyContinue'",
+            $"$installer = $env:{InstallerCleanupPathEnvironmentVariable}",
+            "if ([string]::IsNullOrWhiteSpace($installer) -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) { exit 2 }",
+            $"$waitPidText = $env:{InstallerCleanupWaitPidEnvironmentVariable}",
+            "if ($waitPidText -match '^\\d{1,10}$') {",
+            "  $waitPid = [int]$waitPidText",
+            "  $deadline = [DateTime]::UtcNow.AddSeconds(90)",
+            "  while ([DateTime]::UtcNow -lt $deadline) {",
+            "    $running = Get-Process -Id $waitPid -ErrorAction SilentlyContinue",
+            "    if ($null -eq $running) { break }",
+            "    Start-Sleep -Milliseconds 500",
+            "  }",
+            "}",
+            $"$delayText = $env:{InstallerCleanupDelayEnvironmentVariable}",
+            "if ($delayText -match '^\\d{1,6}$') {",
+            "  $delayMs = [int]$delayText",
+            "  if ($delayMs -gt 0) { Start-Sleep -Milliseconds $delayMs }",
+            "}",
+            "$process = Start-Process -FilePath $installer -Wait -PassThru",
+            "if ($null -eq $process) { exit 3 }",
+            "Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue",
+            "exit $process.ExitCode");
+
+        return "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " +
+            Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
     }
 
     internal static UpdateSettings LoadSettings()

@@ -1,4 +1,4 @@
-FileLocker V1.2.1.0 Latest
+FileLocker V1.2.1.0
 
 FileLocker 1.2.1.0
 

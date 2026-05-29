@@ -537,3 +537,6 @@ This backlog tracks small, safe iterations for the current checkout. Items are o
 - [x] Strip control characters from redacted non-path error text before warnings or UI messages consume it.
 - [x] Clear bounded external-process text buffers after command output has been drained.
 - [x] Report keyfile directory selections as invalid files instead of missing paths.
+- [x] Replace control and Unicode-format characters in CSV cells before export formula escaping.
+- [x] Normalize metadata-scrambler selections as fully-qualified non-ADS paths before expansion.
+- [x] Normalize legacy hash-file selections through the shared existing-file validator before hashing previews.

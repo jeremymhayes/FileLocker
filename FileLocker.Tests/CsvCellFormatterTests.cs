@@ -7,14 +7,22 @@ public sealed class CsvCellFormatterTests
     [Theory]
     [InlineData("=Launch", "'=Launch")]
     [InlineData("  @Risk", "'  @Risk")]
-    [InlineData("\uFEFF=Launch", "'\uFEFF=Launch")]
-    [InlineData("\u200B@Risk", "'\u200B@Risk")]
-    [InlineData("\0=Launch", "'\0=Launch")]
-    [InlineData("\u202E=Launch", "'\u202E=Launch")]
+    [InlineData("\uFEFF=Launch", "' =Launch")]
+    [InlineData("\u200B@Risk", "' @Risk")]
+    [InlineData("\0=Launch", "' =Launch")]
+    [InlineData("\u202E=Launch", "' =Launch")]
     [InlineData("Normal text", "Normal text")]
     public void Format_EscapesFormulaLikeValues(string value, string expected)
     {
         Assert.Equal(expected, CsvCellFormatter.Format(value));
+    }
+
+    [Fact]
+    public void Format_ReplacesControlAndFormatCharactersInSafeValues()
+    {
+        string formatted = CsvCellFormatter.Format("alpha\0beta\u202Egamma");
+
+        Assert.Equal("alpha beta gamma", formatted);
     }
 
     [Fact]

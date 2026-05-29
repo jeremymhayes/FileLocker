@@ -516,7 +516,12 @@ namespace FileLocker
                     break;
                 }
 
-                string path = rawPath.Trim();
+                if (!TryNormalizeMetadataScramblerPath(rawPath, out string path, out string warning))
+                {
+                    AddQueueWarning(result.Warnings, warning);
+                    continue;
+                }
+
                 if (File.Exists(path))
                 {
                     result.FilePaths.Add(path);
@@ -541,6 +546,23 @@ namespace FileLocker
             }
 
             return result;
+        }
+
+        internal static bool TryNormalizeMetadataScramblerPath(string? rawPath, out string normalizedPath, out string warning)
+        {
+            normalizedPath = string.Empty;
+            warning = string.Empty;
+
+            try
+            {
+                normalizedPath = RequireExistingPath(rawPath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                warning = $"Skipped invalid metadata path: {GetFriendlyExceptionMessage(ex, "Path validation failed.")}";
+                return false;
+            }
         }
 
         private static IEnumerable<string> EnumerateMetadataFolderFiles(string rootFolderPath, List<string> warnings)

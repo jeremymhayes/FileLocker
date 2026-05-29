@@ -51,8 +51,8 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Category | What you get |
 | --- | --- |
 | Platform | Windows 10 and Windows 11 |
-| Current version | `1.2.1.0` |
-| Installer | `FileLocker-Setup-1.2.1.0.exe` |
+| Current version | `1.2.2.0` |
+| Installer | `FileLocker-Setup-1.2.2.0.exe` |
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
@@ -60,13 +60,13 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Updates | Optional checks against GitHub Releases |
 | Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
 
-## New In 1.2.1.0
+## New In 1.2.2.0
 
-- Refreshed **Startup Manager**, **App Manager**, and **Registry Fixer** with clearer tables, details panels, and safer action flows.
-- Rebuilt **Custom Clean** into a friendlier cleanup screen with real scan results, safety labels, filters, and select-all controls.
-- Expanded Custom Clean coverage for Windows, browser, app, gaming, developer, privacy, and advanced cleanup categories.
-- Improved elevated file and folder browsing so administrator mode can still open selection dialogs.
-- Kept risky cleanup areas review-first instead of selecting privacy, developer, advanced, or sign-out items by default.
+- Fixed the in-app updater install flow so FileLocker closes first, then a helper launches the downloaded installer and removes it after the installer exits.
+- Standardized new `.locked` encryption choices around runtime-supported AEAD algorithms with shared metadata, labels, validation, and payload headers.
+- Added stronger v4 `.locked` payload metadata checks while keeping existing AES-256-GCM payloads decryptable.
+- Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so invalid or unsafe inputs fail earlier with clearer messages.
+- Kept the System Care improvements from 1.2.1.0, including clearer Custom Clean, Startup Manager, Registry Fixer, and App Manager workflows.
 
 ## What You Can Do In The App
 
@@ -132,7 +132,7 @@ The app keeps a strong boundary between the interface and the file-handling logi
 ## Download And Install
 
 1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download `FileLocker-Setup-1.2.1.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
+2. Download `FileLocker-Setup-1.2.2.0.exe` or the newest `FileLocker-Setup-<version>.exe`.
 3. Run the installer.
 4. Launch FileLocker from the Start Menu or desktop shortcut.
 
@@ -243,6 +243,7 @@ The installer flow publishes the app into `artifacts\nsis\publish` and produces 
 - [All releases](https://github.com/jeremymhayes/FileLocker/releases)
 - [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
 - [Repository](https://github.com/jeremymhayes/FileLocker)
+- [FileLocker 1.2.2.0 release notes](RELEASE_NOTES_1.2.2.0.md)
 - [FileLocker 1.2.1.0 release notes](RELEASE_NOTES_1.2.1.0.md)
 
 ## Project Documents

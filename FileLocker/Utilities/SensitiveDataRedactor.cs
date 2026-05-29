@@ -21,13 +21,18 @@ internal static class SensitiveDataRedactor
 
     internal static string RedactMessage(string? message)
     {
+        return RedactMessage(message, MaxRedactedMessageChars, TruncatedMessageSuffix);
+    }
+
+    internal static string RedactMessage(string? message, int maxChars, string truncatedMessageSuffix)
+    {
         if (string.IsNullOrWhiteSpace(message))
         {
             return string.Empty;
         }
 
         string redacted = ReplaceControlCharacters(message).Trim();
-        redacted = BoundMessage(redacted);
+        redacted = BoundMessage(redacted, maxChars, truncatedMessageSuffix);
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "%LOCALAPPDATA%");
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "%APPDATA%");
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
@@ -39,15 +44,21 @@ internal static class SensitiveDataRedactor
         return redacted;
     }
 
-    private static string BoundMessage(string message)
+    private static string BoundMessage(string message, int maxChars, string truncatedMessageSuffix)
     {
-        if (message.Length <= MaxRedactedMessageChars)
+        if (maxChars < 0)
+        {
+            maxChars = 0;
+        }
+
+        string suffix = truncatedMessageSuffix ?? string.Empty;
+        if (message.Length <= maxChars)
         {
             return message;
         }
 
-        int bodyLength = Math.Max(0, MaxRedactedMessageChars - TruncatedMessageSuffix.Length);
-        return message[..bodyLength].TrimEnd() + TruncatedMessageSuffix;
+        int bodyLength = Math.Max(0, maxChars - suffix.Length);
+        return message[..bodyLength].TrimEnd() + suffix;
     }
 
     private static string RedactKnownRootToken(string message, string token)

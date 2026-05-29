@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace FileLocker.Tests;
 
@@ -373,11 +374,13 @@ public sealed class UpdateServiceTests
             installerPath,
             TimeSpan.FromSeconds(2));
 
-        Assert.Equal(Path.Combine(Environment.SystemDirectory, "cmd.exe"), startInfo.FileName);
-        Assert.Contains("timeout /t 2 /nobreak", startInfo.Arguments);
-        Assert.Contains("start /wait", startInfo.Arguments);
-        Assert.Contains("del /f /q", startInfo.Arguments);
+        string script = DecodePowerShellEncodedCommand(startInfo.Arguments);
+
+        Assert.Equal(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"), startInfo.FileName);
+        Assert.Contains("Start-Process -FilePath $installer -Wait -PassThru", script);
+        Assert.Contains("Remove-Item -LiteralPath $installer -Force", script);
         Assert.Equal(installerPath, startInfo.Environment["FILELOCKER_UPDATER_INSTALLER_PATH"]);
+        Assert.Equal("2000", startInfo.Environment["FILELOCKER_UPDATER_STARTUP_DELAY_MS"]);
         Assert.False(startInfo.UseShellExecute);
     }
 
@@ -391,6 +394,22 @@ public sealed class UpdateServiceTests
             TimeSpan.Zero);
 
         Assert.Equal(installerPath, startInfo.Environment["FILELOCKER_UPDATER_INSTALLER_PATH"]);
+    }
+
+    [Fact]
+    public void CreateInstallerCleanupStartInfo_WhenWaitProcessProvided_SetsWaitPid()
+    {
+        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker Test Installer.exe");
+
+        ProcessStartInfo startInfo = UpdateService.CreateInstallerCleanupStartInfo(
+            installerPath,
+            TimeSpan.Zero,
+            processIdToWaitFor: 1234);
+
+        string script = DecodePowerShellEncodedCommand(startInfo.Arguments);
+
+        Assert.Equal("1234", startInfo.Environment["FILELOCKER_UPDATER_WAIT_PID"]);
+        Assert.Contains("Get-Process -Id $waitPid", script);
     }
 
     [Fact]
@@ -914,6 +933,16 @@ public sealed class UpdateServiceTests
         string path = Path.Combine(AppContext.BaseDirectory, "FileLocker.exe");
         Assert.True(File.Exists(path), $"Expected test output to include {path}.");
         return path;
+    }
+
+    private static string DecodePowerShellEncodedCommand(string arguments)
+    {
+        const string marker = "-EncodedCommand ";
+        int markerIndex = arguments.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        Assert.True(markerIndex >= 0, "Expected a PowerShell encoded command.");
+
+        string encoded = arguments[(markerIndex + marker.Length)..].Trim();
+        return Encoding.Unicode.GetString(Convert.FromBase64String(encoded));
     }
 
     private static async Task<string> ComputeSha256HexAsync(string path)

@@ -163,13 +163,13 @@ namespace FileLocker
 
         private void SelectHashFile(string? filePath)
         {
-            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            if (!TryNormalizeHashFileSelectionPath(filePath, out string normalizedPath))
             {
                 SetStatus("The selected file could not be found.");
                 return;
             }
 
-            var fileInfo = new FileInfo(filePath);
+            var fileInfo = new FileInfo(normalizedPath);
             if (_isHashingFile && !string.Equals(_hashSelectedFile?.FullPath, fileInfo.FullName, StringComparison.OrdinalIgnoreCase))
             {
                 CancelCurrentHashGeneration();
@@ -196,6 +196,21 @@ namespace FileLocker
             else
             {
                 SetStatus($"Hash file selected: {fileInfo.Name}. Large files wait for manual Generate Hash.");
+            }
+        }
+
+        internal static bool TryNormalizeHashFileSelectionPath(string? filePath, out string normalizedPath)
+        {
+            normalizedPath = string.Empty;
+
+            try
+            {
+                normalizedPath = RequireExistingFile(filePath);
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

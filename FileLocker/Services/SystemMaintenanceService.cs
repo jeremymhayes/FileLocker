@@ -1039,16 +1039,7 @@ internal static class SystemMaintenanceService
 
     internal static string NormalizeWarningMessage(string? message)
     {
-        string redacted = SensitiveDataRedactor.RedactMessage(message);
-        if (redacted.Length <= MaxWarningMessageChars)
-        {
-            return redacted;
-        }
-
-        const string truncationMessage = "Warning truncated.";
-        string suffix = $"{Environment.NewLine}{truncationMessage}";
-        int bodyLength = Math.Max(0, MaxWarningMessageChars - suffix.Length);
-        return redacted[..bodyLength].TrimEnd() + suffix;
+        return SensitiveDataRedactor.RedactMessage(message, MaxWarningMessageChars, " Warning truncated.");
     }
 
     private static string[] NormalizeWarnings(IEnumerable<string> warnings, int maxWarnings, string overflowWarning)
@@ -1249,16 +1240,7 @@ internal static class SystemMaintenanceService
 
     internal static string NormalizeMaintenanceToolOutput(string? output)
     {
-        string normalized = SensitiveDataRedactor.RedactMessage(output);
-        if (normalized.Length <= MaxMaintenanceToolOutputChars)
-        {
-            return normalized;
-        }
-
-        const string truncationMessage = "Output truncated.";
-        string suffix = $"{Environment.NewLine}{truncationMessage}";
-        int bodyLength = Math.Max(0, MaxMaintenanceToolOutputChars - suffix.Length);
-        return normalized[..bodyLength].TrimEnd() + suffix;
+        return SensitiveDataRedactor.RedactMessage(output, MaxMaintenanceToolOutputChars, " Output truncated.");
     }
 
     private static void ScanStartupEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)

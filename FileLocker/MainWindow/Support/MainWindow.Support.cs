@@ -298,7 +298,7 @@ namespace FileLocker
 
         private void LaunchInstallerAndExit(string installerPath)
         {
-            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(2));
+            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.FromSeconds(1), Environment.ProcessId);
             Close();
         }
 
