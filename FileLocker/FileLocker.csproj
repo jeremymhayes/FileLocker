@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
 		<TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
@@ -16,11 +16,11 @@
 		<UseWinUI>true</UseWinUI>
 		<WinUISDKReferences>false</WinUISDKReferences>
 		<Nullable>enable</Nullable>
-		<Version>1.2.2.0</Version>
-		<VersionPrefix>1.2.2.0</VersionPrefix>
-		<AssemblyVersion>1.2.2.0</AssemblyVersion>
-		<FileVersion>1.2.2.0</FileVersion>
-		<InformationalVersion>1.2.2.0</InformationalVersion>
+		<Version>1.2.2.1</Version>
+		<VersionPrefix>1.2.2.1</VersionPrefix>
+		<AssemblyVersion>1.2.2.1</AssemblyVersion>
+		<FileVersion>1.2.2.1</FileVersion>
+		<InformationalVersion>1.2.2.1</InformationalVersion>
 		<PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
 		<PublishTrimmed>false</PublishTrimmed>
 		<EnableTrimAnalyzer>false</EnableTrimAnalyzer>

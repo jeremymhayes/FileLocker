@@ -17,7 +17,7 @@ Use GitHub's private vulnerability reporting for this repository when available.
 
 Useful details to include privately:
 
-- FileLocker version and installer filename.
+- FileLocker version and setup installer filename.
 - Windows version and architecture.
 - Whether the app was installed normally or run from a local build.
 - A concise description of the affected workflow.
@@ -31,7 +31,7 @@ In scope:
 
 - Encryption, decryption, keyfile, recovery-key, and payload handling issues.
 - Secure delete or cleanup behavior that can delete outside approved targets.
-- Update, installer, checksum, or release-validation weaknesses.
+- Update, setup installer, checksum, or release-validation weaknesses.
 - Sensitive data exposure in logs, history, bridge payloads, exports, errors, or UI state.
 - Startup, app-management, registry, and system-maintenance actions that bypass confirmation or administrator checks.
 

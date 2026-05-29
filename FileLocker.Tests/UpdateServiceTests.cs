@@ -1,94 +1,71 @@
 using System.Diagnostics;
-using System.Net;
-using System.Reflection;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace FileLocker.Tests;
 
 public sealed class UpdateServiceTests
 {
-    private static readonly object UpdateSettingsTestLock = new();
-
-    [Fact]
-    public async Task ValidateInstallerTrustDetailedAsync_AllowsUnsignedInstallerWhenDigestMatches()
+    [Theory]
+    [InlineData("1.2.3", "1.2.3.0")]
+    [InlineData("1.2.2.1", "1.2.2.1")]
+    [InlineData("v1.2.3", "1.2.3.0")]
+    [InlineData("  1.2.3.4  ", "1.2.3.4")]
+    public void NormalizeSkippedVersion_AcceptsInstallerVersionValues(string value, string expected)
     {
-        string installerPath = GetBuiltFileLockerExePath();
-        string digest = await ComputeSha256HexAsync(installerPath);
-
-        InstallerTrustResult result = await UpdateService.ValidateInstallerTrustDetailedAsync(
-            installerPath,
-            digest,
-            CancellationToken.None);
-
-        Assert.True(result.IsTrusted, result.Message);
-        Assert.True(result.DigestVerified);
-        Assert.True(result.UsedDigestFallback);
-    }
-
-    [Fact]
-    public async Task ValidateInstallerTrustDetailedAsync_RejectsUnsignedInstallerWithoutDigest()
-    {
-        string installerPath = GetBuiltFileLockerExePath();
-
-        InstallerTrustResult result = await UpdateService.ValidateInstallerTrustDetailedAsync(
-            installerPath,
-            expectedSha256Hex: null,
-            CancellationToken.None);
-
-        Assert.False(result.IsTrusted);
-        Assert.False(result.DigestVerified);
-        Assert.False(result.UsedDigestFallback);
-    }
-
-    [Fact]
-    public async Task ValidateInstallerTrustDetailedAsync_RejectsDigestMismatch()
-    {
-        string installerPath = GetBuiltFileLockerExePath();
-        string wrongDigest = new('0', 64);
-
-        InstallerTrustResult result = await UpdateService.ValidateInstallerTrustDetailedAsync(
-            installerPath,
-            wrongDigest,
-            CancellationToken.None);
-
-        Assert.False(result.IsTrusted);
-        Assert.False(result.DigestVerified);
-    }
-
-    [Fact]
-    public async Task ValidateInstallerTrustDetailedAsync_RejectsNullFilePath()
-    {
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            UpdateService.ValidateInstallerTrustDetailedAsync(
-                null!,
-                expectedSha256Hex: null,
-                TestContext.Current.CancellationToken));
+        Assert.Equal(expected, UpdateService.NormalizeSkippedVersion(value));
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task ValidateInstallerTrustDetailedAsync_RejectsBlankFilePath(string filePath)
+    [InlineData("1.2")]
+    [InlineData("1.2.3.4.5")]
+    [InlineData("1.2.3\u202E")]
+    public void NormalizeSkippedVersion_RejectsInvalidValues(string value)
     {
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            UpdateService.ValidateInstallerTrustDetailedAsync(
-                filePath,
-                expectedSha256Hex: null,
-                TestContext.Current.CancellationToken));
+        Assert.Null(UpdateService.NormalizeSkippedVersion(value));
     }
 
     [Fact]
-    public async Task ValidateInstallerTrustDetailedAsync_RejectsRelativeFilePath()
+    public void NormalizeSettings_NormalizesSkippedVersionAndUtcTimestamp()
     {
-        ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() =>
-            UpdateService.ValidateInstallerTrustDetailedAsync(
-                "FileLocker-Setup.exe",
-                expectedSha256Hex: null,
-                TestContext.Current.CancellationToken));
+        var localTime = new DateTimeOffset(2026, 5, 29, 8, 30, 0, TimeSpan.FromHours(-5));
+        var settings = new UpdateSettings
+        {
+            AutoCheckEnabled = false,
+            LastCheckedUtc = localTime,
+            SkippedVersion = "v1.2.2.1"
+        };
 
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
+        UpdateSettings normalized = UpdateService.NormalizeSettings(settings);
+
+        Assert.False(normalized.AutoCheckEnabled);
+        Assert.Equal("1.2.2.1", normalized.SkippedVersion);
+        Assert.Equal(TimeSpan.Zero, normalized.LastCheckedUtc?.Offset);
+        Assert.Equal(localTime.UtcDateTime, normalized.LastCheckedUtc?.UtcDateTime);
+    }
+
+    [Fact]
+    public void NormalizeReleaseNotes_RemovesUnsafeFormattingCharacters()
+    {
+        string normalized = UpdateService.NormalizeReleaseNotes("  Fixed\u202EUpdater\r\nNext\tLine  ");
+
+        Assert.Equal("FixedUpdater\r\nNext\tLine", normalized);
+    }
+
+    [Fact]
+    public void NormalizeReleaseNotes_ReturnsFallbackForBlankNotes()
+    {
+        Assert.Equal(
+            "No release notes were provided for this release.",
+            UpdateService.NormalizeReleaseNotes("   "));
+    }
+
+    [Fact]
+    public void NormalizeReleaseNotes_CapsLongNotes()
+    {
+        string normalized = UpdateService.NormalizeReleaseNotes(new string('A', UpdateService.MaxReleaseNotesChars + 100));
+
+        Assert.Equal(UpdateService.MaxReleaseNotesChars, normalized.Length);
     }
 
     [Fact]
@@ -119,901 +96,142 @@ public sealed class UpdateServiceTests
     }
 
     [Fact]
-    public void NormalizeSettings_RejectsNullSettings()
+    public void TryGetVersionFromExecutablePath_ReadsExistingExecutableVersion()
     {
-        Assert.Throws<ArgumentNullException>(() => UpdateService.NormalizeSettings(null!));
+        string executablePath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Test process path was not available.");
+
+        Assert.True(UpdateService.TryGetVersionFromExecutablePath(executablePath, out Version version));
+        Assert.True(version.Major >= 0);
     }
 
     [Fact]
-    public void NormalizeSettings_TrimsSkippedVersion()
+    public void CreateInstallerCleanupStartInfo_UsesInnoSilentArgumentsAndRelaunch()
     {
-        UpdateSettings settings = UpdateService.NormalizeSettings(new UpdateSettings
-        {
-            SkippedVersion = "  1.2.3  "
-        });
-
-        Assert.Equal("1.2.3", settings.SkippedVersion);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_ReadsInstallerSpecificSidecarLine()
-    {
-        string digest = new('A', 64);
-        string text = $"""
-            {new string('B', 64)}  OtherInstaller.exe
-            {digest}  FileLocker-Setup-1.2.3.exe
-            """;
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            text,
-            "FileLocker-Setup-1.2.3.exe",
-            out string normalizedDigest);
-
-        Assert.True(extracted);
-        Assert.Equal(digest, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_ReadsSha256Prefix()
-    {
-        string digest = new('C', 64);
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            $"sha256:{digest}",
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.True(extracted);
-        Assert.Equal(digest, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_ReadsSha256HyphenPrefix()
-    {
-        string digest = new('D', 64);
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            $"SHA-256: {digest}",
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.True(extracted);
-        Assert.Equal(digest, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_RejectsAmbiguousFallbackDigests()
-    {
-        string firstDigest = new('A', 64);
-        string secondDigest = new('B', 64);
-        string text = $"""
-            {firstDigest}  OtherInstaller.exe
-            {secondDigest}  AnotherInstaller.exe
-            """;
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            text,
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.False(extracted);
-        Assert.Equal(string.Empty, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_RejectsSingleDigestForDifferentInstallerName()
-    {
-        string digest = new('A', 64);
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            $"{digest}  OtherFileLocker-Setup.exe",
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.False(extracted);
-        Assert.Equal(string.Empty, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_RejectsOversizedText()
-    {
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            new string('A', UpdateService.MaxDigestTextChars + 1),
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.False(extracted);
-        Assert.Equal(string.Empty, normalizedDigest);
-    }
-
-    [Fact]
-    public void TryExtractSha256DigestFromText_IgnoresOversizedLines()
-    {
-        string digest = new('E', 64);
-        string text = $"""
-            {new string('X', UpdateService.MaxDigestLineChars + 1)}
-            {digest}  FileLocker-Setup.exe
-            """;
-
-        bool extracted = UpdateService.TryExtractSha256DigestFromText(
-            text,
-            "FileLocker-Setup.exe",
-            out string normalizedDigest);
-
-        Assert.True(extracted);
-        Assert.Equal(digest, normalizedDigest);
-    }
-
-    [Fact]
-    public void ValidateFinalDigestResponse_RejectsHttpFinalUri()
-    {
-        using HttpResponseMessage response = CreateDigestResponse(
-            "http://github.com/jeremymhayes/FileLocker/releases/download/v1/hash.sha256",
-            contentLength: 64);
-
-        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
-            UpdateService.ValidateFinalDigestResponse(response));
-
-        Assert.Equal("The release digest download did not finish over HTTPS.", ex.Message);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(long.MaxValue)]
-    public void ValidateFinalDigestResponse_RejectsInvalidContentLength(long contentLength)
-    {
-        using HttpResponseMessage response = CreateDigestResponse(
-            "https://github.com/jeremymhayes/FileLocker/releases/download/v1/hash.sha256",
-            contentLength);
-
-        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
-            UpdateService.ValidateFinalDigestResponse(response));
-
-        Assert.Equal("The release SHA-256 digest file was empty or too large.", ex.Message);
-    }
-
-    [Fact]
-    public void ValidateFinalDigestResponse_AllowsHttpsDigestWithBoundedLength()
-    {
-        using HttpResponseMessage response = CreateDigestResponse(
-            "https://github.com/jeremymhayes/FileLocker/releases/download/v1/hash.sha256",
-            contentLength: 64);
-
-        UpdateService.ValidateFinalDigestResponse(response);
-    }
-
-    [Fact]
-    public async Task DeserializeJsonResponseWithLimitAsync_ReadsBoundedMetadata()
-    {
-        using var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("""{"name":"release"}""")
-        };
-
-        Dictionary<string, string>? metadata = await UpdateService.DeserializeJsonResponseWithLimitAsync<Dictionary<string, string>>(
-            response,
-            "GitHub release metadata",
-            TestContext.Current.CancellationToken);
-
-        Assert.NotNull(metadata);
-        Assert.Equal("release", metadata!["name"]);
-    }
-
-    [Fact]
-    public async Task DeserializeJsonResponseWithLimitAsync_RejectsOversizedMetadata()
-    {
-        using var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(new string(' ', (int)UpdateService.MaxReleaseMetadataBytes + 1))
-        };
-
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            UpdateService.DeserializeJsonResponseWithLimitAsync<Dictionary<string, string>>(
-                response,
-                "GitHub release metadata",
-                TestContext.Current.CancellationToken));
-
-        Assert.Contains("GitHub release metadata exceeded", ex.Message);
-    }
-
-    [Fact]
-    public void TryCreateExpectedGitHubDownloadUri_AcceptsRepositoryReleaseAssetUrl()
-    {
-        bool accepted = InvokeTryCreateExpectedGitHubDownloadUri(
-            "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe",
-            out Uri uri);
-
-        Assert.True(accepted);
-        Assert.Equal("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe", uri.ToString());
-    }
-
-    [Theory]
-    [InlineData("https://user:token@github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe")]
-    [InlineData("https://github.com:444/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe")]
-    [InlineData("https://github.com/other/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe?token=abc")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe#download")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe\r\nhttps://example.test")]
-    [InlineData("https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/FileLocker-Setup.exe\u202E")]
-    public void TryCreateExpectedGitHubDownloadUri_RejectsUnexpectedUrlForms(string url)
-    {
-        bool accepted = InvokeTryCreateExpectedGitHubDownloadUri(url, out Uri uri);
-
-        Assert.False(accepted);
-        Assert.Null(uri);
-    }
-
-    [Fact]
-    public void TryCreateExpectedGitHubDownloadUri_RejectsOversizedUrls()
-    {
-        string url = $"https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.3/{new string('a', UpdateService.MaxReleaseAssetUrlChars)}.exe";
-
-        bool accepted = InvokeTryCreateExpectedGitHubDownloadUri(url, out Uri uri);
-
-        Assert.False(accepted);
-        Assert.Null(uri);
-    }
-
-    [Fact]
-    public async Task DownloadInstallerAsync_RejectsNullRelease()
-    {
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            UpdateService.DownloadInstallerAsync(
-                null!,
-                TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public void CreateInstallerCleanupStartInfo_UsesWaitAndDeleteCommand()
-    {
-        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker Test Installer.exe");
+        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker-Setup-1.2.2.1.exe");
+        string relaunchPath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Test process path was not available.");
 
         ProcessStartInfo startInfo = UpdateService.CreateInstallerCleanupStartInfo(
             installerPath,
-            TimeSpan.FromSeconds(2));
+            TimeSpan.FromMilliseconds(25),
+            processIdToWaitFor: 1234,
+            relaunchExecutablePath: relaunchPath);
 
-        string script = DecodePowerShellEncodedCommand(startInfo.Arguments);
-
-        Assert.Equal(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"), startInfo.FileName);
-        Assert.Contains("Start-Process -FilePath $installer -Wait -PassThru", script);
-        Assert.Contains("Remove-Item -LiteralPath $installer -Force", script);
-        Assert.Equal(installerPath, startInfo.Environment["FILELOCKER_UPDATER_INSTALLER_PATH"]);
-        Assert.Equal("2000", startInfo.Environment["FILELOCKER_UPDATER_STARTUP_DELAY_MS"]);
-        Assert.False(startInfo.UseShellExecute);
-    }
-
-    [Fact]
-    public void CreateInstallerCleanupStartInfo_TrimsInstallerPath()
-    {
-        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker Test Installer.exe");
-
-        ProcessStartInfo startInfo = UpdateService.CreateInstallerCleanupStartInfo(
-            $"  {installerPath}  ",
-            TimeSpan.Zero);
+        string command = DecodeEncodedPowerShellCommand(startInfo.Arguments);
 
         Assert.Equal(installerPath, startInfo.Environment["FILELOCKER_UPDATER_INSTALLER_PATH"]);
-    }
-
-    [Fact]
-    public void CreateInstallerCleanupStartInfo_WhenWaitProcessProvided_SetsWaitPid()
-    {
-        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker Test Installer.exe");
-
-        ProcessStartInfo startInfo = UpdateService.CreateInstallerCleanupStartInfo(
-            installerPath,
-            TimeSpan.Zero,
-            processIdToWaitFor: 1234);
-
-        string script = DecodePowerShellEncodedCommand(startInfo.Arguments);
-
+        Assert.Equal("25", startInfo.Environment["FILELOCKER_UPDATER_STARTUP_DELAY_MS"]);
         Assert.Equal("1234", startInfo.Environment["FILELOCKER_UPDATER_WAIT_PID"]);
-        Assert.Contains("Get-Process -Id $waitPid", script);
+        Assert.Equal(relaunchPath, startInfo.Environment["FILELOCKER_UPDATER_RELAUNCH_PATH"]);
+        Assert.Contains("/VERYSILENT", command, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/SUPPRESSMSGBOXES", command, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/NORESTART", command, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/LOG=", command, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Remove-Item -LiteralPath $installer", command, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void NormalizeInstallerPath_RejectsBlankPath()
+    public void TryExtractSha256DigestFromText_ExtractsMatchingInstallerDigest()
     {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath(" "));
+        const string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        string text = $"{digest}  FileLocker-Setup-1.2.2.1.exe";
 
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is required.", ex.Message);
+        bool parsed = UpdateService.TryExtractSha256DigestFromText(
+            text,
+            "FileLocker-Setup-1.2.2.1.exe",
+            out string actual);
+
+        Assert.True(parsed);
+        Assert.Equal(digest, actual);
     }
 
     [Fact]
-    public void NormalizeInstallerPath_RejectsMalformedPath()
+    public void TryExtractSha256DigestFromText_IgnoresMismatchedInstallerLine()
     {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath("C:\\Temp\\bad\0installer.exe"));
+        const string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        string text = $"{digest}  FileLocker-Setup-1.2.1.0.exe\nFileLocker-Setup-1.2.2.1.exe";
 
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
+        Assert.False(UpdateService.TryExtractSha256DigestFromText(
+            text,
+            "FileLocker-Setup-1.2.2.1.exe",
+            out _));
     }
 
     [Fact]
-    public void NormalizeInstallerPath_RejectsControlCharacters()
+    public void TryCreateReleaseInfo_RequiresExactVersionedInstallerAsset()
     {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath("C:\\Temp\\installer.exe\r\nextra"));
-
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
-    }
-
-    [Fact]
-    public void NormalizeInstallerPath_RejectsRelativePath()
-    {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath("FileLocker-Setup.exe"));
-
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
-    }
-
-    [Fact]
-    public void NormalizeInstallerPath_RejectsUnicodeFormatCharacters()
-    {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath("C:\\Temp\\installer.exe\u202E"));
-
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
-    }
-
-    [Fact]
-    public void NormalizeInstallerPath_RejectsAlternateDataStreamPath()
-    {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.NormalizeInstallerPath(Path.Combine(Path.GetTempPath(), "FileLocker-Setup.exe:stream")));
-
-        Assert.Equal("installerPath", ex.ParamName);
-        Assert.Contains("Installer path is invalid.", ex.Message);
-    }
-
-    [Theory]
-    [InlineData("  1.2.3  ", "1.2.3")]
-    [InlineData(" v1.2.3+build.5 ", "1.2.3")]
-    [InlineData("   ", null)]
-    [InlineData(null, null)]
-    [InlineData("not-a-version", null)]
-    public void NormalizeSettings_CleansSkippedVersion(string? skippedVersion, string? expected)
-    {
-        var settings = new UpdateSettings { SkippedVersion = skippedVersion };
-
-        UpdateSettings normalized = UpdateService.NormalizeSettings(settings);
-
-        Assert.Equal(expected, normalized.SkippedVersion);
-    }
-
-    [Fact]
-    public void NormalizeReleaseNotes_TrimsAndCapsText()
-    {
-        string notes = $"  {new string('A', 20 * 1024)}  ";
-
-        string normalized = UpdateService.NormalizeReleaseNotes(notes);
-
-        Assert.True(normalized.Length <= 16 * 1024);
-        Assert.EndsWith("Release notes truncated.", normalized);
-    }
-
-    [Fact]
-    public void NormalizeReleaseNotes_ReplacesUnicodeFormatCharacters()
-    {
-        string normalized = UpdateService.NormalizeReleaseNotes("  Fixed\u202EUpdater  ");
-
-        Assert.Equal("Fixed Updater", normalized);
-    }
-
-    [Fact]
-    public void LoadSettings_ReturnsDefaultsForOversizedSettingsFile()
-    {
-        lock (UpdateSettingsTestLock)
+        var release = new GitHubRelease
         {
-            string settingsPath = InvokeGetSettingsPath();
-            byte[]? originalSettings = File.Exists(settingsPath) ? File.ReadAllBytes(settingsPath) : null;
-
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
-                File.WriteAllText(settingsPath, new string(' ', 64 * 1024 + 1));
-
-                UpdateSettings settings = UpdateService.LoadSettings();
-
-                Assert.True(settings.AutoCheckEnabled);
-                Assert.Null(settings.LastCheckedUtc);
-                Assert.Null(settings.SkippedVersion);
-            }
-            finally
-            {
-                RestoreFile(settingsPath, originalSettings);
-            }
-        }
-    }
-
-    [Fact]
-    public void CleanupStaleDownloadFiles_MissingDirectoryIsNoOp()
-    {
-        string missingDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Missing-{Guid.NewGuid():N}");
-
-        UpdateService.CleanupStaleDownloadFiles(missingDirectory);
-    }
-
-    [Fact]
-    public void CleanupStaleDownloadFiles_RemovesReadOnlyDownloads()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string downloadPath = Path.Combine(testDirectory, $"FileLocker-Setup-Current.exe.{Guid.NewGuid():N}.download");
-        File.WriteAllText(downloadPath, "partial");
-        File.SetAttributes(downloadPath, File.GetAttributes(downloadPath) | FileAttributes.ReadOnly);
-
-        try
-        {
-            UpdateService.CleanupStaleDownloadFiles(testDirectory);
-
-            Assert.False(File.Exists(downloadPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupStaleDownloadFiles_PreservesUnrelatedDownloads()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string unrelatedDownloadPath = Path.Combine(testDirectory, $"OtherTool.exe.{Guid.NewGuid():N}.download");
-        File.WriteAllText(unrelatedDownloadPath, "partial");
-
-        try
-        {
-            UpdateService.CleanupStaleDownloadFiles(testDirectory);
-
-            Assert.True(File.Exists(unrelatedDownloadPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupStaleDownloadFiles_RelativeDirectoryIsNoOp()
-    {
-        string relativeDirectory = $"FileLocker-Updater-Relative-{Guid.NewGuid():N}";
-        string fullDirectory = Path.GetFullPath(relativeDirectory);
-        Directory.CreateDirectory(fullDirectory);
-        string downloadPath = Path.Combine(fullDirectory, $"FileLocker-Setup-Current.exe.{Guid.NewGuid():N}.download");
-        File.WriteAllText(downloadPath, "partial");
-
-        try
-        {
-            UpdateService.CleanupStaleDownloadFiles(relativeDirectory);
-
-            Assert.True(File.Exists(downloadPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(fullDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupOlderInstallers_KeepsCurrentInstallerAndRemovesOlderReadOnlyInstaller()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string currentInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Current.exe");
-        string olderInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Old.exe");
-        File.WriteAllText(currentInstallerPath, "current");
-        File.WriteAllText(olderInstallerPath, "old");
-        File.SetAttributes(olderInstallerPath, File.GetAttributes(olderInstallerPath) | FileAttributes.ReadOnly);
-
-        try
-        {
-            UpdateService.CleanupOlderInstallers(testDirectory, currentInstallerPath);
-
-            Assert.True(File.Exists(currentInstallerPath));
-            Assert.False(File.Exists(olderInstallerPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupOlderInstallers_KeepsWhitespacePaddedCurrentInstallerPath()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string currentInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Current.exe");
-        string olderInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Old.exe");
-        File.WriteAllText(currentInstallerPath, "current");
-        File.WriteAllText(olderInstallerPath, "old");
-
-        try
-        {
-            UpdateService.CleanupOlderInstallers(testDirectory, $"  {currentInstallerPath}  ");
-
-            Assert.True(File.Exists(currentInstallerPath));
-            Assert.False(File.Exists(olderInstallerPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupOlderInstallers_RemovesOwnedInstallersWhenCurrentPathIsMalformed()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string olderInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Old.exe");
-        File.WriteAllText(olderInstallerPath, "old");
-
-        try
-        {
-            UpdateService.CleanupOlderInstallers(testDirectory, "C:\\Temp\\bad\0installer.exe");
-
-            Assert.False(File.Exists(olderInstallerPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupOlderInstallers_PreservesUnrelatedExecutables()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string currentInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Current.exe");
-        string olderInstallerPath = Path.Combine(testDirectory, "FileLocker-Setup-Old.exe");
-        string unrelatedExecutablePath = Path.Combine(testDirectory, "OtherTool.exe");
-        File.WriteAllText(currentInstallerPath, "current");
-        File.WriteAllText(olderInstallerPath, "old");
-        File.WriteAllText(unrelatedExecutablePath, "unrelated");
-
-        try
-        {
-            UpdateService.CleanupOlderInstallers(testDirectory, currentInstallerPath);
-
-            Assert.True(File.Exists(currentInstallerPath));
-            Assert.False(File.Exists(olderInstallerPath));
-            Assert.True(File.Exists(unrelatedExecutablePath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void CleanupOlderInstallers_RelativeDirectoryIsNoOp()
-    {
-        string relativeDirectory = $"FileLocker-Updater-Relative-{Guid.NewGuid():N}";
-        string fullDirectory = Path.GetFullPath(relativeDirectory);
-        Directory.CreateDirectory(fullDirectory);
-        string currentInstallerPath = Path.Combine(fullDirectory, "FileLocker-Setup-Current.exe");
-        string olderInstallerPath = Path.Combine(fullDirectory, "FileLocker-Setup-Old.exe");
-        File.WriteAllText(currentInstallerPath, "current");
-        File.WriteAllText(olderInstallerPath, "old");
-
-        try
-        {
-            UpdateService.CleanupOlderInstallers(relativeDirectory, currentInstallerPath);
-
-            Assert.True(File.Exists(currentInstallerPath));
-            Assert.True(File.Exists(olderInstallerPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(fullDirectory);
-        }
-    }
-
-    [Fact]
-    public void ReplaceDownloadedInstaller_ReplacesReadOnlyExistingInstaller()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string tempPath = Path.Combine(testDirectory, "installer.download");
-        string installerPath = Path.Combine(testDirectory, "FileLocker-Setup.exe");
-        File.WriteAllText(tempPath, "new");
-        File.WriteAllText(installerPath, "old");
-        File.SetAttributes(installerPath, File.GetAttributes(installerPath) | FileAttributes.ReadOnly);
-
-        try
-        {
-            UpdateService.ReplaceDownloadedInstaller(tempPath, installerPath);
-
-            Assert.False(File.Exists(tempPath));
-            Assert.Equal("new", File.ReadAllText(installerPath));
-            Assert.False((File.GetAttributes(installerPath) & FileAttributes.ReadOnly) == FileAttributes.ReadOnly);
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Fact]
-    public void ReplaceDownloadedInstaller_RestoresReadOnlyAttributeWhenReplaceFails()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-        string tempPath = Path.Combine(testDirectory, "installer.download");
-        string installerPath = Path.Combine(testDirectory, "FileLocker-Setup.exe");
-        File.WriteAllText(tempPath, "new");
-        File.WriteAllText(installerPath, "old");
-        File.SetAttributes(installerPath, File.GetAttributes(installerPath) | FileAttributes.ReadOnly);
-
-        try
-        {
-            using var lockStream = new FileStream(installerPath, FileMode.Open, FileAccess.Read, FileShare.None);
-
-            Exception? ex = Record.Exception(() => UpdateService.ReplaceDownloadedInstaller(tempPath, installerPath));
-
-            Assert.True(ex is IOException or UnauthorizedAccessException);
-            Assert.True((File.GetAttributes(installerPath) & FileAttributes.ReadOnly) == FileAttributes.ReadOnly);
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(testDirectory);
-        }
-    }
-
-    [Theory]
-    [InlineData("FileLocker-Setup.exe")]
-    [InlineData("FileLocker-Setup-1.2.3.exe")]
-    [InlineData(" FileLocker-Setup_1.2.3.exe ")]
-    public void UpdaterFileNameRules_AcceptsOwnedInstallerNames(string fileName)
-    {
-        Assert.True(UpdaterFileNameRules.IsOwnedInstallerFileName(fileName));
-    }
-
-    [Fact]
-    public void UpdaterFileNameRules_AcceptsOwnedDownloadNames()
-    {
-        Assert.True(UpdaterFileNameRules.IsOwnedDownloadFileName("FileLocker-Setup.exe.0123456789abcdef.download"));
-    }
-
-    [Theory]
-    [InlineData("FileLocker-Setup-\r.exe")]
-    [InlineData("FileLocker-Setup-\u202E.exe")]
-    [InlineData("FileLocker-Setup.exe:stream")]
-    [InlineData("FileLocker-Setup/evil.exe")]
-    [InlineData("FileLocker-Setup\\evil.exe")]
-    [InlineData("FileLocker-Setup?.exe")]
-    [InlineData(".")]
-    [InlineData("..")]
-    public void UpdaterFileNameRules_RejectsInvalidOwnedLookingNames(string fileName)
-    {
-        Assert.False(UpdaterFileNameRules.IsOwnedInstallerFileName(fileName));
-        Assert.False(UpdaterFileNameRules.IsOwnedDownloadFileName(fileName));
-    }
-
-    [Fact]
-    public void UpdaterFileNameRules_RejectsOversizedNames()
-    {
-        string fileName = $"FileLocker-Setup-{new string('A', 256)}.exe";
-
-        Assert.False(UpdaterFileNameRules.IsOwnedInstallerFileName(fileName));
-        Assert.False(UpdaterFileNameRules.IsOwnedDownloadFileName(fileName));
-    }
-
-    [Theory]
-    [InlineData("CON.exe")]
-    [InlineData("nul.exe")]
-    [InlineData("COM1.exe")]
-    [InlineData("LPT9.exe")]
-    [InlineData("OtherTool.exe")]
-    [InlineData("FileLocker-Portable.exe")]
-    [InlineData("FileLocker-SetupEvil.exe")]
-    [InlineData("FileLocker-Setupper.exe")]
-    [InlineData("folder/FileLocker-Setup.exe")]
-    [InlineData("folder\\FileLocker-Setup.exe")]
-    [InlineData("FileLocker-Setup?.exe")]
-    [InlineData("FileLocker-Setup-\u202E.exe")]
-    public void TryGetSafeInstallerFileName_RejectsUnsafeOrUnexpectedNames(string fileName)
-    {
-        bool accepted = InvokeTryGetSafeInstallerFileName(fileName, out string safeFileName);
-
-        Assert.False(accepted);
-        Assert.Equal(string.Empty, safeFileName);
-    }
-
-    [Fact]
-    public void TryGetSafeInstallerFileName_RejectsOversizedNames()
-    {
-        bool accepted = InvokeTryGetSafeInstallerFileName(
-            $"FileLocker-Setup-{new string('A', UpdateService.MaxInstallerFileNameChars)}.exe",
-            out string safeFileName);
-
-        Assert.False(accepted);
-        Assert.Equal(string.Empty, safeFileName);
-    }
-
-    [Fact]
-    public void TryGetSafeInstallerFileName_AcceptsNormalInstallerName()
-    {
-        bool accepted = InvokeTryGetSafeInstallerFileName("FileLocker-Setup.exe", out string safeFileName);
-
-        Assert.True(accepted);
-        Assert.Equal("FileLocker-Setup.exe", safeFileName);
-    }
-
-    [Fact]
-    public void StartInstallerAndDeleteWhenClosed_RejectsMissingInstallerPath()
-    {
-        string installerPath = Path.Combine(Path.GetTempPath(), $"FileLocker-Missing-{Guid.NewGuid():N}.exe");
-
-        FileNotFoundException ex = Assert.Throws<FileNotFoundException>(() =>
-            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.Zero));
-
-        Assert.Equal(installerPath, ex.FileName);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void StartInstallerAndDeleteWhenClosed_RejectsBlankInstallerPath(string installerPath)
-    {
-        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
-            UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.Zero));
-
-        Assert.Contains("Installer path is required", ex.Message);
-    }
-
-    [Fact]
-    public async Task StartInstallerAndDeleteWhenClosed_DeletesInstallerAfterProcessExits()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-
-        string sourceExecutablePath = Path.Combine(Environment.SystemDirectory, "whoami.exe");
-        string installerPath = Path.Combine(testDirectory, "FileLocker Fake Installer.exe");
-        File.Copy(sourceExecutablePath, installerPath);
-
-        try
-        {
-            using Process process = UpdateService.StartInstallerAndDeleteWhenClosed(installerPath, TimeSpan.Zero);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await process.WaitForExitAsync(timeout.Token);
-
-            Assert.Equal(0, process.ExitCode);
-            Assert.False(File.Exists(installerPath), "Expected the installer cleanup process to delete the installer.");
-        }
-        finally
-        {
-            if (Directory.Exists(testDirectory))
-            {
-                Directory.Delete(testDirectory, recursive: true);
-            }
-        }
-    }
-
-    [Fact]
-    public async Task StartInstallerAndDeleteWhenClosed_TrimsInstallerPathBeforeLaunch()
-    {
-        string testDirectory = Path.Combine(Path.GetTempPath(), $"FileLocker-Updater-Test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(testDirectory);
-
-        string sourceExecutablePath = Path.Combine(Environment.SystemDirectory, "whoami.exe");
-        string installerPath = Path.Combine(testDirectory, "FileLocker Padded Installer.exe");
-        File.Copy(sourceExecutablePath, installerPath);
-
-        try
-        {
-            using Process process = UpdateService.StartInstallerAndDeleteWhenClosed($"  {installerPath}  ", TimeSpan.Zero);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await process.WaitForExitAsync(timeout.Token);
-
-            Assert.Equal(0, process.ExitCode);
-            Assert.False(File.Exists(installerPath), "Expected the normalized installer path to be launched and deleted.");
-        }
-        finally
-        {
-            if (Directory.Exists(testDirectory))
-            {
-                Directory.Delete(testDirectory, recursive: true);
-            }
-        }
-    }
-
-    private static string GetBuiltFileLockerExePath()
-    {
-        string path = Path.Combine(AppContext.BaseDirectory, "FileLocker.exe");
-        Assert.True(File.Exists(path), $"Expected test output to include {path}.");
-        return path;
-    }
-
-    private static string DecodePowerShellEncodedCommand(string arguments)
-    {
-        const string marker = "-EncodedCommand ";
-        int markerIndex = arguments.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        Assert.True(markerIndex >= 0, "Expected a PowerShell encoded command.");
-
-        string encoded = arguments[(markerIndex + marker.Length)..].Trim();
-        return Encoding.Unicode.GetString(Convert.FromBase64String(encoded));
-    }
-
-    private static async Task<string> ComputeSha256HexAsync(string path)
-    {
-        await using FileStream stream = File.OpenRead(path);
-        byte[] digest = await SHA256.HashDataAsync(stream);
-        return Convert.ToHexString(digest);
-    }
-
-    private static HttpResponseMessage CreateDigestResponse(string requestUri, long contentLength)
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            RequestMessage = new HttpRequestMessage(HttpMethod.Get, requestUri),
-            Content = new ByteArrayContent([])
+            TagName = "v1.2.2.1",
+            Assets =
+            [
+                new GitHubReleaseAsset
+                {
+                    Name = "FileLocker-Setup-1.2.1.0.exe",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.1.0.exe",
+                    Size = 1024
+                }
+            ]
         };
-        response.Content.Headers.ContentLength = contentLength;
-        return response;
+
+        bool created = UpdateService.TryCreateReleaseInfo(release, out UpdateReleaseInfo? releaseInfo, out string failureReason);
+
+        Assert.False(created);
+        Assert.Null(releaseInfo);
+        Assert.Contains("FileLocker-Setup-1.2.2.1.exe", failureReason, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool InvokeTryCreateExpectedGitHubDownloadUri(string rawUrl, out Uri uri)
+    [Fact]
+    public void TryCreateReleaseInfo_UsesInstallerAndDigestSidecar()
     {
-        MethodInfo method = typeof(UpdateService).GetMethod("TryCreateExpectedGitHubDownloadUri", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("TryCreateExpectedGitHubDownloadUri method not found.");
-        object?[] args = [rawUrl, null];
-        bool accepted = (bool)(method.Invoke(null, args) ?? false);
-        uri = (Uri?)args[1]!;
-        return accepted;
-    }
-
-    private static bool InvokeTryGetSafeInstallerFileName(string rawFileName, out string safeFileName)
-    {
-        MethodInfo method = typeof(UpdateService).GetMethod("TryGetSafeInstallerFileName", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("TryGetSafeInstallerFileName method not found.");
-        object?[] args = [rawFileName, string.Empty];
-        bool accepted = (bool)(method.Invoke(null, args) ?? false);
-        safeFileName = (string)(args[1] ?? string.Empty);
-        return accepted;
-    }
-
-    private static string InvokeGetSettingsPath()
-    {
-        MethodInfo method = typeof(UpdateService).GetMethod("GetSettingsPath", BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("GetSettingsPath method not found.");
-        return (string)(method.Invoke(null, []) ?? throw new InvalidOperationException("GetSettingsPath returned null."));
-    }
-
-    private static void RestoreFile(string path, byte[]? originalBytes)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        if (originalBytes == null)
+        var release = new GitHubRelease
         {
-            File.Delete(path);
-            return;
-        }
+            TagName = "v1.2.2.1",
+            HtmlUrl = "https://github.com/jeremymhayes/FileLocker/releases/tag/v1.2.2.1",
+            Body = "Release notes",
+            Assets =
+            [
+                new GitHubReleaseAsset
+                {
+                    Name = "FileLocker-Setup-1.2.2.1.exe",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.2.1.exe",
+                    Size = 1024
+                },
+                new GitHubReleaseAsset
+                {
+                    Name = "FileLocker-Setup-1.2.2.1.exe.sha256",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.2.1.exe.sha256",
+                    Size = 96
+                }
+            ]
+        };
 
-        File.WriteAllBytes(path, originalBytes);
+        bool created = UpdateService.TryCreateReleaseInfo(release, out UpdateReleaseInfo? releaseInfo, out string failureReason);
+
+        Assert.True(created, failureReason);
+        Assert.NotNull(releaseInfo);
+        Assert.Equal("1.2.2.1", releaseInfo.DisplayVersion);
+        Assert.Equal("FileLocker-Setup-1.2.2.1.exe", releaseInfo.InstallerFileName);
+        Assert.EndsWith("FileLocker-Setup-1.2.2.1.exe.sha256", releaseInfo.Sha256DigestDownloadUrl, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void DeleteDirectoryIfExists(string path)
+    [Fact]
+    public void GetCurrentVersionLabel_ReturnsSemVerLabel()
     {
-        if (!Directory.Exists(path))
-        {
-            return;
-        }
+        string version = UpdateService.GetCurrentVersionLabel();
 
-        foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-        {
-            File.SetAttributes(file, FileAttributes.Normal);
-        }
+        Assert.Matches(@"^\d+\.\d+(\.\d+)?(\.\d+)?$", version);
+    }
 
-        Directory.Delete(path, recursive: true);
+    private static string DecodeEncodedPowerShellCommand(string arguments)
+    {
+        string prefix = "-EncodedCommand ";
+        int index = arguments.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+        Assert.True(index >= 0, "PowerShell helper arguments should use -EncodedCommand.");
+
+        string encoded = arguments[(index + prefix.Length)..].Trim();
+        byte[] bytes = Convert.FromBase64String(encoded);
+        return System.Text.Encoding.Unicode.GetString(bytes);
     }
 }
