@@ -40,6 +40,8 @@ const exampleInputs: Record<string, string> = {
   "UTF-8": "Privacy-first text workflows for Windows.",
 }
 
+const MAX_ENCODE_TEXT_INPUT_CHARS = 1024 * 1024
+
 export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
   const [mode, setMode] = useState("encode")
   const [format, setFormat] = useState("Base64")
@@ -237,11 +239,12 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                 </div>
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
-                <div className="rounded-md border border-border/80 bg-background/35 p-3">
+                <div className="rounded-md border border-border/60 bg-bg-subtle/35 p-3">
                   <Textarea
                     value={input}
                     onChange={(event) => updateInput(event.target.value)}
                     placeholder="Enter text to encode or decode"
+                    maxLength={MAX_ENCODE_TEXT_INPUT_CHARS}
                     className="min-h-[180px] border-none bg-transparent px-0 py-0 font-mono text-sm leading-snug shadow-none focus-visible:ring-0"
                     disabled={isRunning}
                   />
@@ -337,7 +340,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                   </Select>
                 </Field>
 
-                <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/80 bg-background/35 px-3 py-2 transition-colors hover:border-accent/30 hover:bg-bg-surface-hover/70">
+                <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2 transition-colors hover:border-accent/30 hover:bg-bg-surface-hover/70">
                   <span className="min-w-0 flex-1">
                     <span className="block font-display text-sm font-semibold tracking-tight text-primary">Preserve line breaks</span>
                     <span className="mt-0.5 block text-xs leading-snug text-secondary">Keep line breaks when safe for the chosen format.</span>
@@ -376,7 +379,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
               </SectionHeader>
               <SectionBody className="flex flex-col gap-2 px-4 py-3">
                 {quickReferenceRows.map((row) => (
-                  <div key={row.label} className="rounded-md border border-border/80 bg-background/35 px-3 py-2">
+                  <div key={row.label} className="rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2">
                     <div className="font-display text-sm font-semibold tracking-tight text-primary">{row.label}</div>
                     <p className="mt-0.5 text-xs leading-snug text-secondary">{row.description}</p>
                   </div>
@@ -409,7 +412,7 @@ type SummaryRowProps = {
 
 function SummaryRow({ icon: Icon, label, value, good = false }: SummaryRowProps) {
   return (
-    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/80 bg-background/35 px-3 py-2">
+    <div className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2">
       <div className="flex min-w-0 items-center gap-2.5">
         <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md border", good ? "border-accent-green/30 bg-accent-green/10 text-accent-green" : "border-border/70 bg-background/35 text-secondary")}>
           <Icon className="size-4" aria-hidden />

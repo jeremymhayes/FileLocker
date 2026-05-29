@@ -24,6 +24,15 @@ public sealed class BridgeHashVerifyTests
         Assert.Equal(true, match);
     }
 
+    [Fact]
+    public void VerifyHashFromBridge_RejectsExpectedHashWithDifferentDigestLength()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            InvokeVerifyHashFromBridge(new string('a', 64), new string('b', 128)));
+
+        Assert.Equal("The expected hash length does not match the generated hash.", ex.Message);
+    }
+
     private static object InvokeVerifyHashFromBridge(string generatedHash, string expectedHash)
     {
         Type requestType = typeof(MainWindow).GetNestedType("HashVerifyRequest", BindingFlags.NonPublic)

@@ -447,11 +447,11 @@ namespace FileLocker
             _themePreference = ThemePreference.Dark;
             _preferences.HistoryPrivacyMode = HistoryPrivacyMode.Redacted;
             _preferences.IncludeFullPathsInExports = false;
-            _preferences.OutputTimestampPolicy = "Current time";
+            _preferences.OutputTimestampPolicy = AppPreferencesStore.CurrentTimeTimestampPolicy;
             _preferences.UseCustomEncryptOutputDirectory = false;
             _preferences.CustomEncryptOutputDirectory = string.Empty;
             _preferences.UseCustomDecryptOutputDirectory = true;
-            _preferences.CustomDecryptOutputDirectory = string.Empty;
+            _preferences.CustomDecryptOutputDirectory = GetDefaultDecryptOutputFolder();
 
             _updateSettings.AutoCheckEnabled = true;
             try

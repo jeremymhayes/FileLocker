@@ -1,0 +1,288 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - complementary [ref=e5]:
+      - generic [ref=e7]:
+        - img "FileLocker" [ref=e8]
+        - generic [ref=e9]:
+          - generic [ref=e10]: FileLocker
+          - generic [ref=e11]: v1.2.1.0
+      - navigation [ref=e12]:
+        - generic [ref=e13]:
+          - generic [ref=e14]: Home
+          - generic [ref=e15]:
+            - button "Dashboard" [ref=e16]:
+              - img [ref=e18]
+              - generic [ref=e21]: Dashboard
+            - button "Security Guide" [ref=e22]:
+              - img [ref=e24]
+              - generic [ref=e26]: Security Guide
+        - generic [ref=e27]:
+          - generic [ref=e28]: File Security
+          - generic [ref=e29]:
+            - button "Encrypt Files" [ref=e30]:
+              - img [ref=e32]
+              - generic [ref=e35]: Encrypt Files
+            - button "Decrypt Files" [ref=e36]:
+              - img [ref=e38]
+              - generic [ref=e41]: Decrypt Files
+            - button "Secure Delete" [ref=e42]:
+              - img [ref=e44]
+              - generic [ref=e47]: Secure Delete
+            - button "Hash Files" [ref=e48]:
+              - img [ref=e50]
+              - generic [ref=e53]: Hash Files
+            - button "Encode Text" [ref=e54]:
+              - img [ref=e56]
+              - generic [ref=e61]: Encode Text
+            - button "Metadata Scrambler" [ref=e62]:
+              - img [ref=e64]
+              - generic [ref=e73]: Metadata Scrambler
+        - generic [ref=e74]:
+          - generic [ref=e75]: System Care
+          - generic [ref=e76]:
+            - button "Custom Clean" [ref=e77]:
+              - img [ref=e79]
+              - generic [ref=e82]: Custom Clean
+            - button "Partition Cleaner" [ref=e83]:
+              - img [ref=e85]
+              - generic [ref=e87]: Partition Cleaner
+            - button "Drive Optimizer" [ref=e88]:
+              - img [ref=e90]
+              - generic [ref=e95]: Drive Optimizer
+            - button "Registry Fixer" [ref=e96]:
+              - img [ref=e98]
+              - generic [ref=e102]: Registry Fixer
+            - button "Startup Manager" [ref=e103]:
+              - img [ref=e105]
+              - generic [ref=e107]: Startup Manager
+            - button "App Manager" [ref=e108]:
+              - img [ref=e110]
+              - generic [ref=e114]: App Manager
+      - generic [ref=e115]:
+        - generic [ref=e116]:
+          - button "Settings" [ref=e117]:
+            - img [ref=e119]
+            - generic [ref=e122]: Settings
+          - button "About" [ref=e123]:
+            - img [ref=e125]
+            - generic [ref=e127]: About
+        - generic [ref=e128]:
+          - generic [ref=e129]:
+            - img [ref=e130]
+            - generic [ref=e132]: Dark Mode
+          - switch "Dark Mode" [checked] [ref=e133]
+    - main [ref=e134]:
+      - generic [ref=e137]:
+        - heading "App Manager" [level=1] [ref=e138]
+        - paragraph [ref=e139]: View installed apps, sort by size or publisher, and remove apps you no longer need.
+      - generic [ref=e141]:
+        - generic [ref=e142]:
+          - button "Rescan" [ref=e143]:
+            - img
+            - text: Rescan
+          - button "Uninstall Selected" [ref=e153]:
+            - img
+            - text: Uninstall Selected
+          - button "Export List" [ref=e154]:
+            - img
+            - text: Export List
+        - generic [ref=e155]:
+          - generic [ref=e156]:
+            - generic [ref=e157]:
+              - generic [ref=e159]:
+                - generic [ref=e160]:
+                  - generic [ref=e161]: Installed Apps
+                  - generic [ref=e162]: "5"
+                  - generic [ref=e163]: Total applications installed
+                - img [ref=e165]
+              - generic [ref=e170]:
+                - generic [ref=e171]:
+                  - generic [ref=e172]: Visible Apps
+                  - generic [ref=e173]: "5"
+                  - generic [ref=e174]: Currently showing
+                - img [ref=e176]
+              - generic [ref=e180]:
+                - generic [ref=e181]:
+                  - generic [ref=e182]: Total Known Size
+                  - generic [ref=e183]: 7.3 GB
+                  - generic [ref=e184]: Size of apps with known data
+                - img [ref=e186]
+              - generic [ref=e191]:
+                - generic [ref=e192]:
+                  - generic [ref=e193]: Large Apps
+                  - generic [ref=e194]: "1"
+                  - generic [ref=e195]: Apps larger than 1 GB
+                - img [ref=e197]
+            - generic [ref=e199]:
+              - generic [ref=e200]:
+                - generic [ref=e201]:
+                  - generic [ref=e202]:
+                    - img
+                    - textbox "Search installed apps..." [ref=e203]
+                  - combobox "Filter app type" [ref=e204]:
+                    - option "All Types" [selected]
+                    - option "Desktop Apps"
+                    - option "Microsoft Apps"
+                    - option "System-wide Apps"
+                    - option "Current User Apps"
+                  - combobox "Filter app size" [ref=e205]:
+                    - option "All Sizes" [selected]
+                    - option "Large Apps"
+                    - option "Medium Apps"
+                    - option "Small Apps"
+                    - option "Unknown Size"
+                  - combobox "Sort installed apps" [ref=e206]:
+                    - 'option "Sort by: Size (High to Low)" [selected]'
+                    - 'option "Sort by: Recently Installed"'
+                    - 'option "Sort by: Name"'
+                    - 'option "Sort by: Publisher"'
+                - generic [ref=e207]:
+                  - button "All (5)" [ref=e208]
+                  - button "Large Apps (1)" [ref=e209]
+                  - button "Recently Installed (0)" [ref=e210]
+                  - button "Microsoft Apps (1)" [ref=e211]
+                  - button "Store Apps (0)" [ref=e212]
+                  - button "Desktop Apps (5)" [ref=e213]
+              - generic [ref=e215]:
+                - generic [ref=e216]:
+                  - generic [ref=e217]: App
+                  - generic [ref=e218]: Publisher
+                  - generic [ref=e219]: Version
+                  - generic [ref=e220]: Size
+                  - generic [ref=e221]: Installed On
+                  - generic [ref=e222]: Actions
+                - button "Visual Studio 2022 Desktop App Microsoft Corporation 17.9.6 6.4 GB 2026-01-15 Details Uninstall Open install location for Visual Studio 2022" [ref=e223]:
+                  - generic [ref=e226]:
+                    - generic [ref=e227]: Visual Studio 2022
+                    - generic [ref=e228]: Desktop App
+                  - generic [ref=e229]: Microsoft Corporation
+                  - generic [ref=e230]: 17.9.6
+                  - generic [ref=e231]: 6.4 GB
+                  - generic [ref=e232]: 2026-01-15
+                  - generic [ref=e233]:
+                    - button "Details" [ref=e234]
+                    - button "Uninstall" [ref=e235]:
+                      - img
+                      - text: Uninstall
+                    - button "Open install location for Visual Studio 2022" [ref=e236]:
+                      - img
+                - button "Google Chrome Desktop App Google LLC 124.0.6367.91 584 MB 2026-01-15 Details Uninstall Open install location for Google Chrome" [ref=e237]:
+                  - generic [ref=e240]:
+                    - generic [ref=e241]: Google Chrome
+                    - generic [ref=e242]: Desktop App
+                  - generic [ref=e243]: Google LLC
+                  - generic [ref=e244]: 124.0.6367.91
+                  - generic [ref=e245]: 584 MB
+                  - generic [ref=e246]: 2026-01-15
+                  - generic [ref=e247]:
+                    - button "Details" [ref=e248]
+                    - button "Uninstall" [ref=e249]:
+                      - img
+                      - text: Uninstall
+                    - button "Open install location for Google Chrome" [ref=e250]:
+                      - img
+                - button "Spotify Desktop App Spotify AB 1.2.37 290 MB 2026-01-15 Details Uninstall Open install location for Spotify" [ref=e251]:
+                  - generic [ref=e254]:
+                    - generic [ref=e255]: Spotify
+                    - generic [ref=e256]: Desktop App
+                  - generic [ref=e257]: Spotify AB
+                  - generic [ref=e258]: 1.2.37
+                  - generic [ref=e259]: 290 MB
+                  - generic [ref=e260]: 2026-01-15
+                  - generic [ref=e261]:
+                    - button "Details" [ref=e262]
+                    - button "Uninstall" [ref=e263]:
+                      - img
+                      - text: Uninstall
+                    - button "Open install location for Spotify" [ref=e264]:
+                      - img
+                - button "Notepad++ Desktop App Notepad++ Team 8.6.4 16 MB 2026-01-15 Details Uninstall Open install location for Notepad++" [ref=e265]:
+                  - generic [ref=e266]:
+                    - generic [ref=e267]: "NO"
+                    - generic [ref=e268]:
+                      - generic [ref=e269]: Notepad++
+                      - generic [ref=e270]: Desktop App
+                  - generic [ref=e271]: Notepad++ Team
+                  - generic [ref=e272]: 8.6.4
+                  - generic [ref=e273]: 16 MB
+                  - generic [ref=e274]: 2026-01-15
+                  - generic [ref=e275]:
+                    - button "Details" [ref=e276]
+                    - button "Uninstall" [ref=e277]:
+                      - img
+                      - text: Uninstall
+                    - button "Open install location for Notepad++" [ref=e278]:
+                      - img
+                - button "7-Zip 23.01 Desktop App Igor Pavlov 23.01 5.0 MB 2026-01-15 Details Uninstall Open install location for 7-Zip 23.01" [ref=e279]:
+                  - generic [ref=e280]:
+                    - generic [ref=e281]: 7-
+                    - generic [ref=e282]:
+                      - generic [ref=e283]: 7-Zip 23.01
+                      - generic [ref=e284]: Desktop App
+                  - generic [ref=e285]: Igor Pavlov
+                  - generic [ref=e286]: "23.01"
+                  - generic [ref=e287]: 5.0 MB
+                  - generic [ref=e288]: 2026-01-15
+                  - generic [ref=e289]:
+                    - button "Details" [ref=e290]
+                    - button "Uninstall" [ref=e291]:
+                      - img
+                      - text: Uninstall
+                    - button "Open install location for 7-Zip 23.01" [ref=e292]:
+                      - img
+              - generic [ref=e293]:
+                - generic [ref=e294]: Showing 1 to 5 of 5 apps
+                - generic [ref=e295]:
+                  - button "Previous" [disabled]
+                  - button "1" [ref=e296]
+                  - button "Next" [disabled]
+          - complementary [ref=e297]:
+            - generic [ref=e298]:
+              - generic [ref=e299]: App Details
+              - img [ref=e300]
+            - generic [ref=e305]:
+              - generic [ref=e306]: Visual Studio 2022
+              - generic [ref=e307]: Desktop App
+            - generic [ref=e308]:
+              - generic [ref=e309]:
+                - generic [ref=e310]: Publisher
+                - generic [ref=e311]: Microsoft Corporation
+              - generic [ref=e312]:
+                - generic [ref=e313]: Version
+                - generic [ref=e314]: 17.9.6
+              - generic [ref=e315]:
+                - generic [ref=e316]: Size
+                - generic [ref=e317]: 6.4 GB
+              - generic [ref=e318]:
+                - generic [ref=e319]: Installed On
+                - generic [ref=e320]: 2026-01-15
+              - generic [ref=e321]:
+                - generic [ref=e322]: Install Location
+                - generic [ref=e323]: C:\Program Files\App
+              - generic [ref=e324]:
+                - generic [ref=e325]: Install Source
+                - generic [ref=e326]: System-wide registry
+              - generic [ref=e327]:
+                - generic [ref=e328]: Uninstall Command
+                - generic [ref=e329]: "\"C:\\Program Files\\App\\uninstall.exe\""
+              - generic [ref=e330]:
+                - generic [ref=e331]: Registry Entry
+                - generic [ref=e332]: HKLM\...\Uninstall\App
+            - generic [ref=e333]:
+              - generic [ref=e334]:
+                - button "Uninstall" [ref=e335]:
+                  - img
+                  - text: Uninstall
+                - button "Open Install Location" [ref=e336]:
+                  - img
+                  - text: Open Install Location
+                - button "Copy Details" [ref=e337]:
+                  - img
+                  - text: Copy Details
+                - button "Scan Leftovers" [ref=e338]:
+                  - img
+                  - text: Scan Leftovers
+              - generic [ref=e339]:
+                - generic [ref=e340]: This app looks safe
+                - generic [ref=e341]: No issues were detected in the current scan.
+  - region "Notifications alt+T"

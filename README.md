@@ -14,7 +14,7 @@
   </a>
   <img src="https://img.shields.io/badge/Windows-10%20%26%2011-0078D4?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 10 and 11" />
   <img src="https://img.shields.io/badge/Local%20First-No%20Cloud-198754?style=for-the-badge" alt="Local first" />
-  <img src="https://img.shields.io/badge/Encryption-AES--256--GCM-111827?style=for-the-badge" alt="AES-256-GCM" />
+  <img src="https://img.shields.io/badge/Encryption-Modern%20AEAD-111827?style=for-the-badge" alt="Modern AEAD encryption" />
 </p>
 
 <p align="center">
@@ -56,6 +56,7 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 | Internet required | No, not after installation |
 | Cloud account | None |
 | Default encryption | AES-256-GCM |
+| New `.locked` algorithms | Runtime-supported AEAD options: AES-256-GCM, ChaCha20-Poly1305, AES-256-GCM-SIV |
 | Updates | Optional checks against GitHub Releases |
 | Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
 
@@ -101,13 +102,20 @@ One of the biggest quality-of-life details in FileLocker is how folder encryptio
 
 ## Security, In Plain English
 
-FileLocker uses **AES-256-GCM** for encryption. In practical terms, that means:
+FileLocker defaults to **AES-256-GCM** for file encryption and can expose **ChaCha20-Poly1305** and **AES-256-GCM-SIV** for new `.locked` payloads when the local runtime supports the implementation safely. In practical terms, that means:
 
 - your files are encrypted with a strong modern cipher,
+- the selected algorithm is saved in the payload header for automatic decryption,
 - the app can detect tampering before it restores output,
 - and a wrong password should fail safely instead of quietly giving you damaged results.
 
+New `.locked` files use FileLocker's header-authenticated v4 payload format, with explicit algorithm and key-size metadata checked against the authenticated header. Existing AES-256-GCM v3 payloads remain supported for decryption.
+
+The v4 header stores the format version, stable payload algorithm id, KDF id, Argon2id settings, chunk size, nonce prefix, and encrypted key slots. Each key slot has its own salt, nonce, and authentication tag, and encrypted payload chunks carry their own AEAD tags so tampering fails before plaintext is restored.
+
 FileLocker also supports optional extra protection material such as a **keyfile** and **recovery key** for people who want that workflow, but the main experience still works as a normal password-based desktop app.
+
+PNG carrier output uses the older AES-GCM carrier path, is only available with AES-256-GCM, and is capped at 64 MB per source file to avoid the memory pressure of wrapping the payload inside an image. Standard `.locked` files should be used for larger files or when choosing ChaCha20-Poly1305 or AES-256-GCM-SIV.
 
 FileLocker does **not** upload your files or give you a cloud password reset path. If you lose both the password and any recovery material you chose to use, the protected file should be treated as inaccessible.
 

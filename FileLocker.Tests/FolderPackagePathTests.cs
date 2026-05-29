@@ -1,3 +1,6 @@
+using System.Reflection;
+using System.Security.Cryptography;
+
 namespace FileLocker.Tests;
 
 public sealed class FolderPackagePathTests
@@ -14,6 +17,10 @@ public sealed class FolderPackagePathTests
     [InlineData(@"COM1.txt", false)]
     [InlineData(@"nested\bad:name.txt", false)]
     [InlineData(@"folder.\file.txt", false)]
+    [InlineData(@" folder\file.txt", false)]
+    [InlineData(@"folder\file.txt ", false)]
+    [InlineData("nested/", false)]
+    [InlineData(@"nested\", false)]
     [InlineData("", false)]
     public void IsSafeFolderPackageRelativePath_RejectsUnsafeRestorePaths(string relativePath, bool expected)
     {
@@ -30,6 +37,19 @@ public sealed class FolderPackagePathTests
 
         Assert.Equal(Path.GetFullPath(Path.Combine(root, "nested", "file.txt")), resolved);
         Assert.Throws<UnauthorizedAccessException>(() => MainWindow.ResolveFolderPackageEntryPath(root, @"..\outside.txt"));
+    }
+
+    [Theory]
+    [InlineData("restore-root")]
+    [InlineData("C:restore-root")]
+    [InlineData("C:\\Temp\\restore-root:stream")]
+    [InlineData("C:\\Temp\\restore\u202E-root")]
+    public void ResolveFolderPackageEntryPath_RejectsUnsafeRestoreRoot(string rootPath)
+    {
+        UnauthorizedAccessException ex = Assert.Throws<UnauthorizedAccessException>(() =>
+            MainWindow.ResolveFolderPackageEntryPath(rootPath, "file.txt"));
+
+        Assert.Contains("restore root", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -56,7 +76,53 @@ public sealed class FolderPackagePathTests
             OriginalSize = metadataLength
         };
 
-        Assert.Throws<InvalidDataException>(() => MainWindow.ValidateFolderPackageEntryLength(entry, payloadLength));
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => MainWindow.ValidateFolderPackageEntryLength(entry, payloadLength));
+
+        Assert.DoesNotContain(entry.RelativePath, ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateFolderPackageEntryFileHash_AllowsMatchingHash()
+    {
+        byte[] content = [1, 2, 3, 4];
+        string filePath = Path.Combine(Path.GetTempPath(), $"FileLocker-{Guid.NewGuid():N}.tmp");
+        File.WriteAllBytes(filePath, content);
+        try
+        {
+            var entry = new FolderPackageEntryMetadata
+            {
+                RelativePath = "file.txt",
+                ContentHashBase64 = Convert.ToBase64String(SHA256.HashData(content))
+            };
+
+            MainWindow.ValidateFolderPackageEntryFileHash(filePath, entry, TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public void ValidateFolderPackageEntryFileHash_RejectsMismatchedHash()
+    {
+        string filePath = Path.Combine(Path.GetTempPath(), $"FileLocker-{Guid.NewGuid():N}.tmp");
+        File.WriteAllBytes(filePath, [1, 2, 3, 4]);
+        try
+        {
+            var entry = new FolderPackageEntryMetadata
+            {
+                RelativePath = "file.txt",
+                ContentHashBase64 = Convert.ToBase64String(SHA256.HashData([9, 9, 9]))
+            };
+
+            Assert.Throws<UnauthorizedAccessException>(() =>
+                MainWindow.ValidateFolderPackageEntryFileHash(filePath, entry, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
     }
 
     [Fact]
@@ -215,6 +281,25 @@ public sealed class FolderPackagePathTests
     }
 
     [Fact]
+    public void IsDirectoryInsideSource_ReturnsFalseForRelativePaths()
+    {
+        string sourceRoot = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"), "source");
+
+        Assert.False(MainWindow.IsDirectoryInsideSource("source", Path.Combine(sourceRoot, "child")));
+        Assert.False(MainWindow.IsDirectoryInsideSource(sourceRoot, "source\\child"));
+    }
+
+    [Fact]
+    public void IsDirectoryInsideSource_ReturnsFalseForUnsafePathText()
+    {
+        string sourceRoot = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"), "source");
+        string candidate = Path.Combine(sourceRoot, "child");
+
+        Assert.False(MainWindow.IsDirectoryInsideSource(sourceRoot + "\u202E", candidate));
+        Assert.False(MainWindow.IsDirectoryInsideSource(sourceRoot, Path.Combine(sourceRoot, "child:stream")));
+    }
+
+    [Fact]
     public void ResolveAvailableDirectoryPath_AddsSuffixForExistingDirectory()
     {
         string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
@@ -235,6 +320,84 @@ public sealed class FolderPackagePathTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void ResolveAvailableDirectoryPath_RejectsAlternateDataStreamPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.ResolveAvailableDirectoryPath(Path.Combine(Path.GetTempPath(), "Package:stream")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailableDirectoryPath_RejectsAlternateDataStreamParentPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.ResolveAvailableDirectoryPath(Path.Combine(Path.GetTempPath(), "Package:stream", "child")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailableDirectoryPath_RejectsRelativePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.ResolveAvailableDirectoryPath("relative-output"));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveAvailableDirectoryPath_StopsAfterMaximumAttempts()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
+        string existing = Path.Combine(root, "source_20260521_120000");
+
+        try
+        {
+            Directory.CreateDirectory(existing);
+            for (int counter = 1; counter <= MainWindow.MaxResolveAvailablePathAttempts; counter++)
+            {
+                Directory.CreateDirectory($"{existing}_{counter}");
+            }
+
+            IOException ex = Assert.Throws<IOException>(() =>
+                MainWindow.ResolveAvailableDirectoryPath(existing));
+
+            Assert.Contains("available directory name", ex.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void GetFolderDisplayName_UsesLeafFolderName()
+    {
+        string displayName = MainWindow.GetFolderDisplayName(@"C:\Users\tester\Documents");
+
+        Assert.Equal("Documents", displayName);
+    }
+
+    [Fact]
+    public void GetFolderDisplayName_FallsBackForRootFolders()
+    {
+        string root = Path.GetPathRoot(Environment.SystemDirectory)
+            ?? throw new InvalidOperationException("System drive root was not available.");
+
+        string displayName = MainWindow.GetFolderDisplayName(root);
+
+        Assert.False(string.IsNullOrWhiteSpace(displayName));
+        Assert.DoesNotContain(displayName, character => Path.GetInvalidFileNameChars().Contains(character));
     }
 
     [Fact]
@@ -270,6 +433,16 @@ public sealed class FolderPackagePathTests
             MainWindow.ResolveTemporaryOutputPath(Path.Combine(Path.GetTempPath(), "payload.locked"), "   "));
     }
 
+    [Fact]
+    public void ResolveTemporaryOutputPath_RejectsRelativeFinalPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.ResolveTemporaryOutputPath("payload.locked"));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("report.txt", true)]
     [InlineData(".", false)]
@@ -277,7 +450,11 @@ public sealed class FolderPackagePathTests
     [InlineData("CON", false)]
     [InlineData("COM1.txt", false)]
     [InlineData("report.", false)]
+    [InlineData(" report.txt", false)]
+    [InlineData("report.txt ", false)]
+    [InlineData("report\u202E.txt", false)]
     [InlineData("bad:name.txt", false)]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt", false)]
     public void IsSafeRestoredFileName_RejectsUnsafeMetadataNames(string fileName, bool expected)
     {
         bool actual = MainWindow.IsSafeRestoredFileName(fileName);
@@ -289,6 +466,9 @@ public sealed class FolderPackagePathTests
     [InlineData("..")]
     [InlineData(".")]
     [InlineData("CON")]
+    [InlineData(" report.txt")]
+    [InlineData("report.txt ")]
+    [InlineData(@"nested\report.txt")]
     [InlineData("bad:name.txt")]
     public void ResolveDecryptedFileName_FallsBackForUnsafeMetadataNames(string originalFileName)
     {
@@ -316,6 +496,8 @@ public sealed class FolderPackagePathTests
     [InlineData(".")]
     [InlineData("CON")]
     [InlineData("bad:name")]
+    [InlineData(" Project Files")]
+    [InlineData("Project Files ")]
     public void ResolveFolderPackageRootName_FallsBackForUnsafeMetadataRootNames(string rootFolderName)
     {
         string rootName = MainWindow.ResolveFolderPackageRootName(
@@ -348,6 +530,56 @@ public sealed class FolderPackagePathTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void CreateNewOutputFileStream_RejectsAlternateDataStreamPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateNewOutputFileStream(Path.Combine(Path.GetTempPath(), "restored.txt:stream")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateNewOutputFileStream_RejectsAlternateDataStreamParentPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateNewOutputFileStream(Path.Combine(Path.GetTempPath(), "restore:stream", "restored.txt")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateNewOutputFileStream_RejectsControlCharacterPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateNewOutputFileStream("C:\\Temp\\bad\r\nrestored.txt"));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("control characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateNewOutputFileStream_RejectsUnicodeFormatCharacterPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateNewOutputFileStream(Path.Combine(Path.GetTempPath(), "restored" + "\u202E" + ".txt")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("format characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SanitizeRelativeDirectory_ReplacesUnsafeSegments()
+    {
+        string relativePath = Path.Combine("safe", "bad" + "\u202E" + "name", "CON", "trail. ");
+
+        string sanitized = InvokeSanitizeRelativeDirectory(relativePath);
+
+        Assert.Equal(Path.Combine("safe", "bad_name", "_CON", "trail"), sanitized);
     }
 
     [Fact]
@@ -456,6 +688,20 @@ public sealed class FolderPackagePathTests
     }
 
     [Fact]
+    public void CalculateFolderPackageProgress_TreatsNaNEntryPercentAsZero()
+    {
+        double progress = MainWindow.CalculateFolderPackageProgress(
+            processedBytes: 25,
+            entryBytes: 50,
+            entryPercent: double.NaN,
+            totalBytes: 100,
+            startPercent: 10,
+            endPercent: 90);
+
+        Assert.Equal(30, progress);
+    }
+
+    [Fact]
     public void DeleteSourceDirectory_SecureDeleteRemovesFileLinkWithoutTouchingTarget()
     {
         string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
@@ -547,5 +793,14 @@ public sealed class FolderPackagePathTests
                 Directory.Delete(targetParent, recursive: true);
             }
         }
+    }
+
+    private static string InvokeSanitizeRelativeDirectory(string relativeDirectory)
+    {
+        MethodInfo method = typeof(MainWindow).GetMethod("SanitizeRelativeDirectory", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("SanitizeRelativeDirectory method not found.");
+
+        return (string)(method.Invoke(null, [relativeDirectory])
+            ?? throw new InvalidOperationException("SanitizeRelativeDirectory returned null."));
     }
 }

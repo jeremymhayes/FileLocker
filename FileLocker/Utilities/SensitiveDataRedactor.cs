@@ -1,10 +1,14 @@
 using System;
+using System.Globalization;
 using System.IO;
 
 namespace FileLocker;
 
 internal static class SensitiveDataRedactor
 {
+    internal const int MaxRedactedMessageChars = 8192;
+    private const string TruncatedMessageSuffix = " Message truncated.";
+
     internal static string RedactPath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -22,7 +26,8 @@ internal static class SensitiveDataRedactor
             return string.Empty;
         }
 
-        string redacted = message.Trim();
+        string redacted = ReplaceControlCharacters(message).Trim();
+        redacted = BoundMessage(redacted);
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "%LOCALAPPDATA%");
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "%APPDATA%");
         redacted = RedactKnownRoot(redacted, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "%USERPROFILE%");
@@ -32,6 +37,17 @@ internal static class SensitiveDataRedactor
         redacted = RedactQuotedAbsolutePaths(redacted);
         redacted = RedactUnquotedAbsolutePaths(redacted);
         return redacted;
+    }
+
+    private static string BoundMessage(string message)
+    {
+        if (message.Length <= MaxRedactedMessageChars)
+        {
+            return message;
+        }
+
+        int bodyLength = Math.Max(0, MaxRedactedMessageChars - TruncatedMessageSuffix.Length);
+        return message[..bodyLength].TrimEnd() + TruncatedMessageSuffix;
     }
 
     private static string RedactKnownRootToken(string message, string token)
@@ -60,7 +76,7 @@ internal static class SensitiveDataRedactor
                 : string.Empty;
             string leaf = string.IsNullOrWhiteSpace(relativePath)
                 ? string.Empty
-                : Path.GetFileName(relativePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                : GetSafePathLeaf(relativePath);
             string replacement = string.IsNullOrWhiteSpace(leaf)
                 ? token + trailing
                 : Path.Combine(token, leaf) + trailing;
@@ -97,7 +113,7 @@ internal static class SensitiveDataRedactor
             int end = FindUnquotedPathEnd(message, match);
             string candidateWithPunctuation = message[match..end];
             string candidate = candidateWithPunctuation.TrimEnd('.', ',', ';', ':', ')', ']', '}');
-            string leaf = Path.GetFileName(candidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string leaf = GetSafePathLeaf(candidate);
             string trailing = candidateWithPunctuation[candidate.Length..];
             string replacement = string.IsNullOrWhiteSpace(leaf)
                 ? token + trailing
@@ -142,7 +158,7 @@ internal static class SensitiveDataRedactor
                 }
 
                 string candidate = message.Substring(open + quote.Length, close - open - quote.Length);
-                if (Path.IsPathFullyQualified(candidate))
+                if (IsAbsolutePathCandidate(candidate))
                 {
                     string replacement = $"{quote}{GetGenericPathReplacement(candidate)}{quote}";
                     message = string.Concat(message.AsSpan(0, open), replacement, message.AsSpan(close + quote.Length));
@@ -172,7 +188,7 @@ internal static class SensitiveDataRedactor
 
             string candidateWithPunctuation = message[index..end];
             string candidate = candidateWithPunctuation.TrimEnd('.', ',', ';', ':', ')', ']', '}');
-            if (candidate.Length == 0 || !Path.IsPathFullyQualified(candidate))
+            if (candidate.Length == 0 || (!IsPathFullyQualifiedSafe(candidate) && !LooksLikeAbsolutePathStart(candidate, 0)))
             {
                 index = end;
                 continue;
@@ -189,27 +205,41 @@ internal static class SensitiveDataRedactor
 
     private static string GetGenericPathReplacement(string path)
     {
-        string trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string trimmed = ReplaceControlCharacters(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         if (string.IsNullOrWhiteSpace(trimmed) || IsRootPath(path))
         {
             return "[redacted]";
         }
 
-        string leaf = Path.GetFileName(trimmed);
+        string leaf = GetSafePathLeaf(trimmed);
         return string.IsNullOrWhiteSpace(leaf) ? "[redacted]" : Path.Combine("[redacted]", leaf);
+    }
+
+    private static string GetSafePathLeaf(string path)
+    {
+        string normalized = ReplaceControlCharacters(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        try
+        {
+            return Path.GetFileName(normalized);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return string.Empty;
+        }
     }
 
     private static bool IsRootPath(string path)
     {
         try
         {
-            string? root = Path.GetPathRoot(path);
+            string normalizedInput = ReplaceControlCharacters(path);
+            string? root = Path.GetPathRoot(normalizedInput);
             if (string.IsNullOrWhiteSpace(root))
             {
                 return false;
             }
 
-            string normalizedPath = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string normalizedPath = normalizedInput.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             return string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase);
         }
@@ -217,6 +247,39 @@ internal static class SensitiveDataRedactor
         {
             return false;
         }
+    }
+
+    private static bool IsAbsolutePathCandidate(string value) =>
+        LooksLikeAbsolutePathStart(value, 0) || IsPathFullyQualifiedSafe(value);
+
+    private static bool IsPathFullyQualifiedSafe(string value)
+    {
+        try
+        {
+            return Path.IsPathFullyQualified(value);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static string ReplaceControlCharacters(string value)
+    {
+        char[]? characters = null;
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (!char.IsControl(value[index]) &&
+                CharUnicodeInfo.GetUnicodeCategory(value[index]) != UnicodeCategory.Format)
+            {
+                continue;
+            }
+
+            characters ??= value.ToCharArray();
+            characters[index] = ' ';
+        }
+
+        return characters is null ? value : new string(characters);
     }
 
     private static int FindUnquotedPathEnd(string message, int startIndex)
@@ -255,8 +318,9 @@ internal static class SensitiveDataRedactor
                 continuationEnd++;
             }
 
-            string continuation = message[continuationStart..continuationEnd].TrimEnd('.', ',', ';', ':', ')', ']', '}');
-            if (!LooksLikePathContinuation(continuation))
+            string continuationWithPunctuation = message[continuationStart..continuationEnd];
+            string continuation = continuationWithPunctuation.TrimEnd('.', ',', ';', ':', ')', ']', '}');
+            if (!LooksLikePathContinuation(continuation) && !LooksLikeTerminalPathSegment(continuationWithPunctuation, continuation))
             {
                 break;
             }
@@ -272,6 +336,11 @@ internal static class SensitiveDataRedactor
         return token.Contains('\\', StringComparison.Ordinal) ||
             token.Contains('/', StringComparison.Ordinal) ||
             token.Contains('.', StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeTerminalPathSegment(string tokenWithPunctuation, string token)
+    {
+        return token.Length > 0 && tokenWithPunctuation.Length > token.Length;
     }
 
     private static bool LooksLikeAbsolutePathStart(string message, int index)

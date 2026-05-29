@@ -7,6 +7,155 @@ public sealed class StartupAppMaintenanceServiceTests
 {
     private static readonly object StartupMetadataTestLock = new();
 
+    [Fact]
+    public void NormalizeWarningMessage_RedactsAndCapsWarnings()
+    {
+        string message = $"{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}\\Documents\\secret.txt {new string('A', 4096)}";
+
+        string normalized = StartupAppMaintenanceService.NormalizeWarningMessage(message);
+
+        Assert.True(normalized.Length <= 2048);
+        Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), normalized);
+        Assert.Contains("%USERPROFILE%", normalized);
+        Assert.EndsWith("Warning truncated.", normalized);
+    }
+
+    [Fact]
+    public void ScanAppLeftovers_BoundsMissingSelectionWarnings()
+    {
+        string[] missingIds = Enumerable.Range(0, 150)
+            .Select(index => $"missing-filelocker-test-app-{index:D3}")
+            .ToArray();
+
+        AppLeftoverScanResult result = StartupAppMaintenanceService.ScanAppLeftovers(missingIds);
+
+        Assert.True(result.warnings.Length <= 100);
+        Assert.All(result.warnings, warning => Assert.True(warning.Length <= 2048));
+    }
+
+    [Fact]
+    public void ScanAppLeftovers_RejectsOversizedSelectionIds()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.ScanAppLeftovers([new string('A', 257)]));
+
+        Assert.Contains("selected item ids", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppText_ReplacesControlsAndCapsText()
+    {
+        string normalized = StartupAppMaintenanceService.NormalizeInstalledAppText(
+            $" Vendor\r\nApp\t{new string('A', 700)} ");
+
+        Assert.StartsWith("Vendor App ", normalized);
+        Assert.DoesNotContain('\r', normalized);
+        Assert.DoesNotContain('\n', normalized);
+        Assert.DoesNotContain('\t', normalized);
+        Assert.Equal(512, normalized.Length);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppText_ReplacesUnicodeFormatCharacters()
+    {
+        string normalized = StartupAppMaintenanceService.NormalizeInstalledAppText("Vendor\u202EApp");
+
+        Assert.Equal("Vendor App", normalized);
+    }
+
+    [Fact]
+    public void NormalizeComText_ReplacesControlsAndCapsText()
+    {
+        string normalized = StartupAppMaintenanceService.NormalizeComText(
+            $" Task\r\nAction\t{new string('A', StartupAppMaintenanceService.MaxComTextChars + 50)} ");
+
+        Assert.StartsWith("Task Action ", normalized);
+        Assert.DoesNotContain('\r', normalized);
+        Assert.DoesNotContain('\n', normalized);
+        Assert.DoesNotContain('\t', normalized);
+        Assert.Equal(StartupAppMaintenanceService.MaxComTextChars, normalized.Length);
+    }
+
+    [Fact]
+    public void NormalizeComText_ReplacesUnicodeFormatCharacters()
+    {
+        string normalized = StartupAppMaintenanceService.NormalizeComText("Task\u202EAction");
+
+        Assert.Equal("Task Action", normalized);
+    }
+
+    [Fact]
+    public void SetStartupIgnored_RejectsOversizedItemId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.SetStartupIgnored(new string('A', 257), ignored: true));
+
+        Assert.Contains("startup item id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SetStartupIgnored_RejectsControlCharacterItemId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.SetStartupIgnored("startup\r\nitem", ignored: true));
+
+        Assert.Contains("startup item id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SetStartupEnabled_RejectsOversizedItemId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.SetStartupEnabled(new string('A', 257), enabled: false));
+
+        Assert.Contains("startup item id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SetStartupEnabled_RejectsControlCharacterItemId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.SetStartupEnabled("startup\r\nitem", enabled: false));
+
+        Assert.Contains("startup item id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SetStartupEnabled_RejectsUnicodeFormatCharacterItemId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.SetStartupEnabled("startup\u202Eitem", enabled: false));
+
+        Assert.Contains("startup item id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LaunchUninstaller_RejectsOversizedAppId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.LaunchUninstaller(new string('A', 257), "UNINSTALL"));
+
+        Assert.Contains("app id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LaunchUninstaller_RejectsControlCharacterAppId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.LaunchUninstaller("app\tid", "UNINSTALL"));
+
+        Assert.Contains("app id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LaunchUninstaller_RejectsUnicodeFormatCharacterAppId()
+    {
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() =>
+            StartupAppMaintenanceService.LaunchUninstaller("app\u202Eid", "UNINSTALL"));
+
+        Assert.Contains("app id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("\"C:\\Program Files\\Vendor\\App\\app.exe\" --minimized", "C:\\Program Files\\Vendor\\App\\app.exe")]
     [InlineData("C:\\Program Files\\Vendor\\App\\app.exe --minimized", "C:\\Program Files\\Vendor\\App\\app.exe")]
@@ -20,10 +169,39 @@ public sealed class StartupAppMaintenanceServiceTests
         Assert.Equal(expected, targetPath);
     }
 
+    [Fact]
+    public void ParseStartupCommandTargetPath_RejectsControlCharactersBeforeEnvironmentExpansion()
+    {
+        string? targetPath = StartupAppMaintenanceService.ParseStartupCommandTargetPath(
+            "\"C:\\FileLocker\0Bad\\startup.exe\" --quiet");
+
+        Assert.Null(targetPath);
+    }
+
+    [Theory]
+    [InlineData("\"C:\\Program Files\\Vendor\\App.exe:stream\" --quiet")]
+    [InlineData("C:\\Program Files\\Vendor\\App.exe:stream --quiet")]
+    public void ParseStartupCommandTargetPath_RejectsAlternateDataStreamExecutableTargets(string command)
+    {
+        string? targetPath = StartupAppMaintenanceService.ParseStartupCommandTargetPath(command);
+
+        Assert.Null(targetPath);
+    }
+
+    [Fact]
+    public void ParseStartupCommandTargetPath_KeepsLauncherWhenLaterArgumentLooksLikeAlternateDataStream()
+    {
+        string? targetPath = StartupAppMaintenanceService.ParseStartupCommandTargetPath(
+            "cmd.exe /c type C:\\Temp\\payload.exe:stream");
+
+        Assert.Equal("cmd.exe", targetPath);
+    }
+
     [Theory]
     [InlineData("cmd.exe /c start app.exe", "SuspiciousLauncher", "Medium")]
     [InlineData("powershell.exe -File .\\startup.ps1", "SuspiciousLauncher", "Medium")]
     [InlineData("missing-filelocker-startup-test.exe --run", "UnresolvedCommand", "Medium")]
+    [InlineData(@"C:Windows\System32\notepad.exe", "UnresolvedCommand", "Medium")]
     public void ResolveStartupCommand_ClassifiesLauncherAndUnresolvedCommands(string command, string expectedStatus, string expectedRisk)
     {
         StartupCommandResolution resolution = StartupAppMaintenanceService.ResolveStartupCommand(command);
@@ -42,6 +220,48 @@ public sealed class StartupAppMaintenanceServiceTests
         Assert.EndsWith(@"\System32\notepad.exe", resolution.executableResolved, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("Valid", resolution.status);
         Assert.Equal("High", resolution.confidence);
+    }
+
+    [Fact]
+    public void ResolveStartupCommand_TreatsMalformedPathAsUnresolved()
+    {
+        string command = "\"C:\\FileLocker\0Bad\\startup.exe\" --quiet";
+
+        StartupCommandResolution resolution = StartupAppMaintenanceService.ResolveStartupCommand(command);
+
+        Assert.Equal("UnresolvedCommand", resolution.status);
+        Assert.Equal("Medium", resolution.riskLevel);
+    }
+
+    [Fact]
+    public void ResolveStartupCommand_TreatsAlternateDataStreamExecutableAsUnresolved()
+    {
+        string command = "\"C:\\Program Files\\Vendor\\App.exe:stream\" --quiet";
+
+        StartupCommandResolution resolution = StartupAppMaintenanceService.ResolveStartupCommand(command);
+
+        Assert.Equal("UnresolvedCommand", resolution.status);
+        Assert.Equal("Medium", resolution.riskLevel);
+        Assert.NotEqual(@"C:\Program", resolution.executableResolved);
+    }
+
+    [Fact]
+    public void ResolveStartupCommand_TreatsMalformedEnvironmentPathAsUnresolved()
+    {
+        string variableName = $"FILELOCKER_TEST_BAD_STARTUP_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(variableName, "C:\\FileLocker\r\nBad");
+
+        try
+        {
+            StartupCommandResolution resolution = StartupAppMaintenanceService.ResolveStartupCommand($"%{variableName}%\\startup.exe");
+
+            Assert.Equal("UnresolvedCommand", resolution.status);
+            Assert.Equal("Medium", resolution.riskLevel);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variableName, null);
+        }
     }
 
     [Fact]
@@ -67,6 +287,22 @@ public sealed class StartupAppMaintenanceServiceTests
 
         Assert.True(StartupAppMaintenanceService.IsProtectedStartupPath(windowsTarget));
         Assert.False(StartupAppMaintenanceService.IsProtectedStartupPath(tempTarget));
+    }
+
+    [Theory]
+    [InlineData(@"C:Windows\System32\example.exe")]
+    [InlineData(@"Windows\System32\example.exe")]
+    public void IsProtectedStartupPath_RejectsRelativePaths(string path)
+    {
+        Assert.False(StartupAppMaintenanceService.IsProtectedStartupPath(path));
+    }
+
+    [Fact]
+    public void IsProtectedStartupPath_RejectsUnicodeFormatCharacters()
+    {
+        string windowsTarget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "example" + "\u202E" + ".exe");
+
+        Assert.False(StartupAppMaintenanceService.IsProtectedStartupPath(windowsTarget));
     }
 
     [Fact]
@@ -323,6 +559,30 @@ public sealed class StartupAppMaintenanceServiceTests
                     File.Delete(backupPath);
                 }
 
+                RestoreStartupDisabledMetadata(metadataPath, originalMetadata);
+            }
+        }
+    }
+
+    [Fact]
+    public void ScanStartup_IgnoresOversizedDisabledStartupMetadata()
+    {
+        lock (StartupMetadataTestLock)
+        {
+            string metadataPath = GetStartupDisabledMetadataPath();
+            byte[]? originalMetadata = File.Exists(metadataPath) ? File.ReadAllBytes(metadataPath) : null;
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(metadataPath)!);
+                File.WriteAllText(metadataPath, new string(' ', 1_048_577));
+
+                StartupScanResult scan = StartupAppMaintenanceService.ScanStartup();
+
+                Assert.Contains(scan.warnings, warning => warning.Contains("too large", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
                 RestoreStartupDisabledMetadata(metadataPath, originalMetadata);
             }
         }
@@ -613,7 +873,8 @@ public sealed class StartupAppMaintenanceServiceTests
             "x86",
             requiresAdministrator: true,
             canLaunchUninstaller: false,
-            @"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Example");
+            @"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Example",
+            iconDataUri: null);
         var x64Duplicate = x86Duplicate with
         {
             id = "x64",
@@ -857,6 +1118,23 @@ public sealed class StartupAppMaintenanceServiceTests
     }
 
     [Theory]
+    [InlineData(@"Vendor\App\Cache")]
+    [InlineData(@"C:Vendor\App\Cache")]
+    public void IsApprovedAppLeftoverPath_RejectsRelativePaths(string path)
+    {
+        Assert.False(StartupAppMaintenanceService.IsApprovedAppLeftoverPath(path));
+    }
+
+    [Fact]
+    public void IsApprovedAppLeftoverPath_RejectsUnsafePathText()
+    {
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+        Assert.False(StartupAppMaintenanceService.IsApprovedAppLeftoverPath(Path.Combine(localAppData, "Vendor", "App:stream", "Cache")));
+        Assert.False(StartupAppMaintenanceService.IsApprovedAppLeftoverPath(Path.Combine(localAppData, "Vendor", "App" + "\u202E", "Cache")));
+    }
+
+    [Theory]
     [InlineData("msiexec.exe /x {01234567-89AB-CDEF-0123-456789ABCDEF}", false)]
     [InlineData("msiexec.exe /x {01234567-89AB-CDEF-0123-456789ABCDEF} /qn", true)]
     [InlineData("\"C:\\Program Files\\Vendor\\uninstall.exe\" /S", true)]
@@ -869,6 +1147,38 @@ public sealed class StartupAppMaintenanceServiceTests
         bool actual = StartupAppMaintenanceService.ContainsSilentUninstallSwitch(command);
 
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppCommand_TrimsSafeCommand()
+    {
+        string command = StartupAppMaintenanceService.NormalizeInstalledAppCommand("  msiexec.exe /x {01234567-89AB-CDEF-0123-456789ABCDEF}  ");
+
+        Assert.Equal("msiexec.exe /x {01234567-89AB-CDEF-0123-456789ABCDEF}", command);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppCommand_DropsControlCharacterCommand()
+    {
+        string command = StartupAppMaintenanceService.NormalizeInstalledAppCommand("uninstall.exe\r\n--interactive");
+
+        Assert.Equal(string.Empty, command);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppCommand_DropsUnicodeFormatCharacterCommand()
+    {
+        string command = StartupAppMaintenanceService.NormalizeInstalledAppCommand("uninstall\u202E.exe");
+
+        Assert.Equal(string.Empty, command);
+    }
+
+    [Fact]
+    public void NormalizeInstalledAppCommand_DropsOversizedCommand()
+    {
+        string command = StartupAppMaintenanceService.NormalizeInstalledAppCommand(new string('A', StartupAppMaintenanceService.MaxComTextChars + 1));
+
+        Assert.Equal(string.Empty, command);
     }
 
     [Theory]
@@ -1050,6 +1360,23 @@ public sealed class StartupAppMaintenanceServiceTests
         Assert.True(StartupAppMaintenanceService.IsApprovedStartupRestorePath(Path.Combine(commonStartupFolder, "Example.lnk")));
         Assert.False(StartupAppMaintenanceService.IsApprovedStartupRestorePath(Path.Combine(startupFolder, "Nested", "Example.lnk")));
         Assert.False(StartupAppMaintenanceService.IsApprovedStartupRestorePath(Path.Combine(outsideFolder, "Example.lnk")));
+    }
+
+    [Theory]
+    [InlineData(@"Startup\Example.lnk")]
+    [InlineData(@"C:Startup\Example.lnk")]
+    public void IsApprovedStartupRestorePath_RejectsRelativePaths(string path)
+    {
+        Assert.False(StartupAppMaintenanceService.IsApprovedStartupRestorePath(path));
+    }
+
+    [Fact]
+    public void IsApprovedStartupRestorePath_RejectsUnsafePathText()
+    {
+        string startupFolder = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+
+        Assert.False(StartupAppMaintenanceService.IsApprovedStartupRestorePath(Path.Combine(startupFolder, "Example.lnk:stream")));
+        Assert.False(StartupAppMaintenanceService.IsApprovedStartupRestorePath(Path.Combine(startupFolder, "Example" + "\u202E" + ".lnk")));
     }
 
     [Fact]

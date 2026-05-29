@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -49,7 +50,7 @@ public sealed class AppPreferences
 
     public bool IncludeFullPathsInExports { get; set; }
 
-    public string OutputTimestampPolicy { get; set; } = "Current time";
+    public string OutputTimestampPolicy { get; set; } = AppPreferencesStore.CurrentTimeTimestampPolicy;
 
     public bool UseCustomEncryptOutputDirectory { get; set; }
 
@@ -64,11 +65,17 @@ public sealed class AppPreferences
 
 internal static class AppPreferencesStore
 {
+    internal const string CurrentTimeTimestampPolicy = "Current time";
+    internal const string PreserveSourceTimestampsPolicy = "Preserve source timestamps";
+    internal const string RandomizeTimestampPolicy = "Randomize";
+    internal const long MaxPreferencesJsonBytes = 256 * 1024;
+    internal const int MaxPreferenceDirectoryChars = 4096;
+
     private static readonly string[] ValidOutputTimestampPolicies =
     [
-        "Current time",
-        "Preserve source timestamps",
-        "Randomize"
+        CurrentTimeTimestampPolicy,
+        PreserveSourceTimestampsPolicy,
+        RandomizeTimestampPolicy
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -91,7 +98,7 @@ internal static class AppPreferencesStore
 
         try
         {
-            string json = await File.ReadAllTextAsync(path, Encoding.UTF8);
+            string json = await BoundedFileReader.ReadAllUtf8TextAsync(path, MaxPreferencesJsonBytes);
             AppPreferences preferences = JsonSerializer.Deserialize<AppPreferences>(json, JsonOptions) ?? new AppPreferences();
             return NormalizePreferences(ApplyLegacyMigration(preferences, json));
         }
@@ -136,25 +143,43 @@ internal static class AppPreferencesStore
     private static string NormalizeAppDataDirectory(string appDataDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(appDataDirectory);
-        return Path.GetFullPath(appDataDirectory.Trim());
+        string trimmed = appDataDirectory.Trim();
+        if (trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format) ||
+            !Path.IsPathFullyQualified(trimmed))
+        {
+            throw new ArgumentException("App data directory is invalid.", nameof(appDataDirectory));
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(trimmed);
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                throw new ArgumentException("App data directory is invalid.", nameof(appDataDirectory));
+            }
+
+            return fullPath;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ArgumentException("App data directory is invalid.", nameof(appDataDirectory), ex);
+        }
     }
 
     internal static AppPreferences NormalizePreferences(AppPreferences preferences)
     {
         ArgumentNullException.ThrowIfNull(preferences);
 
-        if (!ValidOutputTimestampPolicies.Contains(preferences.OutputTimestampPolicy, StringComparer.OrdinalIgnoreCase))
-        {
-            preferences.OutputTimestampPolicy = "Current time";
-        }
-        else
-        {
-            preferences.OutputTimestampPolicy = ValidOutputTimestampPolicies
-                .First(policy => string.Equals(policy, preferences.OutputTimestampPolicy, StringComparison.OrdinalIgnoreCase));
-        }
+        preferences.OutputTimestampPolicy = NormalizeOutputTimestampPolicy(preferences.OutputTimestampPolicy);
 
-        preferences.CustomEncryptOutputDirectory ??= string.Empty;
-        preferences.CustomDecryptOutputDirectory ??= string.Empty;
+        preferences.CustomEncryptOutputDirectory = NormalizePreferenceDirectory(preferences.CustomEncryptOutputDirectory);
+        preferences.CustomDecryptOutputDirectory = NormalizePreferenceDirectory(preferences.CustomDecryptOutputDirectory);
+        if (preferences.UseCustomEncryptOutputDirectory && string.IsNullOrWhiteSpace(preferences.CustomEncryptOutputDirectory))
+        {
+            preferences.UseCustomEncryptOutputDirectory = false;
+        }
 
         if (!Enum.IsDefined(preferences.ThemePreference))
         {
@@ -162,6 +187,59 @@ internal static class AppPreferencesStore
         }
 
         return preferences;
+    }
+
+    internal static string NormalizePreferenceDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = directory.Trim();
+        if (trimmed.Length > MaxPreferenceDirectoryChars)
+        {
+            return string.Empty;
+        }
+
+        if (trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            if (!Path.IsPathFullyQualified(trimmed))
+            {
+                return string.Empty;
+            }
+
+            string fullPath = Path.GetFullPath(trimmed);
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            return fullPath;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return string.Empty;
+        }
+    }
+
+    internal static string NormalizeOutputTimestampPolicy(string? policy)
+    {
+        if (string.IsNullOrWhiteSpace(policy))
+        {
+            return CurrentTimeTimestampPolicy;
+        }
+
+        return ValidOutputTimestampPolicies.FirstOrDefault(
+                validPolicy => string.Equals(validPolicy, policy.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? CurrentTimeTimestampPolicy;
     }
 
     private static AppPreferences ApplyLegacyMigration(AppPreferences preferences, string json)
@@ -174,7 +252,7 @@ internal static class AppPreferencesStore
             bool hasIncognitoMode = TryGetProperty(root, nameof(AppPreferences.IncognitoMode), out _);
             if (!hasIncognitoMode &&
                 TryGetProperty(root, nameof(AppPreferences.HistoryPrivacyMode), out JsonElement historyMode) &&
-                string.Equals(historyMode.GetString(), nameof(HistoryPrivacyMode.Off), StringComparison.OrdinalIgnoreCase))
+                IsLegacyHistoryPrivacyOff(historyMode))
             {
                 preferences.IncognitoMode = true;
             }
@@ -185,6 +263,16 @@ internal static class AppPreferencesStore
         }
 
         return preferences;
+    }
+
+    private static bool IsLegacyHistoryPrivacyOff(JsonElement historyMode)
+    {
+        return historyMode.ValueKind switch
+        {
+            JsonValueKind.String => string.Equals(historyMode.GetString(), nameof(HistoryPrivacyMode.Off), StringComparison.OrdinalIgnoreCase),
+            JsonValueKind.Number => historyMode.TryGetInt32(out int value) && value == (int)HistoryPrivacyMode.Off,
+            _ => false
+        };
     }
 
     private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)

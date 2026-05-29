@@ -49,6 +49,23 @@ public sealed class FileCleanupServiceTests : IDisposable
     }
 
     [Fact]
+    public void DeleteTemporaryFilesUnderDirectory_PreservesSimilarInstallerNames()
+    {
+        Directory.CreateDirectory(_rootPath);
+        string ownedInstallerPath = Path.Combine(_rootPath, "FileLocker-Setup-1.2.3.exe");
+        string similarInstallerPath = Path.Combine(_rootPath, "FileLocker-SetupEvil.exe");
+        File.WriteAllText(ownedInstallerPath, "installer");
+        File.WriteAllText(similarInstallerPath, "other");
+
+        FileCleanupSummary summary = FileCleanupService.DeleteTemporaryFilesUnderDirectory(_rootPath);
+
+        Assert.Equal(1, summary.DeletedFiles);
+        Assert.Equal(0, summary.FailedFiles);
+        Assert.False(File.Exists(ownedInstallerPath));
+        Assert.True(File.Exists(similarInstallerPath));
+    }
+
+    [Fact]
     public void DeleteTemporaryFilesUnderDirectory_PreservesUpdaterSettings()
     {
         Directory.CreateDirectory(_rootPath);
@@ -72,6 +89,51 @@ public sealed class FileCleanupServiceTests : IDisposable
 
         Assert.Equal(0, summary.DeletedFiles);
         Assert.Equal(0, summary.FailedFiles);
+    }
+
+    [Fact]
+    public void DeleteTemporaryFilesUnderDirectory_ControlCharacterRootIsNoOp()
+    {
+        FileCleanupSummary summary = FileCleanupService.DeleteTemporaryFilesUnderDirectory("C:\\bad\r\nroot");
+
+        Assert.Equal(0, summary.DeletedFiles);
+        Assert.Equal(0, summary.FailedFiles);
+    }
+
+    [Fact]
+    public void DeleteTemporaryFilesUnderDirectory_UnicodeFormatRootIsNoOp()
+    {
+        FileCleanupSummary summary = FileCleanupService.DeleteTemporaryFilesUnderDirectory(
+            Path.Combine(_rootPath, "root" + "\u202E"));
+
+        Assert.Equal(0, summary.DeletedFiles);
+        Assert.Equal(0, summary.FailedFiles);
+    }
+
+    [Fact]
+    public void DeleteTemporaryFilesUnderDirectory_RelativeRootIsNoOp()
+    {
+        FileCleanupSummary summary = FileCleanupService.DeleteTemporaryFilesUnderDirectory("downloads");
+
+        Assert.Equal(0, summary.DeletedFiles);
+        Assert.Equal(0, summary.FailedFiles);
+    }
+
+    [Fact]
+    public void DeleteTemporaryFilesUnderDirectory_AlternateDataStreamRootIsNoOp()
+    {
+        FileCleanupSummary summary = FileCleanupService.DeleteTemporaryFilesUnderDirectory(Path.Combine(_rootPath, "root:stream"));
+
+        Assert.Equal(0, summary.DeletedFiles);
+        Assert.Equal(0, summary.FailedFiles);
+    }
+
+    [Fact]
+    public void DeleteTemporaryFiles_NullPathArrayIsNoOp()
+    {
+        IReadOnlyList<string> failures = FileCleanupService.DeleteTemporaryFiles(null!);
+
+        Assert.Empty(failures);
     }
 
     [Fact]
@@ -118,6 +180,58 @@ public sealed class FileCleanupServiceTests : IDisposable
     }
 
     [Fact]
+    public void TryDeleteFile_RemovesKnownNonTemporaryFile()
+    {
+        Directory.CreateDirectory(_rootPath);
+        string path = Path.Combine(_rootPath, "history.json");
+        File.WriteAllText(path, "{}");
+
+        bool deleted = FileCleanupService.TryDeleteFile(path, out string? failure);
+
+        Assert.True(deleted);
+        Assert.Null(failure);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void TryDeleteFile_RejectsControlCharacterPath()
+    {
+        bool deleted = FileCleanupService.TryDeleteFile("C:\\bad\r\nfile.tmp", out string? failure);
+
+        Assert.False(deleted);
+        Assert.Equal("Invalid cleanup path.", failure);
+    }
+
+    [Fact]
+    public void TryDeleteFile_RejectsUnicodeFormatCharacterPath()
+    {
+        bool deleted = FileCleanupService.TryDeleteFile(
+            Path.Combine(_rootPath, "history" + "\u202E" + ".json"),
+            out string? failure);
+
+        Assert.False(deleted);
+        Assert.Equal("Invalid cleanup path.", failure);
+    }
+
+    [Fact]
+    public void TryDeleteFile_RejectsRelativePath()
+    {
+        bool deleted = FileCleanupService.TryDeleteFile("history.json", out string? failure);
+
+        Assert.False(deleted);
+        Assert.Equal("Invalid cleanup path.", failure);
+    }
+
+    [Fact]
+    public void TryDeleteFile_RejectsAlternateDataStreamPath()
+    {
+        bool deleted = FileCleanupService.TryDeleteFile(Path.Combine(_rootPath, "history.json:stream"), out string? failure);
+
+        Assert.False(deleted);
+        Assert.Equal("Invalid cleanup path.", failure);
+    }
+
+    [Fact]
     public void ClearReadOnlyAttribute_MissingPathIsNoOp()
     {
         FileCleanupService.ClearReadOnlyAttribute(Path.Combine(_rootPath, "missing.tmp"));
@@ -129,6 +243,30 @@ public sealed class FileCleanupServiceTests : IDisposable
     public void ClearReadOnlyAttribute_BlankPathIsNoOp(string path)
     {
         FileCleanupService.ClearReadOnlyAttribute(path);
+    }
+
+    [Fact]
+    public void ClearReadOnlyAttribute_ControlCharacterPathIsNoOp()
+    {
+        FileCleanupService.ClearReadOnlyAttribute("C:\\bad\tfile.tmp");
+    }
+
+    [Fact]
+    public void ClearReadOnlyAttribute_UnicodeFormatCharacterPathIsNoOp()
+    {
+        FileCleanupService.ClearReadOnlyAttribute(Path.Combine(_rootPath, "settings" + "\u202E" + ".json"));
+    }
+
+    [Fact]
+    public void ClearReadOnlyAttribute_RelativePathIsNoOp()
+    {
+        FileCleanupService.ClearReadOnlyAttribute("settings.json");
+    }
+
+    [Fact]
+    public void ClearReadOnlyAttribute_AlternateDataStreamPathIsNoOp()
+    {
+        FileCleanupService.ClearReadOnlyAttribute(Path.Combine(_rootPath, "settings.json:stream"));
     }
 
     public void Dispose()

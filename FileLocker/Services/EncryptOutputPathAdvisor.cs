@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -13,13 +14,17 @@ internal static class EncryptOutputPathAdvisor
     {
         ArgumentNullException.ThrowIfNull(selectedPaths);
 
-        List<string> folderRoots = selectedPaths
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(path => path.Trim())
-            .Where(Directory.Exists)
-            .Select(NormalizeDirectoryPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        List<string> folderRoots = [];
+        foreach (string? path in selectedPaths)
+        {
+            if (!TryNormalizeDirectoryPath(path, out string normalizedPath) ||
+                !Directory.Exists(normalizedPath))
+            {
+                continue;
+            }
+
+            folderRoots.Add(normalizedPath);
+        }
 
         return SuggestForFolderRoots(folderRoots);
     }
@@ -28,9 +33,21 @@ internal static class EncryptOutputPathAdvisor
     {
         ArgumentNullException.ThrowIfNull(folderRoots);
 
-        List<string> roots = folderRoots
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(NormalizeDirectoryPath)
+        List<string> roots = [];
+        foreach (string? path in folderRoots)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            if (TryNormalizeDirectoryPath(path, out string normalizedPath))
+            {
+                roots.Add(normalizedPath);
+            }
+        }
+
+        roots = roots
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -80,5 +97,51 @@ internal static class EncryptOutputPathAdvisor
         return string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)
             ? fullPath
             : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool TryNormalizeDirectoryPath(string? path, out string normalizedPath)
+    {
+        normalizedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path) || ContainsControlOrFormatCharacter(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            string trimmedPath = path.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                return false;
+            }
+
+            normalizedPath = NormalizeDirectoryPath(trimmedPath);
+            if (ContainsAlternateDataStreamToken(normalizedPath))
+            {
+                normalizedPath = string.Empty;
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            normalizedPath = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool ContainsControlOrFormatCharacter(string value)
+    {
+        return value.Any(character =>
+            char.IsControl(character) ||
+            CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
+    }
+
+    private static bool ContainsAlternateDataStreamToken(string path)
+    {
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        string pathWithoutRoot = path.Length > root.Length ? path[root.Length..] : string.Empty;
+        return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
     }
 }

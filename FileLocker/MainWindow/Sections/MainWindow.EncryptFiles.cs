@@ -70,7 +70,9 @@ namespace FileLocker
                     ? "Choose output folder"
                     : Path.GetFileName(EncryptOutputFolderBox.Text.Trim())
                 : hasFolderSelections ? "Inside source tree" : "Next to source files";
-            EncryptSummaryModeText.Text = "AES-256-GCM";
+            EncryptSummaryModeText.Text = EncryptionAlgorithmCatalog.TryNormalize(GetComboContent(AlgorithmCombo), out string normalizedAlgorithm)
+                ? normalizedAlgorithm
+                : "Choose algorithm";
 
             EncryptSelectedFilesEmptyState.Visibility = fileCount == 0 ? Visibility.Visible : Visibility.Collapsed;
             EncryptSelectedFilesListView.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace FileLocker;
 
@@ -36,6 +37,6 @@ internal static class CsvCellFormatter
 
     private static bool IsFormulaPrefixIgnored(char value)
     {
-        return value is ' ' or '\t' or '\r' or '\n' or '\uFEFF' or '\u200B' or '\u200C' or '\u200D';
+        return value == ' ' || char.IsControl(value) || char.GetUnicodeCategory(value) == UnicodeCategory.Format;
     }
 }

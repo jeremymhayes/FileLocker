@@ -22,7 +22,7 @@ internal static class OperationHistoryExporter
     internal static string ExportCsv(IEnumerable<OperationHistoryEntry>? entries, bool includeFullPaths)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("timestampUtc,operation,profileName,status,message,successCount,failureCount,sourcePath,outputPath,verificationStatus,failureCategory,elapsedMilliseconds");
+        builder.AppendLine("timestampUtc,operation,profileName,algorithm,keySizeBits,resultAlgorithm,resultKeySizeBits,status,message,successCount,failureCount,sourcePath,outputPath,verificationStatus,failureCategory,elapsedMilliseconds");
 
         foreach (OperationHistoryEntry entry in PrepareEntries(entries, includeFullPaths))
         {
@@ -39,6 +39,14 @@ internal static class OperationHistoryExporter
                 builder.AppendCsv(entry.Operation);
                 builder.Append(',');
                 builder.AppendCsv(entry.ProfileName);
+                builder.Append(',');
+                builder.AppendCsv(OperationHistoryAlgorithm.NormalizeName(entry.Algorithm));
+                builder.Append(',');
+                builder.Append(FormatKeySizeBits(OperationHistoryAlgorithm.NormalizeKeySize(entry.KeySizeBits)));
+                builder.Append(',');
+                builder.AppendCsv(result.Algorithm ?? string.Empty);
+                builder.Append(',');
+                builder.Append(FormatKeySizeBits(result.KeySizeBits));
                 builder.Append(',');
                 builder.AppendCsv(result.Status);
                 builder.Append(',');
@@ -66,74 +74,13 @@ internal static class OperationHistoryExporter
 
     private static List<OperationHistoryEntry> PrepareEntries(IEnumerable<OperationHistoryEntry>? entries, bool includeFullPaths)
     {
-        return (entries ?? [])
-            .Where(entry => entry is not null)
+        return OperationHistorySanitizer.CloneEntries(entries, includeFullPaths)
             .OrderByDescending(entry => entry.TimestampUtc)
-            .Select(entry => CloneEntry(entry, includeFullPaths))
             .ToList();
     }
 
-    private static OperationHistoryEntry CloneEntry(OperationHistoryEntry entry, bool includeFullPaths)
-    {
-        return new OperationHistoryEntry
-        {
-            Id = entry.Id,
-            TimestampUtc = entry.TimestampUtc,
-            Operation = entry.Operation,
-            ProfileName = entry.ProfileName,
-            Algorithm = entry.Algorithm,
-            Mode = entry.Mode,
-            KeySizeBits = entry.KeySizeBits,
-            UsedKeyfile = entry.UsedKeyfile,
-            RemoveOriginalsAfterSuccess = entry.RemoveOriginalsAfterSuccess,
-            SecureDeleteOriginals = entry.SecureDeleteOriginals,
-            VerifyAfterWrite = entry.VerifyAfterWrite,
-            BackupFolderPath = includeFullPaths ? entry.BackupFolderPath : SensitiveDataRedactor.RedactPath(entry.BackupFolderPath),
-            Cancelled = entry.Cancelled,
-            SuccessCount = entry.SuccessCount,
-            FailureCount = entry.FailureCount,
-            TotalOriginalSizeBytes = entry.TotalOriginalSizeBytes,
-            TotalOutputSizeBytes = entry.TotalOutputSizeBytes,
-            TotalStorageSavedBytes = entry.TotalStorageSavedBytes,
-            TotalStorageAddedBytes = entry.TotalStorageAddedBytes,
-            ElapsedMilliseconds = entry.ElapsedMilliseconds,
-            CompressionRequestedCount = entry.CompressionRequestedCount,
-            CompressionAppliedCount = entry.CompressionAppliedCount,
-            CompressionSkippedCount = entry.CompressionSkippedCount,
-            FailureCategorySummary = entry.FailureCategorySummary,
-            Results = (entry.Results ?? [])
-                .Where(result => result is not null)
-                .Select(result => CloneResult(result, includeFullPaths))
-                .ToList()
-        };
-    }
-
-    private static FileOperationResult CloneResult(FileOperationResult result, bool includeFullPaths)
-    {
-        return new FileOperationResult
-        {
-            SourcePath = includeFullPaths ? result.SourcePath : SensitiveDataRedactor.RedactPath(result.SourcePath),
-            OutputPath = includeFullPaths ? result.OutputPath : SensitiveDataRedactor.RedactPath(result.OutputPath),
-            BackupPath = includeFullPaths ? result.BackupPath : SensitiveDataRedactor.RedactPath(result.BackupPath),
-            Status = result.Status,
-            Message = FormatExportMessage(result.Message, includeFullPaths),
-            OriginalRetained = result.OriginalRetained,
-            OutputVerified = result.OutputVerified,
-            OriginalSizeBytes = result.OriginalSizeBytes,
-            OutputSizeBytes = result.OutputSizeBytes,
-            CompressionRequested = result.CompressionRequested,
-            CompressionApplied = result.CompressionApplied,
-            CompressionReason = FormatExportMessage(result.CompressionReason, includeFullPaths),
-            EstimatedCompressedSizeBytes = result.EstimatedCompressedSizeBytes,
-            CompressedSizeBytes = result.CompressedSizeBytes,
-            ElapsedMilliseconds = result.ElapsedMilliseconds,
-            FailureCategory = result.FailureCategory,
-            HashValue = result.HashValue
-        };
-    }
-
-    private static string FormatExportMessage(string? message, bool includeFullPaths) =>
-        includeFullPaths ? message ?? string.Empty : SensitiveDataRedactor.RedactMessage(message);
+    private static string FormatKeySizeBits(int? keySizeBits) =>
+        keySizeBits is > 0 ? keySizeBits.GetValueOrDefault().ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
 
     private static void AppendCsv(this StringBuilder builder, string value)
     {

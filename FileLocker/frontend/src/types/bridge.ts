@@ -29,9 +29,13 @@ export type FileOperationResult = {
   compressionRequested: boolean
   compressionApplied: boolean
   compressionReason?: string
+  estimatedCompressedSizeBytes?: number
+  compressedSizeBytes?: number
   elapsedMilliseconds?: number
   failureCategory?: string
   hashValue?: string
+  algorithm?: string
+  keySizeBits?: number
 }
 
 export type HistoryEntry = {
@@ -39,6 +43,8 @@ export type HistoryEntry = {
   timestampUtc: string
   operation: string
   profileName: string
+  algorithm: string
+  keySizeBits: number
   successCount: number
   failureCount: number
   cancelled: boolean
@@ -155,9 +161,23 @@ export type InitialState = {
     isAdministrator: boolean
     canRestartAsAdministrator: boolean
     isDebug: boolean
+    encryptionAlgorithms: EncryptionAlgorithmOption[]
   }
   dashboard: DashboardState
   settings: SettingsState
+}
+
+export type EncryptionAlgorithmOption = {
+  id: string
+  label: string
+  fileFormatName: string
+  keySizeBits: number
+  status: string
+  detail: string
+  bestFor: string
+  supportNote?: string
+  canUsePngCarrier: boolean
+  pngCarrierMaxSourceBytes?: number | null
 }
 
 export type ProgressEvent = {
@@ -179,7 +199,12 @@ export type DropErrorEvent = {
   message: string
 }
 
-export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent
+export type UpdateAvailableEvent = {
+  type: "updateAvailable"
+  result: UpdateCheckResult
+}
+
+export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent | UpdateAvailableEvent
 
 export type FileOperationRequest = {
   operationId: string
@@ -187,6 +212,7 @@ export type FileOperationRequest = {
   password: string
   keyfilePath?: string
   recoveryKey?: string
+  algorithm: string
   compressFiles: boolean
   scrambleNames: boolean
   useSteganography: boolean
@@ -323,6 +349,7 @@ export type InstalledApp = {
   requiresAdministrator: boolean
   canLaunchUninstaller: boolean
   registryKeyPath: string
+  iconDataUri?: string
 }
 
 export type InstalledAppsScanResult = {

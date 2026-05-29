@@ -72,6 +72,8 @@ type MaintenancePageProps = {
   onRestartAsAdministrator: () => void
 }
 
+const MAX_STORED_STRING_ARRAY_JSON_CHARS = 32 * 1024
+
 type MaintenanceDrive = {
   id: string
   name: string
@@ -607,7 +609,7 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
       </div>
 
       {!hasResults ? (
-        <section className="rounded-md border border-border bg-bg-surface/45 px-4 py-10">
+        <section className="rounded-md border border-border bg-transparent px-4 py-10">
           <div className="mx-auto flex max-w-md flex-col items-center text-center">
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Trash2 className="size-5" aria-hidden />
@@ -632,7 +634,7 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
 
             {cleanupWarnings.length > 0 ? <WarningList warnings={cleanupWarnings} /> : null}
 
-            <section className="overflow-hidden rounded-md border border-border bg-bg-surface/45">
+            <section className="overflow-hidden rounded-md border border-border bg-transparent">
               <div className="border-b border-border/70 px-4 py-3">
                 <div className="flex flex-wrap gap-2">
                   {cleanupCategoryTabs.map((group) => (
@@ -823,7 +825,7 @@ function CleanupItemDetailsPanel({
   const adminBlocked = Boolean(category?.requiresAdministrator && !isAdministrator)
 
   return (
-    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-bg-surface/50 xl:sticky xl:top-4 xl:self-start">
+    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-transparent xl:sticky xl:top-4 xl:self-start">
       <div className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
         <div className="font-display text-sm font-semibold tracking-tight text-primary">Item Details</div>
         <Info className="size-4 text-muted" aria-hidden />
@@ -907,7 +909,7 @@ function CleanupItemDetailsPanel({
 
 function CleanupSummaryCard({ label, value, description, icon, tone }: { label: string; value: string; description: string; icon: React.ReactNode; tone: "blue" | "green" | "amber" | "red" }) {
   return (
-    <div className="rounded-md border border-border bg-bg-surface/50 px-4 py-3">
+    <div className="rounded-md border border-border bg-transparent px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-secondary">{label}</div>
@@ -1229,7 +1231,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
       </div>
 
       {!hasResults ? (
-        <section className="rounded-md border border-border bg-bg-surface/45 px-4 py-10">
+        <section className="rounded-md border border-border bg-transparent px-4 py-10">
           <div className="mx-auto flex max-w-md flex-col items-center text-center">
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Database className="size-5" aria-hidden />
@@ -1264,7 +1266,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
               </div>
             ) : null}
 
-            <section className="overflow-hidden rounded-md border border-border bg-bg-surface/45">
+            <section className="overflow-hidden rounded-md border border-border bg-transparent">
               <div className="border-b border-border/70 px-4 py-3">
                 <div className="flex flex-wrap gap-2">
                   {registryIssueTabs.map((tab) => (
@@ -1434,7 +1436,7 @@ function RegistryIssueDetailsPanel({
   const adminBlocked = Boolean(issue?.hive === "HKLM" && !isAdministrator)
 
   return (
-    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-bg-surface/50 xl:sticky xl:top-4 xl:self-start">
+    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-transparent xl:sticky xl:top-4 xl:self-start">
       <div className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
         <div className="font-display text-sm font-semibold tracking-tight text-primary">Issue Details</div>
         <Info className="size-4 text-muted" aria-hidden />
@@ -1808,7 +1810,7 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
       {hasResults ? <StartupNotice warnings={startupWarnings} /> : null}
 
       {!hasResults ? (
-        <section className="rounded-md border border-border bg-bg-surface/45 px-4 py-10">
+        <section className="rounded-md border border-border bg-transparent px-4 py-10">
           <div className="mx-auto flex max-w-md flex-col items-center text-center">
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Power className="size-5" aria-hidden />
@@ -1822,7 +1824,7 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
         </section>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_330px]">
-          <section className="min-w-0 overflow-hidden rounded-md border border-border bg-bg-surface/45">
+          <section className="min-w-0 overflow-hidden rounded-md border border-border bg-transparent">
             <div className="border-b border-border/70 px-4 py-3">
               <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
                 <div className="flex min-w-0 flex-wrap gap-1 rounded-md border border-border/70 bg-bg-subtle/80 p-1">
@@ -2039,7 +2041,7 @@ function StartupSummaryPanel({
   onScan: () => void
 }) {
   return (
-    <section className="rounded-md border border-border bg-bg-surface/50 px-4 py-3.5">
+    <section className="rounded-md border border-border bg-transparent px-4 py-3.5">
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
           <div className="font-display text-base font-semibold tracking-tight text-primary">Startup Impact Summary</div>
@@ -2149,7 +2151,7 @@ function StartupDetailsPanel({
   const toggleBlocked = !item || !item.canToggle || adminBlocked || isBusy
 
   return (
-    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-bg-surface/50 xl:sticky xl:top-4 xl:self-start">
+    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-transparent xl:sticky xl:top-4 xl:self-start">
       <div className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
         <div className="font-display text-sm font-semibold tracking-tight text-primary">Startup Details</div>
         <Info className="size-4 text-muted" aria-hidden />
@@ -2574,7 +2576,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
       </div>
 
       {!hasResults ? (
-        <section className="rounded-md border border-border bg-bg-surface/45 px-4 py-10">
+        <section className="rounded-md border border-border bg-transparent px-4 py-10">
           <div className="mx-auto flex max-w-md flex-col items-center text-center">
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Package className="size-5" aria-hidden />
@@ -2598,7 +2600,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
 
             {appStatusWarnings.length > 0 ? <WarningList warnings={appStatusWarnings} /> : null}
 
-            <section className="overflow-hidden rounded-md border border-border bg-bg-surface/45">
+            <section className="overflow-hidden rounded-md border border-border bg-transparent">
               <div className="border-b border-border/70 px-4 py-3">
                 <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_180px_180px_260px]">
                   <div className="relative min-w-0">
@@ -2738,7 +2740,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
             </section>
 
             {leftoverScan || isScanningLeftovers || leftoverScanError ? (
-              <section className="overflow-hidden rounded-md border border-border bg-bg-surface/45">
+              <section className="overflow-hidden rounded-md border border-border bg-transparent">
                 <div className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
                   <div className="flex items-center gap-2.5">
                     <Trash2 className="size-4 shrink-0 text-muted" aria-hidden />
@@ -2848,7 +2850,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
 
 function InstalledAppSummaryCard({ label, value, description, icon, tone }: { label: string; value: string; description: string; icon: React.ReactNode; tone: "blue" | "green" }) {
   return (
-    <div className="rounded-md border border-border bg-bg-surface/50 px-4 py-3">
+    <div className="rounded-md border border-border bg-transparent px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-secondary">{label}</div>
@@ -2899,7 +2901,7 @@ function InstalledAppDetailsPanel({
   onScanLeftovers: () => void
 }) {
   return (
-    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-bg-surface/50 xl:sticky xl:top-4 xl:self-start">
+    <aside className="min-w-0 overflow-hidden rounded-md border border-border bg-transparent xl:sticky xl:top-4 xl:self-start">
       <div className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
         <div className="font-display text-sm font-semibold tracking-tight text-primary">App Details</div>
         <Info className="size-4 text-muted" aria-hidden />
@@ -2979,6 +2981,13 @@ function InstalledAppDetailRow({ label, value, mono = false }: { label: string; 
 
 function InstalledAppMark({ app }: { app: InstalledApp }) {
   const token = app.displayName.trim().slice(0, 2).toUpperCase() || "AP"
+  if (app.iconDataUri) {
+    return (
+      <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-bg-subtle/40" aria-hidden>
+        <img src={app.iconDataUri} alt="" className="size-5 object-contain" loading="lazy" decoding="async" />
+      </div>
+    )
+  }
   return (
     <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-md border font-display text-xs font-semibold", getInstalledAppMarkClass(app))} aria-hidden>
       {token}
@@ -3117,7 +3126,7 @@ function formatAppInstallDate(value: string) {
 }
 
 function formatBytes(bytes: number) {
-  if (bytes <= 0) return "0 B"
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B"
   const units = ["B", "KB", "MB", "GB", "TB"]
   let value = bytes
   let unitIndex = 0
@@ -3140,7 +3149,7 @@ function AdminStatusBanner({
   if (isAdministrator) return null
 
   return (
-    <div className="border-y border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm leading-snug text-secondary">
+    <div className="border-y border-amber-400/30 bg-amber-400/8 px-3 py-2 text-sm leading-snug text-secondary">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-1 items-start gap-2.5">
           <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
@@ -3357,12 +3366,16 @@ function filterInstalledApps(apps: InstalledApp[], query: string) {
 function sortInstalledApps(apps: InstalledApp[], sortKey: "name" | "publisher" | "size" | "date") {
   const sorted = [...apps]
   sorted.sort((a, b) => {
-    if (sortKey === "size") return b.estimatedSizeBytes - a.estimatedSizeBytes || a.displayName.localeCompare(b.displayName)
+    if (sortKey === "size") return getInstalledAppSizeBytes(b) - getInstalledAppSizeBytes(a) || a.displayName.localeCompare(b.displayName)
     if (sortKey === "date") return (b.installDate || "").localeCompare(a.installDate || "") || a.displayName.localeCompare(b.displayName)
     if (sortKey === "publisher") return (a.publisher || "").localeCompare(b.publisher || "") || a.displayName.localeCompare(b.displayName)
     return a.displayName.localeCompare(b.displayName)
   })
   return sorted
+}
+
+function getInstalledAppSizeBytes(app: InstalledApp) {
+  return Number.isFinite(app.estimatedSizeBytes) && app.estimatedSizeBytes > 0 ? app.estimatedSizeBytes : 0
 }
 
 function getUninstallerNotice(app: InstalledApp) {
@@ -3387,13 +3400,29 @@ function useStoredBoolean(key: string) {
 function readStoredStringArray(key: string) {
   try {
     const raw = window.localStorage.getItem(key)
+    if (!raw || raw.length > MAX_STORED_STRING_ARRAY_JSON_CHARS) return []
     const value = raw ? JSON.parse(raw) : []
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+    return normalizeStoredStringArray(value)
   } catch { return [] }
 }
 
 function writeStoredStringArray(key: string, value: string[]) {
-  try { window.localStorage.setItem(key, JSON.stringify(value)) } catch { }
+  try { window.localStorage.setItem(key, JSON.stringify(normalizeStoredStringArray(value))) } catch { }
+}
+
+function normalizeStoredStringArray(value: unknown) {
+  if (!Array.isArray(value)) return []
+  const next: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== "string") continue
+    const trimmed = item.trim()
+    if (trimmed.length === 0 || trimmed.length > 200 || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    next.push(trimmed)
+    if (next.length >= 100) break
+  }
+  return next
 }
 
 async function loadDrives(
@@ -3422,8 +3451,12 @@ async function loadDrives(
 }
 
 function getDriveUsedPercent(drive: MaintenanceDrive) {
-  if (drive.totalSizeBytes <= 0) return 0
-  return Math.max(0, Math.min(100, ((drive.totalSizeBytes - drive.freeSpaceBytes) / drive.totalSizeBytes) * 100))
+  const totalSizeBytes = Number.isFinite(drive.totalSizeBytes) ? drive.totalSizeBytes : 0
+  if (totalSizeBytes <= 0) return 0
+
+  const freeSpaceBytes = Number.isFinite(drive.freeSpaceBytes) ? drive.freeSpaceBytes : 0
+  const usedBytes = Math.max(0, Math.min(totalSizeBytes, totalSizeBytes - freeSpaceBytes))
+  return Math.max(0, Math.min(100, (usedBytes / totalSizeBytes) * 100))
 }
 
 function showMaintenanceError(error: unknown, fallback: string) {

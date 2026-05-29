@@ -87,6 +87,39 @@ public sealed class HashInputNormalizerTests
     }
 
     [Fact]
+    public void Normalize_RemovesControlCharactersFromFallback()
+    {
+        string normalized = HashInputNormalizer.Normalize("ab\0cd\r\nnot-a-hash");
+
+        Assert.Equal("abcdnot-a-hash", normalized);
+    }
+
+    [Fact]
+    public void Normalize_RemovesUnicodeFormatCharactersFromFallback()
+    {
+        string normalized = HashInputNormalizer.Normalize("ab\u202Ecd not-a-hash");
+
+        Assert.Equal("abcdnot-a-hash", normalized);
+    }
+
+    [Fact]
+    public void Normalize_RejectsOversizedPastedInput()
+    {
+        string normalized = HashInputNormalizer.Normalize(new string('A', 8 * 1024 + 1));
+
+        Assert.Equal(string.Empty, normalized);
+    }
+
+    [Fact]
+    public void TryNormalizeSupportedHash_DoesNotUseSuffixFromHugeHexBlob()
+    {
+        bool normalized = HashInputNormalizer.TryNormalizeSupportedHash(new string('A', 300), out string hash);
+
+        Assert.False(normalized);
+        Assert.Equal(new string('a', 300), hash);
+    }
+
+    [Fact]
     public void TryNormalizeSupportedHash_RejectsInvalidFallbackText()
     {
         bool normalized = HashInputNormalizer.TryNormalizeSupportedHash("ab cd not-a-hash", out string hash);

@@ -189,14 +189,14 @@ public sealed class DecryptSelectedItemViewModel : INotifyPropertyChanged
     public void UpdateProgress(double percent, string? status = null)
     {
         IsProgressVisible = true;
-        ProgressPercent = Math.Clamp(percent, 0, 100);
+        ProgressPercent = double.IsFinite(percent) ? Math.Clamp(percent, 0, 100) : 0;
         ProgressStatus = status ?? $"{ProgressPercent:0}%";
     }
 
     private static string FormatFileSize(long bytes)
     {
         string[] sizes = ["B", "KB", "MB", "GB", "TB"];
-        double length = bytes;
+        double length = Math.Max(bytes, 0);
         int order = 0;
         while (length >= 1024 && order < sizes.Length - 1)
         {

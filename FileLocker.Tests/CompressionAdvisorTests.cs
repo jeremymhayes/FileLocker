@@ -12,6 +12,42 @@ public sealed class CompressionAdvisorTests
     }
 
     [Fact]
+    public void CreatePlan_RejectsRelativeSourcePathWhenCompressionRequested()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            CompressionAdvisor.CreatePlan("notes.txt", 128_000, compressionRequested: true));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreatePlan_RejectsUnicodeFormatSourcePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            CompressionAdvisor.CreatePlan(
+                Path.Combine(Path.GetTempPath(), "notes" + "\u202E" + ".txt"),
+                128_000,
+                compressionRequested: true));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("invalid characters", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreatePlan_RejectsAlternateDataStreamSourcePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            CompressionAdvisor.CreatePlan(
+                Path.Combine(Path.GetTempPath(), "notes.txt:stream"),
+                128_000,
+                compressionRequested: true));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void CreatePlan_SkipsKnownCompressedExtensions()
     {
         string tempDirectory = Path.Combine(Path.GetTempPath(), "filelocker-tests", Guid.NewGuid().ToString("N"));

@@ -1,0 +1,244 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - complementary [ref=e5]:
+      - generic [ref=e7]:
+        - img "FileLocker" [ref=e8]
+        - generic [ref=e9]:
+          - generic [ref=e10]: FileLocker
+          - generic [ref=e11]: v1.2.1.0
+      - navigation [ref=e12]:
+        - generic [ref=e13]:
+          - generic [ref=e14]: Home
+          - generic [ref=e15]:
+            - button "Dashboard" [ref=e16]:
+              - img [ref=e18]
+              - generic [ref=e21]: Dashboard
+            - button "Security Guide" [ref=e22]:
+              - img [ref=e24]
+              - generic [ref=e26]: Security Guide
+        - generic [ref=e27]:
+          - generic [ref=e28]: File Security
+          - generic [ref=e29]:
+            - button "Encrypt Files" [ref=e30]:
+              - img [ref=e32]
+              - generic [ref=e35]: Encrypt Files
+            - button "Decrypt Files" [ref=e36]:
+              - img [ref=e38]
+              - generic [ref=e41]: Decrypt Files
+            - button "Secure Delete" [ref=e42]:
+              - img [ref=e44]
+              - generic [ref=e47]: Secure Delete
+            - button "Hash Files" [ref=e48]:
+              - img [ref=e50]
+              - generic [ref=e53]: Hash Files
+            - button "Encode Text" [ref=e54]:
+              - img [ref=e56]
+              - generic [ref=e61]: Encode Text
+            - button "Metadata Scrambler" [ref=e62]:
+              - img [ref=e64]
+              - generic [ref=e73]: Metadata Scrambler
+        - generic [ref=e74]:
+          - generic [ref=e75]: System Care
+          - generic [ref=e76]:
+            - button "Custom Clean" [ref=e77]:
+              - img [ref=e79]
+              - generic [ref=e82]: Custom Clean
+            - button "Partition Cleaner" [ref=e83]:
+              - img [ref=e85]
+              - generic [ref=e87]: Partition Cleaner
+            - button "Drive Optimizer" [ref=e88]:
+              - img [ref=e90]
+              - generic [ref=e95]: Drive Optimizer
+            - button "Registry Fixer" [ref=e96]:
+              - img [ref=e98]
+              - generic [ref=e102]: Registry Fixer
+            - button "Startup Manager" [ref=e103]:
+              - img [ref=e105]
+              - generic [ref=e107]: Startup Manager
+            - button "App Manager" [ref=e108]:
+              - img [ref=e110]
+              - generic [ref=e114]: App Manager
+      - generic [ref=e115]:
+        - generic [ref=e116]:
+          - button "Settings" [ref=e117]:
+            - img [ref=e119]
+            - generic [ref=e122]: Settings
+          - button "About" [ref=e123]:
+            - img [ref=e125]
+            - generic [ref=e127]: About
+        - generic [ref=e128]:
+          - generic [ref=e129]:
+            - img [ref=e130]
+            - generic [ref=e132]: Dark Mode
+          - switch "Dark Mode" [checked] [ref=e133]
+    - main [ref=e134]:
+      - generic [ref=e136]:
+        - generic [ref=e137]:
+          - generic [ref=e139]:
+            - img [ref=e141]
+            - heading "Encrypt Files" [level=2] [ref=e145]
+          - generic [ref=e146]:
+            - button "Encryption Guide" [ref=e147]:
+              - img
+              - text: Encryption Guide
+            - button "History" [ref=e148]:
+              - img
+              - text: History
+        - generic [ref=e149]:
+          - generic [ref=e150]:
+            - group "Encrypt file drop zone" [ref=e153]:
+              - img [ref=e155]
+              - heading "Drop files or folders to encrypt" [level=3] [ref=e158]
+              - generic [ref=e159]:
+                - button "Browse Files" [ref=e160]:
+                  - img
+                  - text: Browse Files
+                - button "Browse Folder" [ref=e161]:
+                  - img
+                  - text: Browse Folder
+            - generic [ref=e162]:
+              - generic [ref=e164]:
+                - generic [ref=e165]:
+                  - heading "Selected Files" [level=2] [ref=e166]
+                  - paragraph [ref=e167]: Add files or folders to start an encryption run.
+                - generic [ref=e168]: 0 selected
+              - generic [ref=e170]: No files selected. Drop files above or choose files to continue.
+            - generic [ref=e171]:
+              - heading "Password" [level=2] [ref=e173]
+              - generic [ref=e174]:
+                - generic [ref=e175]:
+                  - generic [ref=e176]:
+                    - generic [ref=e177]: Password
+                    - generic [ref=e178]:
+                      - textbox "Password Show Password" [ref=e179]:
+                        - /placeholder: Enter a strong password
+                      - button "Show Password" [ref=e180]:
+                        - img [ref=e181]
+                  - generic [ref=e184]:
+                    - generic [ref=e185]: Confirm Password
+                    - generic [ref=e186]:
+                      - textbox "Confirm Password Show Confirm Password" [ref=e187]:
+                        - /placeholder: Confirm password
+                      - button "Show Confirm Password" [ref=e188]:
+                        - img [ref=e189]
+                - generic [ref=e192]:
+                  - generic [ref=e193]:
+                    - generic [ref=e194]: Password Strength
+                    - generic [ref=e195]: Waiting
+                  - paragraph [ref=e197]: Enter a password to check strength before you start the run.
+                - generic [ref=e199]:
+                  - img [ref=e200]
+                  - generic [ref=e202]: Use a strong password. FileLocker cannot recover lost passwords for you.
+                - generic [ref=e203]:
+                  - img [ref=e204]
+                  - generic [ref=e206]: Your password is never stored or transmitted. You are solely responsible for keeping it safe.
+          - complementary [ref=e207]:
+            - generic [ref=e208]:
+              - heading "Encryption Options" [level=2] [ref=e210]
+              - generic [ref=e211]:
+                - generic [ref=e212]:
+                  - generic [ref=e213]: Algorithm
+                  - combobox "Algorithm" [ref=e214]:
+                    - generic: AES-256-GCM
+                    - img
+                - generic [ref=e215]:
+                  - generic [ref=e216]: Output Location
+                  - generic [ref=e217]:
+                    - textbox "Output Location Browse" [ref=e218]:
+                      - /placeholder: Leave blank to save next to source files
+                    - button "Browse" [ref=e219]:
+                      - img
+                      - text: Browse
+                - generic [ref=e220]:
+                  - generic [ref=e221]:
+                    - generic [ref=e222]: Save output next to source files
+                    - switch "Save output next to source files" [checked] [ref=e223]
+                  - generic [ref=e224]:
+                    - generic [ref=e225]: Compress before encryption
+                    - switch "Compress before encryption" [checked] [ref=e226]
+                  - generic [ref=e227]:
+                    - generic [ref=e228]: Delete originals after successful encryption
+                    - switch "Delete originals after successful encryption" [ref=e229]
+                  - generic [ref=e230]:
+                    - generic [ref=e231]: Package folders into one locked file
+                    - switch "Package folders into one locked file" [ref=e232]
+            - generic [ref=e233]:
+              - heading "Advanced Controls" [level=2] [ref=e235]
+              - generic [ref=e236]:
+                - generic [ref=e237]:
+                  - generic [ref=e238]: Keyfile Path
+                  - textbox "Keyfile Path" [ref=e239]:
+                    - /placeholder: Optional keyfile path
+                - generic [ref=e240]:
+                  - generic [ref=e241]: Recovery Key
+                  - textbox "Recovery Key" [ref=e242]:
+                    - /placeholder: Optional recovery key
+                - generic [ref=e243]:
+                  - generic [ref=e244]: Backup Folder
+                  - generic [ref=e245]:
+                    - textbox "Backup Folder Browse" [ref=e246]:
+                      - /placeholder: Optional backup folder
+                    - button "Browse" [ref=e247]:
+                      - img
+                      - text: Browse
+                - generic [ref=e248]:
+                  - generic [ref=e249]: Metadata Note
+                  - textbox "Metadata Note" [ref=e250]:
+                    - /placeholder: Optional metadata note
+                - generic [ref=e251]:
+                  - generic [ref=e252]: Timestamp Policy
+                  - combobox "Timestamp Policy" [ref=e253]:
+                    - generic: Current time
+                    - img
+                - generic [ref=e254]:
+                  - generic [ref=e255]:
+                    - generic [ref=e256]: Verify after write
+                    - switch "Verify after write" [checked] [ref=e257]
+                  - generic [ref=e258]:
+                    - generic [ref=e259]: Scramble output names
+                    - switch "Scramble output names" [ref=e260]
+                  - generic [ref=e261]:
+                    - generic [ref=e262]: PNG carrier output
+                    - switch "PNG carrier output" [ref=e263]
+                  - generic [ref=e264]:
+                    - generic [ref=e265]: Use secure delete for removals
+                    - switch "Use secure delete for removals" [ref=e266]
+            - generic [ref=e267]:
+              - heading "Operation Summary" [level=2] [ref=e269]
+              - generic [ref=e270]:
+                - generic [ref=e271]:
+                  - generic [ref=e272]:
+                    - img [ref=e274]
+                    - generic [ref=e278]: Files selected
+                  - generic [ref=e279]: "0"
+                - generic [ref=e280]:
+                  - generic [ref=e281]:
+                    - img [ref=e283]
+                    - generic [ref=e285]: Total size
+                  - generic [ref=e286]: Calculated at run start
+                - generic [ref=e287]:
+                  - generic [ref=e288]:
+                    - img [ref=e290]
+                    - generic [ref=e292]: Output
+                  - generic [ref=e293]: Next to source files
+                - generic [ref=e294]:
+                  - generic [ref=e295]:
+                    - img [ref=e297]
+                    - generic [ref=e300]: Mode
+                  - generic [ref=e301]: AES-256-GCM
+                - generic [ref=e302]:
+                  - generic [ref=e303]:
+                    - img [ref=e305]
+                    - generic [ref=e308]: Status
+                  - generic [ref=e309]: Add files or folders
+              - generic [ref=e310]:
+                - button "Start Encryption" [disabled]:
+                  - img
+                  - text: Start Encryption
+                - button "Clear Selection" [disabled]:
+                  - img
+                  - text: Clear Selection
+            - generic [ref=e311]:
+              - img [ref=e312]
+              - paragraph [ref=e314]: Delete originals stays off by default. If you enable it, verify your password and output location first.
+  - region "Notifications alt+T"

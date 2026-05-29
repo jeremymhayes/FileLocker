@@ -25,11 +25,15 @@ import { toast } from "sonner"
 import { PasswordField } from "@/components/dashboard/PasswordField"
 import { Button } from "@/components/ui/button"
 import { ProgressBar } from "@/components/common/ProgressBar"
-import { fileName, mergeUniquePaths } from "@/lib/format"
+import { fileName, formatDate, getComparableLocalPath, mergeUniquePaths } from "@/lib/format"
 import { getLatestProgressForOperation } from "@/lib/progress"
 import { cn } from "@/lib/utils"
+import { DEFAULT_ENCRYPTION_ALGORITHM_ID, getDefaultEncryptionAlgorithm, getEncryptionAlgorithmOptions } from "@/lib/encryptionAlgorithms"
+import { formatAlgorithmLabel } from "@/lib/algorithmLabels"
+import { DEFAULT_OUTPUT_TIMESTAMP_POLICY } from "@/lib/outputTimestampPolicies"
 import type {
   DashboardState,
+  EncryptionAlgorithmOption,
   FileOperationRequest,
   FileOperationResult,
   HistoryEntry,
@@ -47,6 +51,7 @@ type DashboardPageProps = {
   onDashboardUpdate: (dashboard: DashboardState) => void
   onReveal: (path: string) => void
   privacyModeEnabled?: boolean
+  encryptionAlgorithms?: EncryptionAlgorithmOption[]
   droppedPaths?: string[]
   onDroppedPathsHandled?: () => void
 }
@@ -74,6 +79,7 @@ type ActivityItem = {
   tone: "blue" | "teal" | "purple" | "orange" | "red"
   sizeBytes: number
   fileType: string
+  algorithmLabel?: string
   ts: number
   timeLabel: string
   failed: boolean
@@ -137,6 +143,7 @@ const ACTIVITY_ICONS = {
 } as const
 
 const dashboardEncryptDefaults = {
+  algorithm: DEFAULT_ENCRYPTION_ALGORITHM_ID,
   compressFiles: true,
   scrambleNames: false,
   useSteganography: false,
@@ -148,7 +155,7 @@ const dashboardEncryptDefaults = {
   saveNextToEncrypted: true,
   restoreOriginalFilenames: true,
   preserveFolderStructure: true,
-  outputTimestampPolicy: "Current time",
+  outputTimestampPolicy: DEFAULT_OUTPUT_TIMESTAMP_POLICY,
   profileName: "Dashboard Quick Encrypt",
   randomizeMetadata: false,
 }
@@ -156,12 +163,19 @@ const dashboardEncryptDefaults = {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function formatBytes(n: number): string {
-  if (!Number.isFinite(n)) return "—"
-  if (n === 0) return "0 B"
+  if (!Number.isFinite(n) || n <= 0) return "0 B"
   if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + " GB"
   if (n >= 1024 * 1024)        return (n / 1024 / 1024).toFixed(1) + " MB"
   if (n >= 1024)               return (n / 1024).toFixed(0) + " KB"
   return n + " B"
+}
+
+function getNonNegativeFiniteNumber(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function getStorageBreakdownFlex(percent: number): number {
+  return Math.max(getNonNegativeFiniteNumber(percent), 1)
 }
 
 function getFileType(path: string): string {
@@ -174,6 +188,8 @@ function getFileType(path: string): string {
 }
 
 function getTimeLabel(ts: number): string {
+  if (!Number.isFinite(ts)) return "Unknown"
+
   const diff = Date.now() - ts
   const mins = Math.floor(diff / 60_000)
   if (mins < 1)  return "Just now"
@@ -183,7 +199,8 @@ function getTimeLabel(ts: number): string {
   const days = Math.floor(diff / 86_400_000)
   if (days === 1) return "Yesterday"
   if (days < 30)  return `${days} days ago`
-  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  const date = new Date(ts)
+  return Number.isFinite(date.getTime()) ? formatDate(date.toISOString()) : "Unknown"
 }
 
 function getOpInfo(operation: string): Pick<ActivityItem, "action" | "tone"> & { label: string } {
@@ -209,7 +226,10 @@ function isFailedHistoryEntry(entry: HistoryEntry): boolean {
 function deriveActivityItems(history: HistoryEntry[]): ActivityItem[] {
   const items: ActivityItem[] = []
   for (const entry of history) {
-    const ts = new Date(entry.timestampUtc).getTime()
+    const parsedTimestamp = new Date(entry.timestampUtc).getTime()
+    const hasValidTimestamp = Number.isFinite(parsedTimestamp)
+    const ts = hasValidTimestamp ? parsedTimestamp : 0
+    const timeLabel = hasValidTimestamp ? getTimeLabel(parsedTimestamp) : "Unknown"
     const opInfo = getOpInfo(entry.operation)
     const results = entry.results ?? []
 
@@ -223,8 +243,9 @@ function deriveActivityItems(history: HistoryEntry[]): ActivityItem[] {
         tone:     failed ? "red" : opInfo.tone,
         sizeBytes: 0,
         fileType: "—",
+        algorithmLabel: formatAlgorithmLabel(entry.algorithm, entry.keySizeBits),
         ts,
-        timeLabel: getTimeLabel(ts),
+        timeLabel,
         failed,
       })
     } else {
@@ -238,10 +259,11 @@ function deriveActivityItems(history: HistoryEntry[]): ActivityItem[] {
           op:        failed ? result.status : opInfo.label,
           action:    opInfo.action,
           tone:      failed ? "red" : opInfo.tone,
-          sizeBytes: result.originalSizeBytes ?? 0,
+          sizeBytes: getNonNegativeFiniteNumber(result.originalSizeBytes ?? 0),
           fileType:  getFileType(result.sourcePath),
+          algorithmLabel: formatAlgorithmLabel(result.algorithm ?? entry.algorithm, result.keySizeBits ?? entry.keySizeBits),
           ts,
-          timeLabel: getTimeLabel(ts),
+          timeLabel,
           failed,
           path: displayPath,
         })
@@ -367,6 +389,12 @@ function ActivityRow({ item, onReveal }: { item: ActivityItem; onReveal?: (path:
             <>
               <span className="size-[3px] rounded-full bg-muted/50 shrink-0" />
               <span>{formatBytes(item.sizeBytes)}</span>
+            </>
+          )}
+          {item.algorithmLabel && (
+            <>
+              <span className="size-[3px] rounded-full bg-muted/50 shrink-0" />
+              <span>{item.algorithmLabel}</span>
             </>
           )}
         </div>
@@ -621,7 +649,7 @@ function StorageSavedCard({ dashboard }: { dashboard: DashboardState }) {
               <span
                 key={item.label}
                 style={{
-                  flex: Math.max(item.percent, 1),
+                  flex: getStorageBreakdownFlex(item.percent),
                   background: TONE_COLORS[item.tone] ?? TONE_COLORS.blue,
                 }}
                 title={`${item.label}: ${item.display}`}
@@ -755,7 +783,7 @@ function CustomCleanCard({
         </div>
       ) : null}
       {scanError ? (
-        <div className="mb-3 rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-xs leading-[1.45] text-secondary" role="status" aria-live="polite">
+        <div className="mb-3 rounded-md border border-amber-400/30 bg-amber-400/8 px-3 py-2 text-xs leading-[1.45] text-secondary" role="status" aria-live="polite">
           {scanError}
         </div>
       ) : null}
@@ -796,12 +824,23 @@ function CustomCleanCard({
 function WeekPanel({ dashboard }: { dashboard: DashboardState }) {
   const buckets = useMemo(() => {
     const bridgeBuckets = dashboard.operationsThisWeek ?? []
-    return bridgeBuckets.length === 7 ? bridgeBuckets : deriveWeekBuckets(dashboard.history ?? [])
+    const sourceBuckets = bridgeBuckets.length === 7 ? bridgeBuckets : deriveWeekBuckets(dashboard.history ?? [])
+    return sourceBuckets.map((bucket) => ({
+      ...bucket,
+      count: getNonNegativeFiniteNumber(bucket.count),
+      failedCount: getNonNegativeFiniteNumber(bucket.failedCount),
+    }))
   }, [dashboard])
   const counts = buckets.map((bucket) => bucket.count)
   const max = Math.max(...counts, 1)
-  const total = dashboard.operationsThisWeekCount ?? counts.reduce((a, b) => a + b, 0)
-  const failed = dashboard.failedOperationsThisWeekCount ?? buckets.reduce((a, b) => a + b.failedCount, 0)
+  const total = getNonNegativeFiniteNumber(dashboard.operationsThisWeekCount ?? counts.reduce((a, b) => a + b, 0))
+  const failed = Math.min(
+    total,
+    getNonNegativeFiniteNumber(dashboard.failedOperationsThisWeekCount ?? buckets.reduce((a, b) => a + b.failedCount, 0))
+  )
+  const completed = dashboard.successfulOperationsThisWeekCount == null
+    ? Math.max(total - failed, 0)
+    : Math.min(total, getNonNegativeFiniteNumber(dashboard.successfulOperationsThisWeekCount))
 
   return (
     <div className="px-4 py-3">
@@ -816,7 +855,7 @@ function WeekPanel({ dashboard }: { dashboard: DashboardState }) {
         {total}
       </div>
       <div className="mt-1 text-[12.5px] text-secondary">
-        {dashboard.successfulOperationsThisWeekCount ?? Math.max(total - failed, 0)} completed
+        {completed} completed
         {failed > 0 ? `, ${failed} need review` : ""}
       </div>
       <div className="dash-spark mt-3.5">
@@ -849,6 +888,8 @@ function WeekPanel({ dashboard }: { dashboard: DashboardState }) {
 function Hero({
   compact,
   dragging,
+  algorithmLabel,
+  encryptionAvailable,
   onDragEnter,
   onDragOver,
   onDragLeave,
@@ -859,6 +900,8 @@ function Hero({
 }: {
   compact: boolean
   dragging: boolean
+  algorithmLabel: string
+  encryptionAvailable: boolean
   onDragEnter: (e: DragEvent<HTMLDivElement>) => void
   onDragOver: (e: DragEvent<HTMLDivElement>) => void
   onDragLeave: () => void
@@ -910,7 +953,9 @@ function Hero({
           </h2>
           {!compact && (
             <p id="dashboard-hero-drop-zone-description" className="mt-2 text-[13.5px] leading-[1.55] text-secondary max-w-[440px] text-pretty mb-0">
-              Everything stays on this device. Encrypted with AES-256-GCM using a password you control.
+              {encryptionAvailable
+                ? `Everything stays on this device. Encrypted with ${algorithmLabel} using a password you control.`
+                : "Dashboard quick encryption is unavailable because no supported file-encryption algorithm passed the runtime check."}
             </p>
           )}
         </div>
@@ -935,6 +980,7 @@ function QueueCard({
   queuedPaths,
   onRemove,
   onClear,
+  encryptionAvailable,
   password,
   setPassword,
   confirmPassword,
@@ -950,6 +996,7 @@ function QueueCard({
   queuedPaths: string[]
   onRemove: (path: string) => void
   onClear: () => void
+  encryptionAvailable: boolean
   password: string
   setPassword: (v: string) => void
   confirmPassword: string
@@ -966,7 +1013,8 @@ function QueueCard({
     () => getLatestProgressForOperation(progressEvents, activeOperationId),
     [activeOperationId, progressEvents]
   )
-  const pwOk = password && password === confirmPassword
+  const hasPassword = password.trim().length > 0
+  const pwOk = hasPassword && password === confirmPassword
 
   return (
     <div className="px-4 py-3">
@@ -1036,26 +1084,29 @@ function QueueCard({
         className="grid gap-2.5 mt-3.5 pt-3.5 border-t border-dashed border-[rgba(150,173,205,0.18)] items-end"
         style={{ gridTemplateColumns: "1fr 1fr auto" }}
       >
-        <PasswordField label="Password" value={password} onChange={setPassword} placeholder="Password" disabled={isEncrypting} />
+        <PasswordField label="Password" value={password} onChange={setPassword} placeholder="Password" disabled={isEncrypting || !encryptionAvailable} />
         <PasswordField
           label="Confirm Password"
           value={confirmPassword}
           onChange={setConfirmPassword}
           placeholder="Confirm"
-          disabled={isEncrypting}
+          disabled={isEncrypting || !encryptionAvailable}
         />
         <Button
           className="h-10 px-4"
           onClick={onEncrypt}
-          disabled={!pwOk || isEncrypting}
+          disabled={!pwOk || isEncrypting || !encryptionAvailable}
         >
           <LockKeyhole data-icon="inline-start" />
-          {isEncrypting ? "Encrypting…" : "Encrypt"}
+          {!encryptionAvailable ? "Unavailable" : isEncrypting ? "Encrypting…" : "Encrypt"}
         </Button>
       </div>
 
       {/* Validation messages */}
-      {encryptAttempted && !password && (
+      {encryptAttempted && !encryptionAvailable && (
+        <p className="mt-1.5 text-sm text-accent-red">No supported file-encryption algorithm is available on this device.</p>
+      )}
+      {encryptAttempted && !hasPassword && (
         <p className="mt-1.5 text-sm text-accent-red">Password is required.</p>
       )}
       {password && confirmPassword && password !== confirmPassword && (
@@ -1078,6 +1129,7 @@ export function DashboardPage({
   onDashboardUpdate,
   onReveal,
   privacyModeEnabled = false,
+  encryptionAlgorithms,
   droppedPaths = [],
   onDroppedPathsHandled,
 }: DashboardPageProps) {
@@ -1091,6 +1143,14 @@ export function DashboardPage({
   const [activeOperationId, setActiveOperationId] = useState("")
   const [encryptError, setEncryptError] = useState("")
   const dragDepthRef = useRef(0)
+  const quickEncryptOptions = useMemo(
+    () => getEncryptionAlgorithmOptions(encryptionAlgorithms),
+    [encryptionAlgorithms]
+  )
+  const quickEncryptAlgorithm = getDefaultEncryptionAlgorithm(quickEncryptOptions)
+  const quickEncryptAlgorithmLabel = quickEncryptAlgorithm?.label ?? "Unavailable"
+  const quickEncryptAvailable = Boolean(quickEncryptAlgorithm)
+  const quickEncryptDisabled = isEncrypting || !quickEncryptAvailable
 
   useEffect(() => {
     if (isEncrypting) {
@@ -1102,6 +1162,12 @@ export function DashboardPage({
   // Handle paths dropped from native shell
   useEffect(() => {
     if (droppedPaths.length === 0) return
+    if (!quickEncryptAvailable) {
+      toast.error("Dashboard quick encryption is unavailable on this device.")
+      onDroppedPathsHandled?.()
+      return
+    }
+
     if (isEncrypting) {
       toast.error("Wait for dashboard encryption to finish before changing the queue.")
       onDroppedPathsHandled?.()
@@ -1112,7 +1178,7 @@ export function DashboardPage({
     setActiveOperationId("")
     setEncryptError("")
     onDroppedPathsHandled?.()
-  }, [droppedPaths, isEncrypting, onDroppedPathsHandled])
+  }, [droppedPaths, isEncrypting, onDroppedPathsHandled, quickEncryptAvailable])
 
   // Suggest output directory for folder selections
   useEffect(() => {
@@ -1125,6 +1191,11 @@ export function DashboardPage({
   }, [invoke, queuedPaths])
 
   async function pickFiles() {
+    if (!quickEncryptAvailable) {
+      toast.error("Dashboard quick encryption is unavailable on this device.")
+      return
+    }
+
     if (isEncrypting) {
       toast.error("Wait for dashboard encryption to finish before changing the queue.")
       return
@@ -1141,6 +1212,11 @@ export function DashboardPage({
   }
 
   async function pickFolder() {
+    if (!quickEncryptAvailable) {
+      toast.error("Dashboard quick encryption is unavailable on this device.")
+      return
+    }
+
     if (isEncrypting) {
       toast.error("Wait for dashboard encryption to finish before changing the queue.")
       return
@@ -1161,7 +1237,7 @@ export function DashboardPage({
   function handleHeroDragEnter(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
 
-    if (isEncrypting) {
+    if (quickEncryptDisabled) {
       return
     }
 
@@ -1171,15 +1247,15 @@ export function DashboardPage({
 
   function handleHeroDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
-    event.dataTransfer.dropEffect = isEncrypting ? "none" : "copy"
+    event.dataTransfer.dropEffect = quickEncryptDisabled ? "none" : "copy"
 
-    if (!isEncrypting && !isDragging) {
+    if (!quickEncryptDisabled && !isDragging) {
       setIsDragging(true)
     }
   }
 
   function handleHeroDragLeave() {
-    if (isEncrypting) {
+    if (quickEncryptDisabled) {
       dragDepthRef.current = 0
       setIsDragging(false)
       return
@@ -1200,6 +1276,11 @@ export function DashboardPage({
       return
     }
 
+    if (!quickEncryptAvailable) {
+      toast.error("Dashboard quick encryption is unavailable on this device.")
+      return
+    }
+
     const paths = Array.from(event.dataTransfer.files)
       .map((file) => (file as File & { path?: string }).path)
       .filter((path): path is string => Boolean(path))
@@ -1216,8 +1297,9 @@ export function DashboardPage({
     }
 
     setEncryptAttempted(true)
+    if (!quickEncryptAlgorithm) { toast.error("No supported file-encryption algorithm is available on this device."); return }
     if (queuedPaths.length === 0) { toast.error("Add files or folders before encrypting."); return }
-    if (!password)                { toast.error("Enter a password before encrypting."); return }
+    if (!password.trim())         { toast.error("Enter a password before encrypting."); return }
     if (password !== confirmPassword) { toast.error("Passwords do not match."); return }
 
     setIsEncrypting(true)
@@ -1237,6 +1319,7 @@ export function DashboardPage({
         backupFolderPath: "",
         metadataNotes: "Queued from dashboard drag-and-drop zone",
         ...dashboardEncryptDefaults,
+        algorithm: quickEncryptAlgorithm.id,
         saveNextToSource: encryptOutputDirectory.length === 0,
       }
       const response = await invoke<OperationResultPayload>("crypto.encryptFiles", payload)
@@ -1271,13 +1354,15 @@ export function DashboardPage({
           <Hero
             compact={hasQueue}
             dragging={isDragging}
+            algorithmLabel={quickEncryptAlgorithmLabel}
+            encryptionAvailable={quickEncryptAvailable}
             onDragEnter={handleHeroDragEnter}
             onDragOver={handleHeroDragOver}
             onDragLeave={handleHeroDragLeave}
             onDrop={handleDrop}
             onBrowse={() => void pickFiles()}
             onBrowseFolder={() => void pickFolder()}
-            disabled={isEncrypting}
+            disabled={quickEncryptDisabled}
           />
 
           {hasQueue && (
@@ -1285,7 +1370,7 @@ export function DashboardPage({
               queuedPaths={queuedPaths}
               onRemove={(path) => {
                 if (!isEncrypting) {
-                  setQueuedPaths((q) => q.filter((p) => p !== path))
+                  setQueuedPaths((q) => q.filter((p) => getComparableLocalPath(p.trim()) !== getComparableLocalPath(path.trim())))
                   setActiveOperationId("")
                   setEncryptError("")
                 }
@@ -1298,6 +1383,7 @@ export function DashboardPage({
                 }
               }}
               password={password}
+              encryptionAvailable={quickEncryptAvailable}
               setPassword={(value) => {
                 setPassword(value)
                 setEncryptError("")

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Org.BouncyCastle.Crypto;
 
 namespace FileLocker.Tests;
 
@@ -10,6 +11,7 @@ public sealed class OperationFailureClassifierTests
     [InlineData(typeof(PathTooLongException), "Path too long")]
     [InlineData(typeof(InvalidDataException), "Unsupported or corrupted payload")]
     [InlineData(typeof(CryptographicException), "Authentication failed or corrupted payload")]
+    [InlineData(typeof(InvalidCipherTextException), "Authentication failed or corrupted payload")]
     [InlineData(typeof(UnauthorizedAccessException), "Access denied or wrong unlock secret")]
     [InlineData(typeof(OperationCanceledException), "Cancelled")]
     [InlineData(typeof(ArgumentException), "Invalid input")]
@@ -23,6 +25,50 @@ public sealed class OperationFailureClassifierTests
         Assert.Equal(expected, category);
     }
 
+    [Theory]
+    [InlineData("Unsupported file encryption algorithm.")]
+    [InlineData("Unsupported payload algorithm.")]
+    [InlineData("Legacy payload headers support only AES-256-GCM.")]
+    [InlineData("File payload metadata references an unsupported payload header algorithm.")]
+    [InlineData("Folder package metadata contains an unsupported algorithm name.")]
+    [InlineData("ChaCha20-Poly1305 is supported for reading existing payloads but is not available for new encrypted files.")]
+    [InlineData("AES-256-GCM-SIV is recognized but is not supported by this build.")]
+    public void Classify_SeparatesUnsupportedEncryptionFailuresFromNotSupportedMessages(string message)
+    {
+        string category = OperationFailureClassifier.Classify(new NotSupportedException(message));
+
+        Assert.Equal("Unsupported encryption algorithm or runtime", category);
+    }
+
+    [Theory]
+    [InlineData(typeof(ArgumentException), "Unsupported file encryption algorithm.")]
+    [InlineData(typeof(InvalidOperationException), "ChaCha20-Poly1305 is not available for new encrypted files.")]
+    public void Classify_SeparatesUnsupportedEncryptionFailuresAcrossWrapperTypes(Type exceptionType, string message)
+    {
+        var exception = (Exception)Activator.CreateInstance(exceptionType, message)!;
+
+        string category = OperationFailureClassifier.Classify(exception);
+
+        Assert.Equal("Unsupported encryption algorithm or runtime", category);
+    }
+
+    [Fact]
+    public void Classify_SeparatesUnsupportedPayloadAlgorithmFromGenericCorruption()
+    {
+        string category = OperationFailureClassifier.Classify(new InvalidDataException("Unsupported payload algorithm."));
+
+        Assert.Equal("Unsupported encryption algorithm or runtime", category);
+    }
+
+    [Fact]
+    public void Classify_SeparatesUnsupportedPlatformCryptoFailures()
+    {
+        string category = OperationFailureClassifier.Classify(
+            new PlatformNotSupportedException("ChaCha20-Poly1305 is not supported on this Windows runtime."));
+
+        Assert.Equal("Unsupported encryption algorithm or runtime", category);
+    }
+
     [Fact]
     public void Classify_UsesBaseExceptionForWrappedFailures()
     {
@@ -31,6 +77,18 @@ public sealed class OperationFailureClassifierTests
         string category = OperationFailureClassifier.Classify(exception);
 
         Assert.Equal("Path too long", category);
+    }
+
+    [Fact]
+    public void Classify_UsesWrapperMessageForUnsupportedEncryptionFailures()
+    {
+        var exception = new InvalidOperationException(
+            "Unsupported payload algorithm.",
+            new IOException("Simulated low-level I/O failure."));
+
+        string category = OperationFailureClassifier.Classify(exception);
+
+        Assert.Equal("Unsupported encryption algorithm or runtime", category);
     }
 
     [Fact]

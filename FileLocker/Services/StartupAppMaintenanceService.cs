@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
+using System.Buffers.Binary;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -13,6 +14,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace FileLocker;
 
@@ -24,6 +26,23 @@ internal static class StartupAppMaintenanceService
     private const string StartupCategoryApps = "Startup Apps";
     private const string StartupCategoryBroken = "Broken Startup Items";
     private const string StartupCategoryAdvanced = "Advanced Startup Hooks";
+    private const long MaxStartupMetadataJsonBytes = 1 * 1024 * 1024;
+    private const int MaxWarningMessageChars = 2048;
+    private const int MaxWarningCount = 100;
+    private const int MaxRequestIdCount = 500;
+    private const int MaxRequestIdChars = 256;
+    private const int MaxHiddenProcessOutputChars = 1 * 1024 * 1024;
+    private const int MaxStartupFolderFiles = 5_000;
+    private const int MaxPathSearchDirectories = 2_048;
+    private const int MaxPathSearchExtensions = 64;
+    private const int InvalidExecutablePathEnd = -2;
+    private const int MaxLeftoverDirectoryChildren = 10_000;
+    internal const int MaxComTextChars = 4_096;
+    private const int MaxLeftoverReparseInspectionDirectories = 1_000;
+    private const int MaxInstalledAppTextChars = 512;
+    private const int MaxInstalledAppCommandChars = MaxComTextChars;
+    private const int MaxScheduledTaskComItems = 256;
+    private const int MaxWmiEventConsumers = 256;
     private const int ServiceNoChange = -1;
     private const int ServiceDisabled = 4;
     private const int ScManagerConnect = 0x0001;
@@ -66,7 +85,35 @@ internal static class StartupAppMaintenanceService
 
     private static void AddWarning(ICollection<string>? warnings, string message)
     {
-        warnings?.Add(SensitiveDataRedactor.RedactMessage(message));
+        string warning = NormalizeWarningMessage(message);
+        if (!string.IsNullOrWhiteSpace(warning))
+        {
+            warnings?.Add(warning);
+        }
+    }
+
+    internal static string NormalizeWarningMessage(string? message)
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(message);
+        if (redacted.Length <= MaxWarningMessageChars)
+        {
+            return redacted;
+        }
+
+        const string truncationMessage = "Warning truncated.";
+        string suffix = $"{Environment.NewLine}{truncationMessage}";
+        int bodyLength = Math.Max(0, MaxWarningMessageChars - suffix.Length);
+        return redacted[..bodyLength].TrimEnd() + suffix;
+    }
+
+    private static string[] NormalizeWarnings(IEnumerable<string> warnings)
+    {
+        return warnings
+            .Select(NormalizeWarningMessage)
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxWarningCount)
+            .ToArray();
     }
 
     internal static StartupScanResult ScanStartup()
@@ -103,17 +150,12 @@ internal static class StartupAppMaintenanceService
             disabledItems.Length,
             items.Count(item => item.isIgnored),
             disabledMetadata.Select(ToStartupRestoreRecord).ToArray(),
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            NormalizeWarnings(warnings));
     }
 
     internal static StartupToggleResult SetStartupEnabled(string? itemId, bool enabled)
     {
-        if (string.IsNullOrWhiteSpace(itemId))
-        {
-            throw new InvalidOperationException("Select a startup item first.");
-        }
-
-        string normalizedId = itemId.Trim();
+        string normalizedId = NormalizeRequiredStartupItemId(itemId);
         if (enabled)
         {
             return EnableStartupItem(normalizedId);
@@ -124,12 +166,7 @@ internal static class StartupAppMaintenanceService
 
     internal static StartupIgnoreResult SetStartupIgnored(string? itemId, bool ignored)
     {
-        if (string.IsNullOrWhiteSpace(itemId))
-        {
-            throw new InvalidOperationException("Select a startup item first.");
-        }
-
-        string normalizedId = itemId.Trim();
+        string normalizedId = NormalizeRequiredStartupItemId(itemId);
         HashSet<string> ignoredIds = LoadIgnoredStartupItemIds();
         if (ignored)
         {
@@ -146,13 +183,9 @@ internal static class StartupAppMaintenanceService
 
     internal static StartupExportResult ExportStartupItemDetails(string? itemId, bool includeFullPaths = true)
     {
-        if (string.IsNullOrWhiteSpace(itemId))
-        {
-            throw new InvalidOperationException("Select a startup item first.");
-        }
-
+        string normalizedId = NormalizeRequiredStartupItemId(itemId);
         StartupScanResult scan = ScanStartup();
-        StartupItem item = scan.items.FirstOrDefault(candidate => string.Equals(candidate.id, itemId.Trim(), StringComparison.OrdinalIgnoreCase))
+        StartupItem item = scan.items.FirstOrDefault(candidate => string.Equals(candidate.id, normalizedId, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException("The selected startup item could not be found.");
         string exportDirectory = Path.Combine(GetSystemCareDataDirectory(), "Exports");
         Directory.CreateDirectory(exportDirectory);
@@ -200,7 +233,8 @@ internal static class StartupAppMaintenanceService
             throw new InvalidOperationException("Select a startup item first.");
         }
 
-        StartupItem? item = ScanStartup().items.FirstOrDefault(candidate => string.Equals(candidate.id, itemId.Trim(), StringComparison.OrdinalIgnoreCase));
+        string normalizedId = NormalizeRequiredStartupItemId(itemId);
+        StartupItem? item = ScanStartup().items.FirstOrDefault(candidate => string.Equals(candidate.id, normalizedId, StringComparison.OrdinalIgnoreCase));
         if (item == null || !string.Equals(item.category, StartupCategoryBroken, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("FileLocker only removes startup entries that are classified as broken.");
@@ -223,7 +257,7 @@ internal static class StartupAppMaintenanceService
             .ThenBy(app => app.publisher, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return new InstalledAppsScanResult(apps, apps.Length, warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        return new InstalledAppsScanResult(apps, apps.Length, NormalizeWarnings(warnings));
     }
 
     internal static UninstallerLaunchResult LaunchUninstaller(string? appId, string? confirmation)
@@ -233,26 +267,29 @@ internal static class StartupAppMaintenanceService
             throw new InvalidOperationException("Confirm the uninstall launch before opening the vendor uninstaller.");
         }
 
-        if (string.IsNullOrWhiteSpace(appId))
-        {
-            throw new InvalidOperationException("Select an installed app first.");
-        }
-
+        string normalizedAppId = NormalizeRequiredInstalledAppId(appId);
         InstalledApp app = ScanInstalledApps().apps
-            .FirstOrDefault(item => string.Equals(item.id, appId.Trim(), StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault(item => string.Equals(item.id, normalizedAppId, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException("The selected app could not be found.");
 
-        if (string.IsNullOrWhiteSpace(app.uninstallCommand))
+        string uninstallCommand = NormalizeInstalledAppCommand(app.uninstallCommand);
+        if (string.IsNullOrWhiteSpace(uninstallCommand))
         {
             throw new InvalidOperationException("This app does not publish an uninstall command.");
         }
 
-        if (ContainsSilentUninstallSwitch(app.uninstallCommand))
+        if (ContainsSilentUninstallSwitch(uninstallCommand))
         {
             throw new InvalidOperationException("FileLocker does not launch uninstall commands that include silent or quiet switches.");
         }
 
-        ProcessCommand command = ParseProcessCommand(app.uninstallCommand);
+        ProcessCommand command = ParseProcessCommand(uninstallCommand);
+        if (string.IsNullOrWhiteSpace(command.fileName) ||
+            command.fileName.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            throw new InvalidOperationException("This app's uninstall command is not valid.");
+        }
+
         var startInfo = new ProcessStartInfo
         {
             FileName = command.fileName,
@@ -309,7 +346,7 @@ internal static class StartupAppMaintenanceService
             FormatFileSize(categories.Sum(category => category.sizeBytes)),
             categories.Sum(category => category.fileCount),
             categories.Sum(category => category.skippedCount),
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            NormalizeWarnings(warnings));
     }
 
     internal static AppLeftoverCleanResult CleanAppLeftovers(
@@ -372,7 +409,7 @@ internal static class StartupAppMaintenanceService
                     category.id,
                     category.appDisplayName,
                     category.path,
-                    SensitiveDataRedactor.RedactMessage(ex.Message)));
+                    NormalizeWarningMessage(ex.Message)));
             }
         }
 
@@ -389,9 +426,13 @@ internal static class StartupAppMaintenanceService
     internal static string? ParseStartupCommandTargetPath(string? command)
     {
         string? normalized = RegistryPathNormalizer.Normalize(command);
-        return string.IsNullOrWhiteSpace(normalized)
-            ? null
-            : ParseStartupCommandTargetCandidate(Environment.ExpandEnvironmentVariables(normalized));
+        if (string.IsNullOrWhiteSpace(normalized) || ContainsPathControlCharacter(normalized))
+        {
+            return null;
+        }
+
+        string? candidate = ParseStartupCommandTargetCandidate(normalized);
+        return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
     }
 
     internal static StartupCommandResolution ResolveStartupCommand(string? command)
@@ -403,7 +444,6 @@ internal static class StartupAppMaintenanceService
             return new StartupCommandResolution(raw, string.Empty, string.Empty, string.Empty, string.Empty, "UnresolvedCommand", "Low", "Medium", "Command is empty.");
         }
 
-        normalized = Environment.ExpandEnvironmentVariables(normalized);
         ProcessCommand processCommand = ParseProcessCommand(normalized);
         string executable = processCommand.fileName.Trim().Trim('"');
         string arguments = processCommand.arguments;
@@ -414,7 +454,7 @@ internal static class StartupAppMaintenanceService
 
         string resolvedExecutable = ResolveExecutablePath(executable);
         string workingDirectory = GetSafeDirectoryName(resolvedExecutable);
-        string launcherName = Path.GetFileName(resolvedExecutable);
+        string launcherName = GetSafeFileName(resolvedExecutable);
         bool knownLauncher = IsKnownStartupLauncher(launcherName) || IsKnownStartupLauncher(executable);
         string status = DetermineCommandStatus(resolvedExecutable, knownLauncher);
         string confidence = status is "MissingTarget" or "Valid" ? "High" : status is "SuspiciousLauncher" or "SystemProtected" ? "Medium" : "Low";
@@ -447,19 +487,41 @@ internal static class StartupAppMaintenanceService
             return string.Empty;
         }
 
-        string expanded = Environment.ExpandEnvironmentVariables(executable.Trim().Trim('"'));
-        if (Path.IsPathRooted(expanded))
+        string executableText = executable.Trim().Trim('"');
+        if (ContainsPathControlCharacter(executableText))
         {
-            return Path.GetFullPath(expanded);
+            return string.Empty;
         }
 
-        string? pathResolved = ResolveCommandFromPath(expanded);
-        return pathResolved ?? expanded;
+        if (!RegistryPathNormalizer.TryExpandEnvironmentVariables(executableText, out string expanded))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            if (Path.IsPathFullyQualified(expanded))
+            {
+                return Path.GetFullPath(expanded);
+            }
+
+            if (Path.IsPathRooted(expanded))
+            {
+                return string.Empty;
+            }
+
+            string? pathResolved = ResolveCommandFromPath(expanded);
+            return pathResolved ?? expanded;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return expanded;
+        }
     }
 
     private static string? ResolveCommandFromPath(string executable)
     {
-        string fileName = Path.GetFileName(executable);
+        string fileName = GetSafeFileName(executable);
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return null;
@@ -468,15 +530,31 @@ internal static class StartupAppMaintenanceService
         string[] extensions = Path.HasExtension(fileName)
             ? [string.Empty]
             : (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.COM;.BAT;.CMD")
-                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(MaxPathSearchExtensions)
+                .ToArray();
+        int searchedDirectories = 0;
         foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
+            if (searchedDirectories >= MaxPathSearchDirectories)
+            {
+                break;
+            }
+
+            searchedDirectories++;
             foreach (string extension in extensions)
             {
-                string candidate = Path.Combine(directory, fileName + extension);
-                if (File.Exists(candidate))
+                try
                 {
-                    return candidate;
+                    string candidate = Path.Combine(directory, fileName + extension);
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    continue;
                 }
             }
         }
@@ -491,13 +569,13 @@ internal static class StartupAppMaintenanceService
             return "UnresolvedCommand";
         }
 
-        string fileName = Path.GetFileName(executable);
+        string fileName = GetSafeFileName(executable);
         if (knownLauncher && IsPotentiallyScriptableLauncher(fileName))
         {
             return "SuspiciousLauncher";
         }
 
-        if (!Path.IsPathRooted(executable))
+        if (!Path.IsPathFullyQualified(executable))
         {
             return knownLauncher ? "Valid" : "UnresolvedCommand";
         }
@@ -545,12 +623,14 @@ internal static class StartupAppMaintenanceService
 
         try
         {
-            if (!Path.IsPathRooted(path))
+            string trimmedPath = path.Trim();
+            if (ContainsPathControlCharacter(trimmedPath) ||
+                !Path.IsPathFullyQualified(trimmedPath))
             {
                 return false;
             }
 
-            string fullPath = Path.GetFullPath(path.Trim());
+            string fullPath = Path.GetFullPath(trimmedPath);
             return IsUnderAnyPath(fullPath, GetProtectedStartupRoots(), includeRoot: false);
         }
         catch
@@ -563,7 +643,7 @@ internal static class StartupAppMaintenanceService
     {
         try
         {
-            return Path.IsPathRooted(path) ? Path.GetDirectoryName(path) ?? string.Empty : string.Empty;
+            return Path.IsPathFullyQualified(path) ? Path.GetDirectoryName(path) ?? string.Empty : string.Empty;
         }
         catch
         {
@@ -571,9 +651,28 @@ internal static class StartupAppMaintenanceService
         }
     }
 
+    private static string GetSafeFileName(string value)
+    {
+        try
+        {
+            return Path.GetFileName(value.Trim()) ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return value.Trim();
+        }
+    }
+
+    private static bool ContainsPathControlCharacter(string value)
+    {
+        return value.Any(character =>
+            char.IsControl(character) ||
+            CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
+    }
+
     private static bool IsKnownStartupLauncher(string value)
     {
-        string fileName = Path.GetFileName(value);
+        string fileName = GetSafeFileName(value);
         return fileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) ||
                fileName.Equals("msiexec", StringComparison.OrdinalIgnoreCase) ||
                fileName.Equals("rundll32.exe", StringComparison.OrdinalIgnoreCase) ||
@@ -600,7 +699,7 @@ internal static class StartupAppMaintenanceService
 
     private static bool IsPotentiallyScriptableLauncher(string value)
     {
-        string fileName = Path.GetFileName(value);
+        string fileName = GetSafeFileName(value);
         return fileName.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) ||
                fileName.Equals("cmd", StringComparison.OrdinalIgnoreCase) ||
                fileName.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) ||
@@ -617,7 +716,7 @@ internal static class StartupAppMaintenanceService
                fileName.Equals("rundll32", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string ParseStartupCommandTargetCandidate(string normalized)
+    private static string? ParseStartupCommandTargetCandidate(string normalized)
     {
         if (normalized.StartsWith('"'))
         {
@@ -634,6 +733,11 @@ internal static class StartupAppMaintenanceService
             return normalized[..executableEndIndex].Trim().Trim('"');
         }
 
+        if (executableEndIndex == InvalidExecutablePathEnd)
+        {
+            return null;
+        }
+
         int firstSpace = normalized.IndexOf(' ');
         return firstSpace > 0 ? normalized[..firstSpace] : normalized;
     }
@@ -641,6 +745,7 @@ internal static class StartupAppMaintenanceService
     private static int FindExecutablePathEnd(string value)
     {
         int bestEndIndex = -1;
+        int streamSuffixEndIndex = -1;
         foreach (string extension in ExecutableExtensions)
         {
             int searchIndex = 0;
@@ -653,6 +758,17 @@ internal static class StartupAppMaintenanceService
                 }
 
                 int endIndex = index + extension.Length;
+                if (endIndex < value.Length && value[endIndex] == ':')
+                {
+                    if (streamSuffixEndIndex < 0 || endIndex < streamSuffixEndIndex)
+                    {
+                        streamSuffixEndIndex = endIndex;
+                    }
+
+                    searchIndex = index + 1;
+                    continue;
+                }
+
                 if (IsCommandPathBoundary(value, endIndex))
                 {
                     if (bestEndIndex < 0 || endIndex < bestEndIndex)
@@ -665,6 +781,11 @@ internal static class StartupAppMaintenanceService
 
                 searchIndex = index + 1;
             }
+        }
+
+        if (streamSuffixEndIndex >= 0 && (bestEndIndex < 0 || streamSuffixEndIndex < bestEndIndex))
+        {
+            return InvalidExecutablePathEnd;
         }
 
         return bestEndIndex;
@@ -730,17 +851,7 @@ internal static class StartupAppMaintenanceService
 
     internal static bool IsApprovedAppLeftoverPath(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(path.Trim());
-        }
-        catch
+        if (!TryGetNormalFullyQualifiedPath(path, out string fullPath))
         {
             return false;
         }
@@ -912,7 +1023,7 @@ internal static class StartupAppMaintenanceService
         }
         catch (Exception ex)
         {
-            string failureDetails = SensitiveDataRedactor.RedactMessage(ex.Message);
+            string failureDetails = NormalizeWarningMessage(ex.Message);
             SaveDisabledStartupMetadata(metadataItems
                 .Select(item => string.Equals(item.id, metadata.id, StringComparison.OrdinalIgnoreCase)
                     ? item with { restoreStatus = "Failed", failureDetails = failureDetails }
@@ -1250,9 +1361,24 @@ internal static class StartupAppMaintenanceService
         IEnumerable<string> files;
         try
         {
-            files = Directory.EnumerateFiles(folderPath, "*", SearchOption.TopDirectoryOnly)
-                .Where(path => IsVisibleStartupFolderFile(path, source, warnings))
-                .ToArray();
+            var visibleFiles = new List<string>();
+            foreach (string path in Directory.EnumerateFiles(folderPath, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (!IsVisibleStartupFolderFile(path, source, warnings))
+                {
+                    continue;
+                }
+
+                if (visibleFiles.Count >= MaxStartupFolderFiles)
+                {
+                    AddWarning(warnings, $"{source}: startup folder scan stopped after {MaxStartupFolderFiles.ToString(CultureInfo.InvariantCulture)} files.");
+                    break;
+                }
+
+                visibleFiles.Add(path);
+            }
+
+            files = visibleFiles.ToArray();
         }
         catch (Exception ex)
         {
@@ -2160,7 +2286,7 @@ internal static class StartupAppMaintenanceService
             return [];
         }
 
-        int count = GetComIntProperty(triggers, "Count");
+        int count = Math.Clamp(GetComIntProperty(triggers, "Count"), 0, MaxScheduledTaskComItems);
         var types = new List<int>(count);
         for (int index = 1; index <= count; index++)
         {
@@ -2232,7 +2358,7 @@ internal static class StartupAppMaintenanceService
             return string.Empty;
         }
 
-        int count = GetComIntProperty(actions, "Count");
+        int count = Math.Clamp(GetComIntProperty(actions, "Count"), 0, MaxScheduledTaskComItems);
         var commands = new List<string>(count);
         for (int index = 1; index <= count; index++)
         {
@@ -2256,7 +2382,7 @@ internal static class StartupAppMaintenanceService
             }
         }
 
-        return string.Join(" && ", commands.Where(command => !string.IsNullOrWhiteSpace(command)));
+        return NormalizeComText(string.Join(" && ", commands.Where(command => !string.IsNullOrWhiteSpace(command))));
     }
 
     private static string CombineCommandAndArguments(string path, string arguments)
@@ -2311,8 +2437,16 @@ internal static class StartupAppMaintenanceService
         IEnumerable<JsonElement> consumers = root.ValueKind == JsonValueKind.Array
             ? root.EnumerateArray()
             : root.ValueKind == JsonValueKind.Object ? [root] : [];
+        int inspectedConsumers = 0;
         foreach (JsonElement consumer in consumers)
         {
+            if (inspectedConsumers >= MaxWmiEventConsumers)
+            {
+                AddWarning(warnings, $"WMI event consumers: scan stopped after {MaxWmiEventConsumers.ToString(CultureInfo.InvariantCulture)} entries.");
+                yield break;
+            }
+
+            inspectedConsumers++;
             string name = GetJsonString(consumer, "Name");
             string consumerClass = GetJsonString(consumer, "__CLASS");
             string command = FirstNonEmpty(
@@ -2450,7 +2584,7 @@ internal static class StartupAppMaintenanceService
             var targetBuilder = new StringBuilder(1024);
             shellLink.GetPath(targetBuilder, targetBuilder.Capacity, IntPtr.Zero, 0);
             string targetPath = targetBuilder.ToString();
-            return string.IsNullOrWhiteSpace(targetPath) ? null : Environment.ExpandEnvironmentVariables(targetPath);
+            return RegistryPathNormalizer.Normalize(targetPath);
         }
         catch
         {
@@ -2685,13 +2819,22 @@ internal static class StartupAppMaintenanceService
 
         try
         {
-            return JsonSerializer.Deserialize<List<StartupDisableMetadata>>(File.ReadAllText(path), MetadataJsonOptions) ?? [];
+            return ReadStartupMetadataJson<List<StartupDisableMetadata>>(path) ?? [];
         }
         catch (Exception ex)
         {
             AddWarning(warnings, $"FileLocker could not read disabled startup metadata: {ex.Message}");
             return [];
         }
+    }
+
+    private static T? ReadStartupMetadataJson<T>(string path)
+    {
+        string json = BoundedFileReader.ReadAllUtf8Text(
+            path,
+            MaxStartupMetadataJsonBytes,
+            "FileLocker startup metadata is too large to read.");
+        return JsonSerializer.Deserialize<T>(json, MetadataJsonOptions);
     }
 
     private static StartupRestoreRecord ToStartupRestoreRecord(StartupDisableMetadata metadata)
@@ -2734,10 +2877,7 @@ internal static class StartupAppMaintenanceService
 
         try
         {
-            return (JsonSerializer.Deserialize<string[]>(File.ReadAllText(path), MetadataJsonOptions) ?? [])
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Select(id => id.Trim())
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return NormalizeStoredStartupItemIds(ReadStartupMetadataJson<string[]>(path));
         }
         catch (Exception ex)
         {
@@ -2748,10 +2888,79 @@ internal static class StartupAppMaintenanceService
 
     private static void SaveIgnoredStartupItemIds(IReadOnlyCollection<string> ids)
     {
+        HashSet<string> normalizedIds = NormalizeStoredStartupItemIds(ids);
         FileWriteService.WriteAllTextAtomically(
             GetIgnoredStartupItemsPath(),
-            JsonSerializer.Serialize(ids.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(), MetadataJsonOptions),
+            JsonSerializer.Serialize(normalizedIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray(), MetadataJsonOptions),
             Encoding.UTF8);
+    }
+
+    private static string NormalizeRequiredStartupItemId(string? itemId)
+    {
+        if (string.IsNullOrWhiteSpace(itemId))
+        {
+            throw new InvalidOperationException("Select a startup item first.");
+        }
+
+        string normalizedId = itemId.Trim();
+        if (IsInvalidRequestId(normalizedId))
+        {
+            throw new InvalidOperationException("The selected startup item id is not valid.");
+        }
+
+        return normalizedId;
+    }
+
+    private static string NormalizeRequiredInstalledAppId(string? appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId))
+        {
+            throw new InvalidOperationException("Select an installed app first.");
+        }
+
+        string normalizedId = appId.Trim();
+        if (IsInvalidRequestId(normalizedId))
+        {
+            throw new InvalidOperationException("The selected app id is not valid.");
+        }
+
+        return normalizedId;
+    }
+
+    private static HashSet<string> NormalizeStoredStartupItemIds(IEnumerable<string?>? ids)
+    {
+        var normalizedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (ids == null)
+        {
+            return normalizedIds;
+        }
+
+        foreach (string? id in ids)
+        {
+            if (normalizedIds.Count >= MaxRequestIdCount)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            string normalizedId = id.Trim();
+            if (!IsInvalidRequestId(normalizedId))
+            {
+                normalizedIds.Add(normalizedId);
+            }
+        }
+
+        return normalizedIds;
+    }
+
+    private static bool IsInvalidRequestId(string value)
+    {
+        return value.Length > MaxRequestIdChars ||
+            value.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
     }
 
     private static void SaveDisabledStartupMetadata(IReadOnlyCollection<StartupDisableMetadata> items)
@@ -2780,18 +2989,7 @@ internal static class StartupAppMaintenanceService
     internal static string GetAvailableDisabledStartupFilePath(string itemId, string originalPath)
     {
         string basePath = GetDisabledStartupFilePath(itemId, originalPath);
-        string directory = Path.GetDirectoryName(basePath)!;
-        string fileName = Path.GetFileNameWithoutExtension(basePath);
-        string extension = Path.GetExtension(basePath);
-        string candidate = basePath;
-        int counter = 1;
-        while (File.Exists(candidate) || Directory.Exists(candidate))
-        {
-            candidate = Path.Combine(directory, $"{fileName}-{counter}{extension}");
-            counter++;
-        }
-
-        return candidate;
+        return FileWriteService.ResolveAvailablePath(basePath);
     }
 
     private static void TrySaveDisabledStartupMetadata(IReadOnlyCollection<StartupDisableMetadata> items)
@@ -3002,7 +3200,7 @@ internal static class StartupAppMaintenanceService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"FileLocker could not update the scheduled task through Task Scheduler: {SensitiveDataRedactor.RedactMessage(ex.Message)}", ex);
+            throw new InvalidOperationException($"FileLocker could not update the scheduled task through Task Scheduler: {NormalizeWarningMessage(ex.Message)}", ex);
         }
         finally
         {
@@ -3037,7 +3235,42 @@ internal static class StartupAppMaintenanceService
     private static string GetComStringProperty(object? target, string name)
     {
         object? value = GetComProperty(target, name);
-        return value?.ToString()?.Trim() ?? string.Empty;
+        return NormalizeComText(value?.ToString());
+    }
+
+    internal static string NormalizeComText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(Math.Min(value.Length, MaxComTextChars));
+        bool pendingWhitespace = false;
+        foreach (char character in value.Trim())
+        {
+            if (char.IsControl(character) ||
+                char.IsWhiteSpace(character) ||
+                CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format)
+            {
+                pendingWhitespace = true;
+                continue;
+            }
+
+            if (pendingWhitespace && builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(character);
+            pendingWhitespace = false;
+            if (builder.Length >= MaxComTextChars)
+            {
+                break;
+            }
+        }
+
+        return builder.ToString().Trim();
     }
 
     private static int GetComIntProperty(object? target, string name)
@@ -3157,17 +3390,7 @@ internal static class StartupAppMaintenanceService
 
     internal static bool IsApprovedStartupRestorePath(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(path.Trim());
-        }
-        catch
+        if (!TryGetNormalFullyQualifiedPath(path, out string fullPath))
         {
             return false;
         }
@@ -3192,22 +3415,46 @@ internal static class StartupAppMaintenanceService
 
     internal static bool IsManagedDisabledStartupPath(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(path.Trim());
-        }
-        catch
+        if (!TryGetNormalFullyQualifiedPath(path, out string fullPath))
         {
             return false;
         }
 
         return IsUnderAnyPath(fullPath, [GetDisabledStartupItemsDirectory()], includeRoot: false);
+    }
+
+    private static bool TryGetNormalFullyQualifiedPath(string? path, out string fullPath)
+    {
+        fullPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        string trimmedPath = path.Trim();
+        if (ContainsPathControlCharacter(trimmedPath) ||
+            !Path.IsPathFullyQualified(trimmedPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            string normalizedPath = Path.GetFullPath(trimmedPath);
+            string root = Path.GetPathRoot(normalizedPath) ?? string.Empty;
+            string pathWithoutRoot = normalizedPath.Length > root.Length ? normalizedPath[root.Length..] : string.Empty;
+            if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            fullPath = normalizedPath;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static IEnumerable<InstalledApp> EnumerateInstalledApps(List<string> warnings)
@@ -3271,37 +3518,40 @@ internal static class StartupAppMaintenanceService
                         continue;
                     }
 
-                    string displayName = RegistryStringValue(appKey, "DisplayName");
+                    string displayName = NormalizeInstalledAppText(RegistryStringValue(appKey, "DisplayName"));
                     if (string.IsNullOrWhiteSpace(displayName))
                     {
                         continue;
                     }
 
-                    string publisher = RegistryStringValue(appKey, "Publisher");
-                    string version = RegistryStringValue(appKey, "DisplayVersion");
+                    string publisher = NormalizeInstalledAppText(RegistryStringValue(appKey, "Publisher"));
+                    string version = NormalizeInstalledAppText(RegistryStringValue(appKey, "DisplayVersion"));
                     string installDate = NormalizeInstallDate(RegistryStringValue(appKey, "InstallDate"));
                     long estimatedSizeBytes = RegistryLongValue(appKey, "EstimatedSize") * 1024L;
                     string installLocation = RegistryPathNormalizer.Normalize(RegistryStringValue(appKey, "InstallLocation")) ?? string.Empty;
-                    string uninstallCommand = RegistryStringValue(appKey, "UninstallString");
+                    string uninstallCommand = NormalizeInstalledAppCommand(RegistryStringValue(appKey, "UninstallString"));
+                    string displayIcon = RegistryStringValue(appKey, "DisplayIcon");
+                    string? iconDataUri = AppIconExtractor.TryGetIconDataUri(displayIcon, installLocation, uninstallCommand);
                     string keyPath = architecture == "x86" && sourceHive == "HKLM"
                         ? $@"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{subKeyName}"
                         : $@"{uninstallKeyPath}\{subKeyName}";
 
                     app = new InstalledApp(
                         CreateStableId("app", NormalizeAppIdentity(displayName), NormalizeAppIdentity(publisher), NormalizeAppIdentity(version), RegistryPathNormalizer.Normalize(installLocation) ?? string.Empty),
-                        displayName.Trim(),
-                        publisher.Trim(),
-                        version.Trim(),
+                        displayName,
+                        publisher,
+                        version,
                         installDate,
                         Math.Max(0, estimatedSizeBytes),
                         FormatFileSize(Math.Max(0, estimatedSizeBytes)),
                         installLocation,
-                        uninstallCommand.Trim(),
+                        uninstallCommand,
                         sourceHive,
                         architecture,
                         requiresAdministrator: sourceHive == "HKLM",
                         canLaunchUninstaller: !string.IsNullOrWhiteSpace(uninstallCommand) && !ContainsSilentUninstallSwitch(uninstallCommand),
-                        registryKeyPath: $@"{sourceHive}\{keyPath}");
+                        registryKeyPath: $@"{sourceHive}\{keyPath}",
+                        iconDataUri: iconDataUri);
                 }
                 catch (Exception ex)
                 {
@@ -3461,16 +3711,7 @@ internal static class StartupAppMaintenanceService
             (string current, int depth) = queue.Dequeue();
             inspected++;
 
-            IEnumerable<string> childDirectories;
-            try
-            {
-                childDirectories = Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly).ToArray();
-            }
-            catch (Exception ex)
-            {
-                AddWarning(warnings, $"{current}: {ex.Message}");
-                continue;
-            }
+            string[] childDirectories = TryEnumerateLeftoverChildDirectories(current, warnings);
 
             foreach (string child in childDirectories)
             {
@@ -3493,6 +3734,30 @@ internal static class StartupAppMaintenanceService
                 }
             }
         }
+    }
+
+    private static string[] TryEnumerateLeftoverChildDirectories(string path, List<string> warnings)
+    {
+        var childDirectories = new List<string>();
+        try
+        {
+            foreach (string child in Directory.EnumerateDirectories(path, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (childDirectories.Count >= MaxLeftoverDirectoryChildren)
+                {
+                    AddWarning(warnings, $"{path}: additional child folders were skipped during leftover scanning.");
+                    break;
+                }
+
+                childDirectories.Add(child);
+            }
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"{path}: {ex.Message}");
+        }
+
+        return childDirectories.ToArray();
     }
 
     internal static bool IsSafeLeftoverDirectoryName(string name)
@@ -3650,7 +3915,13 @@ internal static class StartupAppMaintenanceService
 
     private static void DeleteLeftoverDirectory(string directoryPath)
     {
-        foreach (string file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.TopDirectoryOnly).ToArray())
+        int inspectedItems = 0;
+        DeleteLeftoverDirectory(directoryPath, ref inspectedItems);
+    }
+
+    private static void DeleteLeftoverDirectory(string directoryPath, ref int inspectedItems)
+    {
+        foreach (string file in EnumerateLeftoverDeleteChildren(directoryPath, directories: false, ref inspectedItems))
         {
             if (IsReparsePoint(file))
             {
@@ -3660,18 +3931,39 @@ internal static class StartupAppMaintenanceService
             DeleteLeftoverFile(file);
         }
 
-        foreach (string childDirectory in Directory.EnumerateDirectories(directoryPath, "*", SearchOption.TopDirectoryOnly).ToArray())
+        foreach (string childDirectory in EnumerateLeftoverDeleteChildren(directoryPath, directories: true, ref inspectedItems))
         {
             if (IsReparsePoint(childDirectory))
             {
                 throw new InvalidOperationException("The selected cleanup path contains a reparse point.");
             }
 
-            DeleteLeftoverDirectory(childDirectory);
+            DeleteLeftoverDirectory(childDirectory, ref inspectedItems);
         }
 
         FileCleanupService.ClearReadOnlyAttribute(directoryPath);
         Directory.Delete(directoryPath, recursive: false);
+    }
+
+    private static string[] EnumerateLeftoverDeleteChildren(string directoryPath, bool directories, ref int inspectedItems)
+    {
+        var children = new List<string>();
+        IEnumerable<string> childPaths = directories
+            ? Directory.EnumerateDirectories(directoryPath, "*", SearchOption.TopDirectoryOnly)
+            : Directory.EnumerateFiles(directoryPath, "*", SearchOption.TopDirectoryOnly);
+
+        foreach (string childPath in childPaths)
+        {
+            if (children.Count >= MaxLeftoverDirectoryChildren || inspectedItems >= MaxLeftoverScanFiles)
+            {
+                throw new InvalidOperationException("The selected cleanup path is too large to clean safely.");
+            }
+
+            inspectedItems++;
+            children.Add(childPath);
+        }
+
+        return children.ToArray();
     }
 
     private static void DeleteLeftoverFile(string path)
@@ -3725,47 +4017,59 @@ internal static class StartupAppMaintenanceService
         queue.Enqueue(rootPath);
         int inspected = 0;
 
-        while (queue.Count > 0 && inspected < 1000)
+        while (queue.Count > 0)
         {
+            if (inspected >= MaxLeftoverReparseInspectionDirectories)
+            {
+                return true;
+            }
+
             string current = queue.Dequeue();
             inspected++;
 
-            IEnumerable<string> childFiles;
             try
             {
-                childFiles = Directory.EnumerateFiles(current, "*", SearchOption.TopDirectoryOnly).ToArray();
+                int childFileCount = 0;
+                foreach (string child in Directory.EnumerateFiles(current, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if (childFileCount >= MaxLeftoverDirectoryChildren)
+                    {
+                        return true;
+                    }
+
+                    childFileCount++;
+                    if (IsReparsePoint(child))
+                    {
+                        return true;
+                    }
+                }
             }
             catch
             {
-                childFiles = [];
             }
 
-            foreach (string child in childFiles)
-            {
-                if (IsReparsePoint(child))
-                {
-                    return true;
-                }
-            }
-
-            IEnumerable<string> childDirectories;
             try
             {
-                childDirectories = Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly).ToArray();
+                int childDirectoryCount = 0;
+                foreach (string child in Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if (childDirectoryCount >= MaxLeftoverDirectoryChildren)
+                    {
+                        return true;
+                    }
+
+                    childDirectoryCount++;
+                    if (IsReparsePoint(child))
+                    {
+                        return true;
+                    }
+
+                    queue.Enqueue(child);
+                }
             }
             catch
             {
                 continue;
-            }
-
-            foreach (string child in childDirectories)
-            {
-                if (IsReparsePoint(child))
-                {
-                    return true;
-                }
-
-                queue.Enqueue(child);
             }
         }
 
@@ -3784,7 +4088,12 @@ internal static class StartupAppMaintenanceService
             }
         }
 
-        string targetPath = ParseStartupCommandTargetCandidate(normalized);
+        string? targetPath = ParseStartupCommandTargetCandidate(normalized);
+        if (targetPath is null)
+        {
+            return new ProcessCommand(string.Empty, string.Empty);
+        }
+
         if (!string.IsNullOrWhiteSpace(targetPath) && normalized.StartsWith(targetPath, StringComparison.OrdinalIgnoreCase))
         {
             return new ProcessCommand(targetPath, normalized[targetPath.Length..].Trim());
@@ -3910,9 +4219,22 @@ internal static class StartupAppMaintenanceService
             CreateNoWindow = true
         };
 
-        process.Start();
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
+        try
+        {
+            if (!process.Start())
+            {
+                AddWarning(warnings, $"{label} scan could not start.");
+                return string.Empty;
+            }
+        }
+        catch (Exception ex)
+        {
+            AddWarning(warnings, $"{label}: {ex.Message}");
+            return string.Empty;
+        }
+
+        Task<BoundedTextReadResult> outputTask = BoundedTextReader.ReadToEndAsync(process.StandardOutput, MaxHiddenProcessOutputChars);
+        Task<BoundedTextReadResult> errorTask = BoundedTextReader.ReadToEndAsync(process.StandardError, MaxWarningMessageChars);
         if (!process.WaitForExit(timeoutMilliseconds))
         {
             try { process.Kill(entireProcessTree: true); } catch { }
@@ -3920,12 +4242,25 @@ internal static class StartupAppMaintenanceService
             return string.Empty;
         }
 
-        if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(error))
+        BoundedTextReadResult output = outputTask.GetAwaiter().GetResult();
+        BoundedTextReadResult error = errorTask.GetAwaiter().GetResult();
+        if (output.Truncated)
         {
-            AddWarning(warnings, $"{label}: {error.Trim()}");
+            AddWarning(warnings, $"{label} output exceeded the safe read limit.");
+            return string.Empty;
         }
 
-        return output;
+        if (error.Truncated)
+        {
+            AddWarning(warnings, $"{label}: error output was truncated.");
+        }
+
+        if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(error.Text))
+        {
+            AddWarning(warnings, $"{label}: {SensitiveDataRedactor.RedactMessage(error.Text.Trim())}");
+        }
+
+        return output.Text;
     }
 
     private static string GetJsonString(JsonElement element, string propertyName)
@@ -3937,9 +4272,9 @@ internal static class StartupAppMaintenanceService
 
         return property.ValueKind switch
         {
-            JsonValueKind.String => property.GetString() ?? string.Empty,
+            JsonValueKind.String => NormalizeComText(property.GetString()),
             JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
-            _ => property.ToString()
+            _ => NormalizeComText(property.ToString())
         };
     }
 
@@ -3950,7 +4285,7 @@ internal static class StartupAppMaintenanceService
 
     private static StartupPublisherInfo GetStartupPublisherInfo(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path) || !File.Exists(path))
+        if (!TryGetNormalFullyQualifiedPath(path, out string fullPath) || !File.Exists(fullPath))
         {
             return new StartupPublisherInfo(string.Empty, "Unknown", isMicrosoftSigned: false);
         }
@@ -3958,7 +4293,7 @@ internal static class StartupAppMaintenanceService
         string publisher = string.Empty;
         try
         {
-            publisher = FileVersionInfo.GetVersionInfo(path).CompanyName?.Trim() ?? string.Empty;
+            publisher = FileVersionInfo.GetVersionInfo(fullPath).CompanyName?.Trim() ?? string.Empty;
         }
         catch
         {
@@ -3966,7 +4301,7 @@ internal static class StartupAppMaintenanceService
 
         try
         {
-            using X509Certificate certificate = X509Certificate.CreateFromSignedFile(path);
+            using X509Certificate certificate = X509Certificate.CreateFromSignedFile(fullPath);
             string subject = certificate.Subject ?? string.Empty;
             bool microsoftSigned = subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
             return new StartupPublisherInfo(
@@ -3994,9 +4329,33 @@ internal static class StartupAppMaintenanceService
 
     private static HashSet<string> NormalizeIds(IReadOnlyCollection<string>? ids)
     {
-        return ids is { Count: > 0 }
-            ? ids.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : [];
+        var normalizedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (ids is not { Count: > 0 })
+        {
+            return normalizedIds;
+        }
+
+        foreach (string? id in ids)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            string normalizedId = id.Trim();
+            if (IsInvalidRequestId(normalizedId))
+            {
+                throw new InvalidOperationException("One or more selected item ids are not valid.");
+            }
+
+            normalizedIds.Add(normalizedId);
+            if (normalizedIds.Count > MaxRequestIdCount)
+            {
+                throw new InvalidOperationException("Too many selected item ids were provided.");
+            }
+        }
+
+        return normalizedIds;
     }
 
     private static int GetAppQualityScore(InstalledApp app)
@@ -4036,9 +4395,67 @@ internal static class StartupAppMaintenanceService
 
     private static string NormalizeAppIdentity(string? value)
     {
-        return string.IsNullOrWhiteSpace(value)
+        string normalized = NormalizeInstalledAppText(value);
+        return string.IsNullOrWhiteSpace(normalized)
             ? string.Empty
-            : RemoveParenthetical(value).Trim().ToLowerInvariant();
+            : RemoveParenthetical(normalized).Trim().ToLowerInvariant();
+    }
+
+    internal static string NormalizeInstalledAppText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = value.Trim();
+        var builder = new StringBuilder(Math.Min(trimmed.Length, MaxInstalledAppTextChars));
+        bool pendingSpace = false;
+        foreach (char character in trimmed)
+        {
+            if (builder.Length >= MaxInstalledAppTextChars)
+            {
+                break;
+            }
+
+            if (char.IsControl(character) ||
+                CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format)
+            {
+                pendingSpace = true;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                if (builder.Length > 0 && !char.IsWhiteSpace(builder[^1]) && !char.IsWhiteSpace(character))
+                {
+                    builder.Append(' ');
+                }
+
+                pendingSpace = false;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    internal static string NormalizeInstalledAppCommand(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = value.Trim();
+        if (trimmed.Length > MaxInstalledAppCommandChars ||
+            trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            return string.Empty;
+        }
+
+        return trimmed;
     }
 
     private static string RemoveParenthetical(string? value)
@@ -4134,12 +4551,19 @@ internal static class StartupAppMaintenanceService
         return kind switch
         {
             RegistryValueKind.DWord when value is int intValue => $"{name}=dword:{intValue:x8}",
-            RegistryValueKind.QWord when value is long longValue => $"{name}=hex(b):{FormatRegHex(BitConverter.GetBytes(longValue))}",
+            RegistryValueKind.QWord when value is long longValue => $"{name}=hex(b):{FormatRegistryQWord(longValue)}",
             RegistryValueKind.Binary when value is byte[] bytes => $"{name}=hex:{FormatRegHex(bytes)}",
             RegistryValueKind.MultiString when value is string[] strings => $"{name}=hex(7):{FormatRegHex(Encoding.Unicode.GetBytes(string.Join('\0', strings) + "\0\0"))}",
             RegistryValueKind.ExpandString => $"{name}=hex(2):{FormatRegHex(Encoding.Unicode.GetBytes((value?.ToString() ?? string.Empty) + "\0"))}",
             _ => $"{name}=\"{EscapeRegistryString(value?.ToString() ?? string.Empty)}\""
         };
+    }
+
+    private static string FormatRegistryQWord(long value)
+    {
+        byte[] bytes = new byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64LittleEndian(bytes, value);
+        return FormatRegHex(bytes);
     }
 
     private static string FormatRegHex(byte[] bytes)
@@ -4594,7 +5018,8 @@ internal sealed record InstalledApp(
     string architecture,
     bool requiresAdministrator,
     bool canLaunchUninstaller,
-    string registryKeyPath);
+    string registryKeyPath,
+    string? iconDataUri);
 
 internal sealed record InstalledAppsScanResult(
     InstalledApp[] apps,

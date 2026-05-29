@@ -27,6 +27,56 @@ public sealed class SecureDeleteTests : IDisposable
     }
 
     [Fact]
+    public void SecureDelete_RejectsControlCharacterPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.SecureDelete("C:\\bad\r\nsource.txt", passes: 1));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("valid file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SecureDelete_RejectsUnicodeFormatCharacterPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.SecureDelete(Path.Combine(_rootPath, "source" + "\u202E" + ".txt"), passes: 1));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("valid file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SecureDelete_RejectsRelativePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.SecureDelete("source.txt", passes: 1));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SecureDelete_RejectsAlternateDataStreamPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.SecureDelete(Path.Combine(_rootPath, "source.txt:stream"), passes: 1));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SecureDelete_RejectsAlternateDataStreamParentPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.SecureDelete(Path.Combine(_rootPath, "source:stream", "payload.txt"), passes: 1));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void SecureDelete_RemovesReadOnlyFile()
     {
         Directory.CreateDirectory(_rootPath);
@@ -125,6 +175,36 @@ public sealed class SecureDeleteTests : IDisposable
     }
 
     [Fact]
+    public void DeleteSourceFile_RejectsAlternateDataStreamPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.DeleteSourceFile(Path.Combine(_rootPath, "source.txt:stream"), secureDelete: false));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DeleteSourceFile_RejectsRelativePath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.DeleteSourceFile("source.txt", secureDelete: false));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DeleteSourceFile_RejectsAlternateDataStreamParentPath()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.DeleteSourceFile(Path.Combine(_rootPath, "source:stream", "payload.txt"), secureDelete: false));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ValidateSecureDeleteSourceFile_RejectsFileLinkBeforeOutput()
     {
         Directory.CreateDirectory(_rootPath);
@@ -193,6 +273,61 @@ public sealed class SecureDeleteTests : IDisposable
 
         Assert.True(File.Exists(backupPath));
         Assert.Equal("sensitive", File.ReadAllText(backupPath));
+    }
+
+    [Fact]
+    public void CreateBackupCopy_RejectsAlternateDataStreamSourcePath()
+    {
+        string sourcePath = Path.Combine(_rootPath, "source.txt:stream");
+        string backupFolderPath = Path.Combine(_rootPath, "backups");
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateBackupCopy(sourcePath, backupFolderPath));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(backupFolderPath));
+    }
+
+    [Fact]
+    public void CreateBackupCopy_RejectsRelativeSourcePath()
+    {
+        string backupFolderPath = Path.Combine(_rootPath, "backups");
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateBackupCopy("source.txt", backupFolderPath));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("fully qualified", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(backupFolderPath));
+    }
+
+    [Fact]
+    public void CreateBackupCopy_RejectsAlternateDataStreamSourceParentPath()
+    {
+        string sourcePath = Path.Combine(_rootPath, "source:stream", "payload.txt");
+        string backupFolderPath = Path.Combine(_rootPath, "backups");
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateBackupCopy(sourcePath, backupFolderPath));
+
+        Assert.Equal("filePath", ex.ParamName);
+        Assert.Contains("normal file path", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(backupFolderPath));
+    }
+
+    [Fact]
+    public void CreateBackupCopy_RejectsAlternateDataStreamBackupFolderPath()
+    {
+        Directory.CreateDirectory(_rootPath);
+        string sourcePath = Path.Combine(_rootPath, "source.txt");
+        File.WriteAllText(sourcePath, "sensitive");
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() =>
+            MainWindow.CreateBackupCopy(sourcePath, Path.Combine(_rootPath, "backups:stream")));
+
+        Assert.Equal("path", ex.ParamName);
+        Assert.Contains("alternate data stream", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

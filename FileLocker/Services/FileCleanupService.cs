@@ -1,14 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 
 namespace FileLocker;
 
 internal static class FileCleanupService
 {
+    private const int MaxTemporaryCleanupScanFiles = 50_000;
+
     internal static FileCleanupSummary DeleteTemporaryFilesUnderDirectory(string? rootPath)
     {
-        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        if (string.IsNullOrWhiteSpace(rootPath) ||
+            !IsNormalPath(rootPath, requireLeafName: false) ||
+            !Directory.Exists(rootPath))
         {
             return new FileCleanupSummary(0, 0);
         }
@@ -30,8 +36,16 @@ internal static class FileCleanupService
 
         try
         {
+            int inspectedFiles = 0;
             foreach (string file in Directory.EnumerateFiles(rootPath, "*", options))
             {
+                if (inspectedFiles >= MaxTemporaryCleanupScanFiles)
+                {
+                    failedFiles++;
+                    break;
+                }
+
+                inspectedFiles++;
                 if (!IsTemporaryCleanupCandidate(file))
                 {
                     continue;
@@ -39,7 +53,7 @@ internal static class FileCleanupService
 
                 try
                 {
-                    DeleteTemporaryFile(file);
+                    DeleteFileWithoutFollowingReparsePoint(file);
                     deletedFiles++;
                 }
                 catch
@@ -59,6 +73,11 @@ internal static class FileCleanupService
     internal static IReadOnlyList<string> DeleteTemporaryFiles(params string?[] paths)
     {
         var failures = new List<string>();
+        if (paths is not { Length: > 0 })
+        {
+            return failures;
+        }
+
         foreach (string? path in paths)
         {
             if (!TryDeleteTemporaryFile(path, out string? failure))
@@ -72,15 +91,31 @@ internal static class FileCleanupService
 
     internal static bool TryDeleteTemporaryFile(string? path, out string? failure)
     {
+        return TryDeleteFile(path, out failure);
+    }
+
+    internal static bool TryDeleteFile(string? path, out string? failure)
+    {
         failure = null;
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return true;
+        }
+
+        if (!IsNormalPath(path, requireLeafName: true))
+        {
+            failure = "Invalid cleanup path.";
+            return false;
+        }
+
+        if (!File.Exists(path))
         {
             return true;
         }
 
         try
         {
-            DeleteTemporaryFile(path);
+            DeleteFileWithoutFollowingReparsePoint(path);
             return true;
         }
         catch (Exception ex)
@@ -90,11 +125,11 @@ internal static class FileCleanupService
         }
     }
 
-    private static void DeleteTemporaryFile(string path)
+    private static void DeleteFileWithoutFollowingReparsePoint(string path)
     {
         if (IsReparsePoint(path))
         {
-            throw new IOException("Temporary cleanup does not delete file reparse points.");
+            throw new IOException("File cleanup does not delete file reparse points.");
         }
 
         ClearReadOnlyAttribute(path);
@@ -111,13 +146,12 @@ internal static class FileCleanupService
         }
 
         string fileName = Path.GetFileName(path);
-        return extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) &&
-            fileName.StartsWith("FileLocker-Setup", StringComparison.OrdinalIgnoreCase);
+        return UpdaterFileNameRules.IsOwnedInstallerFileName(fileName);
     }
 
     internal static void ClearReadOnlyAttribute(string path)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(path) || !IsNormalPath(path, requireLeafName: true))
         {
             return;
         }
@@ -145,6 +179,44 @@ internal static class FileCleanupService
             return (File.GetAttributes(path) & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
         }
         catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsControlOrFormatCharacter(string value)
+    {
+        return value.Any(character =>
+            char.IsControl(character) ||
+            CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format);
+    }
+
+    private static bool IsNormalPath(string path, bool requireLeafName)
+    {
+        if (string.IsNullOrWhiteSpace(path) || ContainsControlOrFormatCharacter(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            string trimmedPath = path.Trim();
+            if (!Path.IsPathFullyQualified(trimmedPath))
+            {
+                return false;
+            }
+
+            string fullPath = Path.GetFullPath(trimmedPath);
+            if (requireLeafName && string.IsNullOrWhiteSpace(Path.GetFileName(fullPath)))
+            {
+                return false;
+            }
+
+            string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+            string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+            return !pathWithoutRoot.Contains(':', StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             return false;
         }

@@ -9,6 +9,8 @@ public sealed class CsvCellFormatterTests
     [InlineData("  @Risk", "'  @Risk")]
     [InlineData("\uFEFF=Launch", "'\uFEFF=Launch")]
     [InlineData("\u200B@Risk", "'\u200B@Risk")]
+    [InlineData("\0=Launch", "'\0=Launch")]
+    [InlineData("\u202E=Launch", "'\u202E=Launch")]
     [InlineData("Normal text", "Normal text")]
     public void Format_EscapesFormulaLikeValues(string value, string expected)
     {

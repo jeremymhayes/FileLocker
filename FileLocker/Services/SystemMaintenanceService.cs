@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.Buffers.Binary;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -20,8 +21,14 @@ internal static class SystemMaintenanceService
     private const uint SherbNoProgressUi = 0x00000002;
     private const uint SherbNoSound = 0x00000004;
     private const int MaxCleanupScanFiles = 100_000;
+    private const int MaxCleanupChildDirectories = 1_000;
     private const int MaxCleanupOperationWarnings = 8;
+    private const int MaxRegistryScanWarnings = 32;
     private const int MaxRegistryClassKeys = 5_000;
+    private const int MaxMaintenanceToolOutputChars = 16 * 1024;
+    private const int MaxWarningMessageChars = 2048;
+    private const int MaxRequestIdCount = 500;
+    private const int MaxRequestIdChars = 256;
     private static readonly TimeSpan DriveToolTimeout = TimeSpan.FromMinutes(120);
     private static readonly string[] RegistryExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".ocx", ".cpl", ".scr", ".chm", ".hlp"];
 
@@ -112,7 +119,7 @@ internal static class SystemMaintenanceService
             FormatFileSize(freedBytes),
             deletedFiles,
             skippedItems,
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            NormalizeWarnings(warnings, MaxCleanupOperationWarnings, "Additional cleanup warnings were omitted."));
     }
 
     internal static bool IsRunningAsAdministrator()
@@ -215,7 +222,7 @@ internal static class SystemMaintenanceService
             orderedIssues,
             orderedIssues.Length,
             orderedIssues.Length == 0 ? "No stale bounded registry entries found." : $"{orderedIssues.Length} bounded registry issue(s) found.",
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            NormalizeWarnings(warnings, MaxRegistryScanWarnings, "Additional registry scan warnings were omitted."));
     }
 
     internal static RegistryCleanResult CleanRegistry(IReadOnlyCollection<string>? issueIds, string? confirmation)
@@ -225,9 +232,7 @@ internal static class SystemMaintenanceService
             throw new InvalidOperationException("Confirm registry cleanup before cleaning bounded registry entries.");
         }
 
-        HashSet<string> selectedIds = issueIds is { Count: > 0 }
-            ? issueIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : [];
+        HashSet<string> selectedIds = NormalizeSelectedIds(issueIds);
         if (selectedIds.Count == 0)
         {
             throw new InvalidOperationException("Select at least one registry issue.");
@@ -264,7 +269,7 @@ internal static class SystemMaintenanceService
                 failures.Add(new RegistryCleanFailure(
                     issue.id,
                     issue.displayName,
-                    SensitiveDataRedactor.RedactMessage(ex.Message)));
+                    NormalizeWarningMessage(ex.Message)));
             }
         }
 
@@ -297,9 +302,43 @@ internal static class SystemMaintenanceService
 
     private static HashSet<string> NormalizeCategoryIds(IReadOnlyCollection<string>? categoryIds)
     {
-        return categoryIds is { Count: > 0 }
-            ? categoryIds.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase)
-            : [];
+        return NormalizeSelectedIds(categoryIds);
+    }
+
+    private static HashSet<string> NormalizeSelectedIds(IReadOnlyCollection<string>? ids)
+    {
+        var normalizedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (ids is not { Count: > 0 })
+        {
+            return normalizedIds;
+        }
+
+        foreach (string? id in ids)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            string normalizedId = id.Trim();
+            if (normalizedId.Length > MaxRequestIdChars)
+            {
+                throw new InvalidOperationException("One or more selected item ids are not valid.");
+            }
+
+            if (normalizedId.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("One or more selected item ids are not valid.");
+            }
+
+            normalizedIds.Add(normalizedId);
+            if (normalizedIds.Count > MaxRequestIdCount)
+            {
+                throw new InvalidOperationException("Too many selected item ids were provided.");
+            }
+        }
+
+        return normalizedIds;
     }
 
     private static CleanupDefinition[] GetCleanupDefinitions()
@@ -765,7 +804,20 @@ internal static class SystemMaintenanceService
                     ReturnSpecialDirectories = false,
                     AttributesToSkip = FileAttributes.ReparsePoint
                 };
-                foreach (string directory in Directory.EnumerateDirectories(root, "*", options).OrderByDescending(path => path.Length))
+                var directories = new List<string>();
+                foreach (string directory in Directory.EnumerateDirectories(root, "*", options))
+                {
+                    if (directories.Count >= MaxCleanupScanFiles)
+                    {
+                        skippedItems++;
+                        AddCleanupWarning(warnings, $"Empty-directory cleanup stopped after {MaxCleanupScanFiles.ToString(CultureInfo.InvariantCulture)} folders.");
+                        break;
+                    }
+
+                    directories.Add(directory);
+                }
+
+                foreach (string directory in directories.OrderByDescending(path => path.Length))
                 {
                     try
                     {
@@ -833,6 +885,11 @@ internal static class SystemMaintenanceService
         var targets = new List<CleanupTarget>();
         foreach (string child in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
         {
+            if (targets.Count >= MaxCleanupChildDirectories)
+            {
+                break;
+            }
+
             string target = CombinePath(child, childDirectoryName);
             if (Directory.Exists(target))
             {
@@ -868,15 +925,23 @@ internal static class SystemMaintenanceService
                 continue;
             }
 
-            string[] profileDirectories = Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
-                .Where(path =>
+            var profileDirectories = new List<string>();
+            foreach (string path in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (profileDirectories.Count >= MaxCleanupChildDirectories)
                 {
-                    string name = Path.GetFileName(path);
-                    return name.Equals("Default", StringComparison.OrdinalIgnoreCase) ||
-                        name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase);
-                })
-                .ToArray();
-            profiles.AddRange(profileDirectories.Length > 0 ? profileDirectories : [CombinePath(root, "Default")]);
+                    break;
+                }
+
+                string name = Path.GetFileName(path);
+                if (name.Equals("Default", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase))
+                {
+                    profileDirectories.Add(path);
+                }
+            }
+
+            profiles.AddRange(profileDirectories.Count > 0 ? profileDirectories : [CombinePath(root, "Default")]);
         }
 
         profiles.AddRange(operaProfiles.Where(path => !string.IsNullOrWhiteSpace(path)));
@@ -893,6 +958,7 @@ internal static class SystemMaintenanceService
 
         return Directory.EnumerateDirectories(profilesRoot, "*", SearchOption.TopDirectoryOnly)
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxCleanupChildDirectories)
             .ToArray();
     }
 
@@ -953,9 +1019,15 @@ internal static class SystemMaintenanceService
 
     private static void AddCleanupWarning(List<string> warnings, string message)
     {
+        string warning = NormalizeWarningMessage(message);
+        if (string.IsNullOrWhiteSpace(warning))
+        {
+            return;
+        }
+
         if (warnings.Count < MaxCleanupOperationWarnings)
         {
-            warnings.Add(SensitiveDataRedactor.RedactMessage(message));
+            warnings.Add(warning);
             return;
         }
 
@@ -963,6 +1035,36 @@ internal static class SystemMaintenanceService
         {
             warnings.Add("Additional cleanup items were skipped.");
         }
+    }
+
+    internal static string NormalizeWarningMessage(string? message)
+    {
+        string redacted = SensitiveDataRedactor.RedactMessage(message);
+        if (redacted.Length <= MaxWarningMessageChars)
+        {
+            return redacted;
+        }
+
+        const string truncationMessage = "Warning truncated.";
+        string suffix = $"{Environment.NewLine}{truncationMessage}";
+        int bodyLength = Math.Max(0, MaxWarningMessageChars - suffix.Length);
+        return redacted[..bodyLength].TrimEnd() + suffix;
+    }
+
+    private static string[] NormalizeWarnings(IEnumerable<string> warnings, int maxWarnings, string overflowWarning)
+    {
+        string[] normalized = warnings
+            .Select(NormalizeWarningMessage)
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (normalized.Length <= maxWarnings)
+        {
+            return normalized;
+        }
+
+        return normalized.Take(maxWarnings).Concat([overflowWarning]).ToArray();
     }
 
     private static bool IsReparsePoint(string path)
@@ -1035,10 +1137,16 @@ internal static class SystemMaintenanceService
             throw new InvalidOperationException("Select a drive first.");
         }
 
+        string normalizedDriveRoot = driveRoot.Trim();
+        if (normalizedDriveRoot.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+        {
+            throw new InvalidOperationException("The selected drive is invalid.");
+        }
+
         string fullPath;
         try
         {
-            fullPath = Path.GetFullPath(driveRoot.Trim());
+            fullPath = Path.GetFullPath(normalizedDriveRoot);
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -1047,6 +1155,19 @@ internal static class SystemMaintenanceService
 
         string? root = Path.GetPathRoot(fullPath);
         if (string.IsNullOrWhiteSpace(root))
+        {
+            throw new InvalidOperationException("The selected drive is invalid.");
+        }
+
+        string normalizedFullPath = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.Equals(normalizedFullPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The selected drive is invalid.");
+        }
+
+        string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+        if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
         {
             throw new InvalidOperationException("The selected drive is invalid.");
         }
@@ -1090,8 +1211,8 @@ internal static class SystemMaintenanceService
             throw new InvalidOperationException($"Unable to start {fileName}.");
         }
 
-        Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
-        Task<string> errorTask = process.StandardError.ReadToEndAsync();
+        Task<BoundedTextReadResult> outputTask = BoundedTextReader.ReadToEndAsync(process.StandardOutput, MaxMaintenanceToolOutputChars);
+        Task<BoundedTextReadResult> errorTask = BoundedTextReader.ReadToEndAsync(process.StandardError, MaxMaintenanceToolOutputChars);
 
         using var timeoutToken = new CancellationTokenSource(timeout);
         try
@@ -1111,11 +1232,33 @@ internal static class SystemMaintenanceService
             return new ProcessRunResult(-1, $"Timed out after {timeout.TotalMinutes:N0} minutes.", startedAtUtc, DateTime.UtcNow);
         }
 
+        BoundedTextReadResult stdout = await outputTask;
+        BoundedTextReadResult stderr = await errorTask;
         string output = string.Join(
             Environment.NewLine,
-            new[] { await outputTask, await errorTask }.Where(text => !string.IsNullOrWhiteSpace(text)));
+            new[] { stdout.Text, stderr.Text }.Where(text => !string.IsNullOrWhiteSpace(text)));
+        if (stdout.Truncated || stderr.Truncated)
+        {
+            output = string.IsNullOrWhiteSpace(output)
+                ? "Output truncated."
+                : $"{output}{Environment.NewLine}Output truncated.";
+        }
 
-        return new ProcessRunResult(process.ExitCode, output.Trim(), startedAtUtc, DateTime.UtcNow);
+        return new ProcessRunResult(process.ExitCode, NormalizeMaintenanceToolOutput(output), startedAtUtc, DateTime.UtcNow);
+    }
+
+    internal static string NormalizeMaintenanceToolOutput(string? output)
+    {
+        string normalized = SensitiveDataRedactor.RedactMessage(output);
+        if (normalized.Length <= MaxMaintenanceToolOutputChars)
+        {
+            return normalized;
+        }
+
+        const string truncationMessage = "Output truncated.";
+        string suffix = $"{Environment.NewLine}{truncationMessage}";
+        int bodyLength = Math.Max(0, MaxMaintenanceToolOutputChars - suffix.Length);
+        return normalized[..bodyLength].TrimEnd() + suffix;
     }
 
     private static void ScanStartupEntries(RegistryKey root, string hive, string keyPath, List<RegistryIssue> issues, List<string> warnings)
@@ -1656,16 +1799,17 @@ internal static class SystemMaintenanceService
         }
     }
 
-    private static string? ResolveHelpReferencePath(string valueName, string? rawValue)
+    internal static string? ResolveHelpReferencePath(string valueName, string? rawValue)
     {
         try
         {
             string normalizedValue = RegistryPathNormalizer.Normalize(rawValue) ?? string.Empty;
             string normalizedName = RegistryPathNormalizer.Normalize(valueName) ?? valueName;
 
-            if (IsHelpFilePath(normalizedValue))
+            if (TryNormalizeFullyQualifiedRegistryPath(normalizedValue, out string fullValuePath) &&
+                IsHelpFilePath(fullValuePath))
             {
-                return normalizedValue;
+                return fullValuePath;
             }
 
             if (!IsHelpFilePath(normalizedName))
@@ -1673,25 +1817,67 @@ internal static class SystemMaintenanceService
                 return null;
             }
 
-            if (Path.IsPathRooted(normalizedName))
+            if (TryNormalizeFullyQualifiedRegistryPath(normalizedName, out string fullNamePath))
             {
-                return normalizedName;
+                return fullNamePath;
             }
 
-            if (string.IsNullOrWhiteSpace(normalizedValue) || !Path.IsPathRooted(normalizedValue))
+            if (Path.IsPathRooted(normalizedName) ||
+                Path.GetFileName(normalizedName) != normalizedName ||
+                !TryNormalizeFullyQualifiedRegistryPath(normalizedValue, out string fullBasePath))
             {
                 return null;
             }
 
-            string directory = IsHelpFilePath(normalizedValue)
-                ? Path.GetDirectoryName(normalizedValue) ?? string.Empty
-                : normalizedValue;
-            return string.IsNullOrWhiteSpace(directory) ? null : Path.Combine(directory, normalizedName);
+            string directory = IsHelpFilePath(fullBasePath)
+                ? Path.GetDirectoryName(fullBasePath) ?? string.Empty
+                : fullBasePath;
+            if (!TryNormalizeFullyQualifiedRegistryPath(directory, out string fullDirectory))
+            {
+                return null;
+            }
+
+            string candidate = Path.GetFullPath(Path.Combine(fullDirectory, normalizedName));
+            string normalizedDirectory = fullDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return candidate.StartsWith(normalizedDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                candidate.StartsWith(normalizedDirectory + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    ? candidate
+                    : null;
         }
         catch
         {
             return null;
         }
+    }
+
+    private static bool TryNormalizeFullyQualifiedRegistryPath(string path, out string fullPath)
+    {
+        fullPath = string.Empty;
+        try
+        {
+            string trimmed = path.Trim().Trim('"');
+            if (trimmed.Length == 0 ||
+                trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format) ||
+                !Path.IsPathFullyQualified(trimmed))
+            {
+                return false;
+            }
+
+            fullPath = Path.GetFullPath(trimmed);
+            return !ContainsAlternateDataStreamToken(fullPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            fullPath = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool ContainsAlternateDataStreamToken(string path)
+    {
+        string root = Path.GetPathRoot(path) ?? string.Empty;
+        string pathWithoutRoot = path.Length > root.Length ? path[root.Length..] : string.Empty;
+        return pathWithoutRoot.Contains(':', StringComparison.Ordinal);
     }
 
     private static bool IsHelpFilePath(string path)
@@ -1771,9 +1957,13 @@ internal static class SystemMaintenanceService
             value[index] is '"' or ',';
     }
 
-    private static bool IsMissingPath(string path)
+    internal static bool IsMissingPath(string path)
     {
-        string normalized = path.Trim().Trim('"');
+        if (!TryNormalizeFullyQualifiedRegistryPath(path, out string normalized))
+        {
+            return false;
+        }
+
         return !File.Exists(normalized) && !Directory.Exists(normalized);
     }
 
@@ -1855,12 +2045,19 @@ internal static class SystemMaintenanceService
         return kind switch
         {
             RegistryValueKind.DWord when value is int intValue => $"{name}=dword:{intValue:x8}",
-            RegistryValueKind.QWord when value is long longValue => $"{name}=hex(b):{FormatRegHex(BitConverter.GetBytes(longValue))}",
+            RegistryValueKind.QWord when value is long longValue => $"{name}=hex(b):{FormatRegistryQWord(longValue)}",
             RegistryValueKind.Binary when value is byte[] bytes => $"{name}=hex:{FormatRegHex(bytes)}",
             RegistryValueKind.MultiString when value is string[] strings => $"{name}=hex(7):{FormatRegHex(Encoding.Unicode.GetBytes(string.Join('\0', strings) + "\0\0"))}",
             RegistryValueKind.ExpandString => $"{name}=hex(2):{FormatRegHex(Encoding.Unicode.GetBytes((value?.ToString() ?? string.Empty) + "\0"))}",
             _ => $"{name}=\"{EscapeRegistryString(value?.ToString() ?? string.Empty)}\""
         };
+    }
+
+    private static string FormatRegistryQWord(long value)
+    {
+        byte[] bytes = new byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64LittleEndian(bytes, value);
+        return FormatRegHex(bytes);
     }
 
     private static string FormatRegHex(byte[] bytes)

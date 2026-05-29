@@ -90,7 +90,7 @@ namespace FileLocker
                 : string.IsNullOrWhiteSpace(DecryptOutputLocationBox.Text)
                     ? "Choose output folder"
                     : Path.GetFileName(DecryptOutputLocationBox.Text.Trim());
-            DecryptSummaryModeText.Text = "AES-256-GCM";
+            DecryptSummaryModeText.Text = "Auto-detect from payload";
 
             DecryptSelectedFilesEmptyState.Visibility = fileCount == 0 ? Visibility.Visible : Visibility.Collapsed;
             DecryptSelectedFilesListView.Visibility = fileCount == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -176,8 +176,8 @@ namespace FileLocker
 
             try
             {
-                string fullPath = Path.GetFullPath(path);
-                return !string.IsNullOrWhiteSpace(Path.GetPathRoot(fullPath));
+                ValidateNormalOutputPath(path, allowDirectoryPath: true);
+                return true;
             }
             catch
             {
@@ -303,7 +303,12 @@ namespace FileLocker
 
             foreach (string rawPath in rawPaths.Where(path => !string.IsNullOrWhiteSpace(path)))
             {
-                string path = rawPath.Trim();
+                if (!TryNormalizeDecryptSelectionPath(rawPath, out string path, out _))
+                {
+                    warningCount++;
+                    continue;
+                }
+
                 if (File.Exists(path))
                 {
                     AddDecryptFile(path, path, sourceRootIsFolder: false, includeUnsupportedRow: true, ref addedCount, ref duplicateCount, ref unsupportedCount);
@@ -424,15 +429,20 @@ namespace FileLocker
             detail = "FileLocker encrypted file.";
             try
             {
-                if (!File.Exists(filePath))
+                if (!TryNormalizeDecryptSelectionPath(filePath, out string normalizedPath, out detail))
+                {
+                    return false;
+                }
+
+                if (!File.Exists(normalizedPath))
                 {
                     detail = "Missing file.";
                     return false;
                 }
 
-                if (filePath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase))
+                if (normalizedPath.EndsWith(ENCRYPTED_EXTENSION, StringComparison.OrdinalIgnoreCase))
                 {
-                    using FileStream stream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    using FileStream stream = new(normalizedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
                     if (PayloadChunkedService.LooksLikePayloadV3(stream))
                     {
                         return true;
@@ -440,7 +450,7 @@ namespace FileLocker
 
                     stream.Position = 0;
                     int version = stream.ReadByte();
-                    if (version == FORMAT_VERSION)
+                    if (version == LegacyPayloadFormatVersion)
                     {
                         return true;
                     }
@@ -449,8 +459,8 @@ namespace FileLocker
                     return false;
                 }
 
-                if (filePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
-                    TryExtractStegoPayload(filePath) != null)
+                if (normalizedPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase) &&
+                    ContainsStegoPayload(normalizedPath))
                 {
                     detail = "FileLocker PNG payload.";
                     return true;
@@ -462,6 +472,27 @@ namespace FileLocker
             catch (Exception ex)
             {
                 detail = GetFriendlyExceptionMessage(ex, "Unable to inspect encrypted file.");
+                return false;
+            }
+        }
+
+        internal static bool TryNormalizeDecryptSelectionPath(string? rawPath, out string normalizedPath, out string detail)
+        {
+            normalizedPath = string.Empty;
+            detail = string.Empty;
+            try
+            {
+                normalizedPath = RequireExistingPath(rawPath);
+                return true;
+            }
+            catch (FileNotFoundException)
+            {
+                detail = "Missing file.";
+                return false;
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException or PathTooLongException)
+            {
+                detail = GetFriendlyExceptionMessage(ex, "The selected path is not valid.");
                 return false;
             }
         }
@@ -669,6 +700,7 @@ namespace FileLocker
             string outputPath = DecryptOutputLocationBox.Text?.Trim() ?? string.Empty;
             try
             {
+                ValidateNormalOutputPath(outputPath, allowDirectoryPath: true);
                 Directory.CreateDirectory(outputPath);
                 return true;
             }
@@ -795,7 +827,7 @@ namespace FileLocker
                     AppendHistory("Decrypt", runOptions, results, cancelled);
                 }
 
-                int failedCount = results.Count(result => string.Equals(result.Status, "Failed", StringComparison.OrdinalIgnoreCase));
+                int failedCount = results.Count(result => OperationHistoryMetrics.IsFailedStatus(result.Status));
                 if (failedCount > 0 || cancelled)
                 {
                     string message = cancelled
@@ -838,17 +870,15 @@ namespace FileLocker
 
         private ProcessingRunOptions CaptureDecryptProcessingRunOptions()
         {
-            string timestampPolicy = string.IsNullOrWhiteSpace(_preferences.OutputTimestampPolicy)
-                ? "Current time"
-                : _preferences.OutputTimestampPolicy;
+            string timestampPolicy = AppPreferencesStore.NormalizeOutputTimestampPolicy(_preferences.OutputTimestampPolicy);
 
             return new ProcessingRunOptions(
                 CompressFiles: false,
                 ScrambleNames: false,
                 UseSteganography: false,
-                Algorithm: "AES-GCM",
+                Algorithm: EncryptionAlgorithmCatalog.Aes256Gcm,
                 Mode: "Decrypt",
-                KeySizeBits: 256,
+                KeySizeBits: EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm),
                 RemoveOriginalsAfterSuccess: DecryptDeleteEncryptedAfterSuccessToggle.IsOn,
                 SecureDeleteOriginals: false,
                 VerifyAfterWrite: true,
@@ -932,7 +962,7 @@ namespace FileLocker
             foreach (OperationHistoryEntry entry in decryptHistory)
             {
                 builder.AppendLine($"{FormatDashboardTimestamp(entry.TimestampUtc)} - {entry.SuccessCount} completed, {entry.FailureCount} failed");
-                foreach (FileOperationResult result in entry.Results.Take(3))
+                foreach (FileOperationResult result in (entry.Results ?? []).Where(result => result is not null).Take(3))
                 {
                     builder.AppendLine($"  {Path.GetFileName(result.SourcePath)}: {result.Status}");
                 }

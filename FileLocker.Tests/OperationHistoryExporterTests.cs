@@ -33,6 +33,36 @@ public sealed class OperationHistoryExporterTests
     }
 
     [Fact]
+    public void ExportCsv_IncludesOperationAndResultAlgorithmColumns()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Algorithm = "Mixed payload algorithms";
+        entry.KeySizeBits = 0;
+        entry.Results[0].Algorithm = EncryptionAlgorithmCatalog.ChaCha20Poly1305;
+        entry.Results[0].KeySizeBits = 256;
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: true);
+
+        Assert.Contains("algorithm,keySizeBits,resultAlgorithm,resultKeySizeBits", csv);
+        Assert.Contains("\"Mixed payload algorithms\",,\"ChaCha20-Poly1305\",256", csv);
+    }
+
+    [Fact]
+    public void ExportCsv_UsesUnknownAlgorithmForLegacyEntries()
+    {
+        OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\payload.locked");
+        entry.Algorithm = null!;
+        entry.KeySizeBits = -1;
+        entry.Results[0].Algorithm = null;
+        entry.Results[0].KeySizeBits = -1;
+
+        string csv = OperationHistoryExporter.ExportCsv([entry], includeFullPaths: true);
+
+        Assert.Contains("\"Unknown\",", csv);
+        Assert.DoesNotContain("\"\",-1", csv);
+    }
+
+    [Fact]
     public void ExportCsv_IncludesRedactedResultMessages()
     {
         OperationHistoryEntry entry = CreateHistoryEntry(@"C:\Files\broken.txt");
@@ -106,7 +136,7 @@ public sealed class OperationHistoryExporterTests
 
         Assert.Contains("\"'=Launch\"", csv);
         Assert.Contains("\"'+Run\"", csv);
-        Assert.Contains("\"'  @Risk\"", csv);
+        Assert.Contains("\"'@Risk\"", csv);
     }
 
     [Fact]
@@ -226,7 +256,9 @@ public sealed class OperationHistoryExporterTests
                     OutputPath = sourcePath + ".locked",
                     Status = "Completed",
                     OriginalRetained = true,
-                    OutputVerified = true
+                    OutputVerified = true,
+                    Algorithm = "AES-GCM",
+                    KeySizeBits = 256
                 }
             ]
         };

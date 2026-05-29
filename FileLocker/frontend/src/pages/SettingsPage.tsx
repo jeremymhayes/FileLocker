@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
+import { OUTPUT_TIMESTAMP_POLICIES, normalizeOutputTimestampPolicy } from "@/lib/outputTimestampPolicies"
 import type { DashboardState, InitialState, SettingsState, UpdateCheckResult, UpdateRelease } from "@/types/bridge"
 
 type SettingsPageProps = {
@@ -184,15 +185,47 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
     onSettingsUpdate(response)
   }
 
+  function validateOutputPreferences(candidate: SettingsState) {
+    const preferences = candidate.preferences
+    if (preferences.useCustomEncryptOutputDirectory && preferences.customEncryptOutputDirectory.trim().length === 0) {
+      return "Choose an encrypt output folder or turn off custom encrypt output."
+    }
+
+    if (preferences.useCustomDecryptOutputDirectory && preferences.customDecryptOutputDirectory.trim().length === 0) {
+      return "Choose a decrypt output folder or turn off custom decrypt output."
+    }
+
+    return ""
+  }
+
+  function normalizeSettingsDraft(candidate: SettingsState): SettingsState {
+    return {
+      ...candidate,
+      preferences: {
+        ...candidate.preferences,
+        outputTimestampPolicy: normalizeOutputTimestampPolicy(candidate.preferences.outputTimestampPolicy),
+      },
+    }
+  }
+
   async function save() {
     if (!hasUnsavedChanges || isLoadingSettings || isSavingSettings || isResettingSettings) {
+      return
+    }
+
+    const candidate = normalizeSettingsDraft(draftRef.current)
+    const validationMessage = validateOutputPreferences(candidate)
+    if (validationMessage) {
+      setActiveTab("files")
+      setSettingsActionError(validationMessage)
+      toast.error(validationMessage)
       return
     }
 
     setIsSavingSettings(true)
     setSettingsActionError("")
     try {
-      const response = await invoke<SettingsState>("settings.save", draftRef.current)
+      const response = await invoke<SettingsState>("settings.save", candidate)
       applySettingsResponse(response)
       let historyClearFailed = false
 
@@ -560,7 +593,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
 
         <div className="py-3">
           {settingsError ? (
-            <div className="mx-3 mb-3 rounded-md border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-sm text-secondary" role="status" aria-live="polite">
+            <div className="mx-3 mb-3 rounded-md border border-amber-400/30 bg-amber-400/8 px-3 py-2 text-sm text-secondary" role="status" aria-live="polite">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
                 <span>{settingsError}</span>
@@ -585,15 +618,15 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                 </Select>
               </SettingRow>
               <SettingRow label="Output timestamps">
-                <Select value={draft.preferences.outputTimestampPolicy} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, outputTimestampPolicy: value } }))}>
+                <Select value={normalizeOutputTimestampPolicy(draft.preferences.outputTimestampPolicy)} onValueChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, outputTimestampPolicy: value } }))}>
                   <SelectTrigger size="sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="Current time">Current time</SelectItem>
-                      <SelectItem value="Preserve source timestamps">Preserve source timestamps</SelectItem>
-                      <SelectItem value="Randomize">Randomize</SelectItem>
+                      {OUTPUT_TIMESTAMP_POLICIES.map((policy) => (
+                        <SelectItem key={policy.id} value={policy.id}>{policy.label}</SelectItem>
+                      ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>

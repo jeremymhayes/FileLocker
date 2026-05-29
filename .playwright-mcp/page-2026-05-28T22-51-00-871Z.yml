@@ -1,0 +1,117 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - complementary [ref=e5]:
+      - generic [ref=e7]:
+        - img "FileLocker" [ref=e8]
+        - generic [ref=e9]:
+          - generic [ref=e10]: FileLocker
+          - generic [ref=e11]: v1.2.1.0
+      - navigation [ref=e12]:
+        - generic [ref=e13]:
+          - generic [ref=e14]: Home
+          - generic [ref=e15]:
+            - button "Dashboard" [ref=e16]:
+              - img [ref=e18]
+              - generic [ref=e21]: Dashboard
+            - button "Security Guide" [ref=e22]:
+              - img [ref=e24]
+              - generic [ref=e26]: Security Guide
+        - generic [ref=e27]:
+          - generic [ref=e28]: File Security
+          - generic [ref=e29]:
+            - button "Encrypt Files" [ref=e30]:
+              - img [ref=e32]
+              - generic [ref=e35]: Encrypt Files
+            - button "Decrypt Files" [ref=e36]:
+              - img [ref=e38]
+              - generic [ref=e41]: Decrypt Files
+            - button "Secure Delete" [ref=e42]:
+              - img [ref=e44]
+              - generic [ref=e47]: Secure Delete
+            - button "Hash Files" [ref=e48]:
+              - img [ref=e50]
+              - generic [ref=e53]: Hash Files
+            - button "Encode Text" [ref=e54]:
+              - img [ref=e56]
+              - generic [ref=e61]: Encode Text
+            - button "Metadata Scrambler" [ref=e62]:
+              - img [ref=e64]
+              - generic [ref=e73]: Metadata Scrambler
+        - generic [ref=e74]:
+          - generic [ref=e75]: System Care
+          - generic [ref=e76]:
+            - button "Custom Clean" [ref=e77]:
+              - img [ref=e79]
+              - generic [ref=e82]: Custom Clean
+            - button "Partition Cleaner" [ref=e83]:
+              - img [ref=e85]
+              - generic [ref=e87]: Partition Cleaner
+            - button "Drive Optimizer" [ref=e88]:
+              - img [ref=e90]
+              - generic [ref=e95]: Drive Optimizer
+            - button "Registry Fixer" [ref=e96]:
+              - img [ref=e98]
+              - generic [ref=e102]: Registry Fixer
+            - button "Startup Manager" [ref=e103]:
+              - img [ref=e105]
+              - generic [ref=e107]: Startup Manager
+            - button "App Manager" [ref=e108]:
+              - img [ref=e110]
+              - generic [ref=e114]: App Manager
+      - generic [ref=e115]:
+        - generic [ref=e116]:
+          - button "Settings" [ref=e117]:
+            - img [ref=e119]
+            - generic [ref=e122]: Settings
+          - button "About" [ref=e123]:
+            - img [ref=e125]
+            - generic [ref=e127]: About
+        - generic [ref=e128]:
+          - generic [ref=e129]:
+            - img [ref=e130]
+            - generic [ref=e132]: Dark Mode
+          - switch "Dark Mode" [checked] [ref=e133]
+    - main [ref=e134]:
+      - generic [ref=e316]:
+        - generic [ref=e317]:
+          - heading "Settings" [level=1] [ref=e319]
+          - generic [ref=e320]:
+            - generic [ref=e321]:
+              - img [ref=e322]
+              - text: Loading
+            - button "Reset" [disabled]:
+              - img
+              - text: Reset
+            - button "Save" [disabled]:
+              - img
+              - text: Save
+        - tablist "Settings sections" [ref=e325]:
+          - tab "General" [selected] [ref=e326]:
+            - img [ref=e327]
+            - text: General
+          - tab "Files" [ref=e331]:
+            - img [ref=e332]
+            - text: Files
+          - tab "Privacy" [ref=e343]:
+            - img [ref=e344]
+            - text: Privacy
+          - tab "Updates" [ref=e349]:
+            - img [ref=e350]
+            - text: Updates
+          - tab "Integration" [ref=e355]:
+            - img [ref=e356]
+            - text: Integration
+          - tab "About" [ref=e367]:
+            - img [ref=e368]
+            - text: About
+        - tabpanel "General" [ref=e371]:
+          - generic [ref=e372]:
+            - generic [ref=e374]: Theme
+            - combobox [ref=e376]:
+              - generic: Dark
+              - img
+          - generic [ref=e377]:
+            - generic [ref=e379]: Output timestamps
+            - combobox [ref=e381]:
+              - img
+  - region "Notifications alt+T"

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 
@@ -7,9 +8,17 @@ namespace FileLocker;
 
 internal static class HashInputNormalizer
 {
+    private const int MaxInputChars = 8 * 1024;
+    private const int MaxSuffixCandidateChars = 256;
+
     internal static string Normalize(string? input)
     {
         if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        if (input.Length > MaxInputChars)
         {
             return string.Empty;
         }
@@ -41,7 +50,12 @@ internal static class HashInputNormalizer
 
     internal static bool IsSupportedHash(string hashHex)
     {
-        return hashHex.Length is 64 or 128 && hashHex.All(IsHexDigit);
+        return FileHashService.IsSupportedHexLength(hashHex.Length) && hashHex.All(IsHexDigit);
+    }
+
+    internal static bool IsHashForAlgorithm(string hashHex, string? algorithm)
+    {
+        return FileHashService.IsExpectedHexLength(algorithm, hashHex.Length) && hashHex.All(IsHexDigit);
     }
 
     internal static bool TryNormalizeSupportedHash(string? input, out string hash)
@@ -72,7 +86,12 @@ internal static class HashInputNormalizer
     }
 
     private static string RemoveWhitespace(string input) =>
-        new(input.Where(character => !char.IsWhiteSpace(character)).ToArray());
+        new(input
+            .Where(character =>
+                !char.IsWhiteSpace(character) &&
+                !char.IsControl(character) &&
+                CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.Format)
+            .ToArray());
 
     private static IEnumerable<string> EnumerateHexRuns(string input)
     {
@@ -133,6 +152,12 @@ internal static class HashInputNormalizer
         {
             hash = candidate;
             return true;
+        }
+
+        if (candidate.Length > MaxSuffixCandidateChars)
+        {
+            hash = string.Empty;
+            return false;
         }
 
         if (candidate.Length > 128)

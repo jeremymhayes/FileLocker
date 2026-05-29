@@ -153,7 +153,9 @@ namespace FileLocker
         private void AddFilesToList(string[] paths)
         {
             int previousCount = FileList.Count;
-            bool folderSelectionAdded = paths.Any(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path.Trim()));
+            bool folderSelectionAdded = paths.Any(path =>
+                TryNormalizeQueueSelectionPath(path, out string normalizedPath, out _) &&
+                Directory.Exists(normalizedPath));
             QueueExpandResult expansion = ExpandQueuePaths(paths);
             int addedCount = 0;
             int duplicateCount = 0;
@@ -221,9 +223,20 @@ namespace FileLocker
 
             foreach (string rawPath in paths.Where(path => !string.IsNullOrWhiteSpace(path)))
             {
-                string path = rawPath.Trim();
+                if (!TryNormalizeQueueSelectionPath(rawPath, out string path, out string warning))
+                {
+                    AddQueueWarning(result.Warnings, warning);
+                    continue;
+                }
+
                 if (File.Exists(path))
                 {
+                    if (result.Files.Count >= MaxQueueExpandedFiles)
+                    {
+                        AddQueueWarning(result.Warnings, $"Queue expansion stopped after {MaxQueueExpandedFiles.ToString(CultureInfo.InvariantCulture)} files.");
+                        return result;
+                    }
+
                     try
                     {
                         var fileInfo = new FileInfo(path);
@@ -231,7 +244,7 @@ namespace FileLocker
                     }
                     catch (Exception ex)
                     {
-                        result.Warnings.Add($"Unable to read {Path.GetFileName(path)}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
+                        AddQueueWarning(result.Warnings, $"Unable to read {Path.GetFileName(path)}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
                     }
 
                     continue;
@@ -239,12 +252,18 @@ namespace FileLocker
 
                 if (!Directory.Exists(path))
                 {
-                    result.Warnings.Add($"Skipped missing path: {path}");
+                    AddQueueWarning(result.Warnings, "Skipped missing path.");
                     continue;
                 }
 
                 foreach (ExpandedQueueFile expanded in EnumerateFolderFiles(path, result.Warnings))
                 {
+                    if (result.Files.Count >= MaxQueueExpandedFiles)
+                    {
+                        AddQueueWarning(result.Warnings, $"Queue expansion stopped after {MaxQueueExpandedFiles.ToString(CultureInfo.InvariantCulture)} files.");
+                        return result;
+                    }
+
                     result.Files.Add(expanded);
                 }
             }
@@ -252,10 +271,32 @@ namespace FileLocker
             return result;
         }
 
-        private static IEnumerable<ExpandedQueueFile> EnumerateFolderFiles(string rootFolderPath, ICollection<string> warnings)
+        internal static bool TryNormalizeQueueSelectionPath(string? rawPath, out string normalizedPath, out string warning)
+        {
+            normalizedPath = string.Empty;
+            warning = string.Empty;
+            try
+            {
+                normalizedPath = RequireExistingPath(rawPath);
+                return true;
+            }
+            catch (FileNotFoundException)
+            {
+                warning = "Skipped missing path.";
+                return false;
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException or PathTooLongException)
+            {
+                warning = $"Skipped invalid path: {GetFriendlyExceptionMessage(ex, "Path validation failed.")}";
+                return false;
+            }
+        }
+
+        private static IEnumerable<ExpandedQueueFile> EnumerateFolderFiles(string rootFolderPath, List<string> warnings)
         {
             var pendingDirectories = new Stack<string>();
             pendingDirectories.Push(rootFolderPath);
+            int seenDirectories = 1;
 
             while (pendingDirectories.Count > 0)
             {
@@ -265,19 +306,15 @@ namespace FileLocker
                     continue;
                 }
 
-                IEnumerable<string> childDirectories;
-                try
+                foreach (string childDirectory in EnumerateChildDirectoriesSafely(currentDirectory, warnings))
                 {
-                    childDirectories = Directory.EnumerateDirectories(currentDirectory);
-                }
-                catch (Exception ex)
-                {
-                    warnings.Add($"Unable to enumerate folders inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "Folder scan failed.")}");
-                    continue;
-                }
+                    if (seenDirectories >= MaxQueueExpandedDirectories)
+                    {
+                        AddQueueWarning(warnings, $"Folder scan stopped after {MaxQueueExpandedDirectories.ToString(CultureInfo.InvariantCulture)} folders.");
+                        yield break;
+                    }
 
-                foreach (string childDirectory in childDirectories)
-                {
+                    seenDirectories++;
                     if (IsReparsePointDirectory(childDirectory, warnings))
                     {
                         continue;
@@ -286,18 +323,7 @@ namespace FileLocker
                     pendingDirectories.Push(childDirectory);
                 }
 
-                IEnumerable<string> files;
-                try
-                {
-                    files = Directory.EnumerateFiles(currentDirectory);
-                }
-                catch (Exception ex)
-                {
-                    warnings.Add($"Unable to enumerate files inside {currentDirectory}: {GetFriendlyExceptionMessage(ex, "File scan failed.")}");
-                    continue;
-                }
-
-                foreach (string file in files)
+                foreach (string file in EnumerateChildFilesSafely(currentDirectory, warnings))
                 {
                     FileInfo fileInfo;
                     try
@@ -306,7 +332,7 @@ namespace FileLocker
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add($"Unable to inspect {file}: {GetFriendlyExceptionMessage(ex, "File inspection failed.")}");
+                        AddQueueWarning(warnings, $"Unable to inspect {file}: {GetFriendlyExceptionMessage(ex, "File inspection failed.")}");
                         continue;
                     }
 
@@ -315,22 +341,121 @@ namespace FileLocker
             }
         }
 
-        private static bool IsReparsePointDirectory(string directoryPath, ICollection<string> warnings)
+        private static IEnumerable<string> EnumerateChildDirectoriesSafely(string currentDirectory, List<string> warnings)
+        {
+            return EnumerateFileSystemEntriesSafely(
+                () => Directory.EnumerateDirectories(currentDirectory).GetEnumerator(),
+                warnings,
+                $"Unable to enumerate folders inside {currentDirectory}",
+                "Folder scan failed.");
+        }
+
+        private static IEnumerable<string> EnumerateChildFilesSafely(string currentDirectory, List<string> warnings)
+        {
+            return EnumerateFileSystemEntriesSafely(
+                () => Directory.EnumerateFiles(currentDirectory).GetEnumerator(),
+                warnings,
+                $"Unable to enumerate files inside {currentDirectory}",
+                "File scan failed.");
+        }
+
+        private static IEnumerable<string> EnumerateFileSystemEntriesSafely(
+            Func<IEnumerator<string>> createEnumerator,
+            List<string> warnings,
+            string warningPrefix,
+            string fallbackMessage)
+        {
+            IEnumerator<string> enumerator;
+            try
+            {
+                enumerator = createEnumerator();
+            }
+            catch (Exception ex)
+            {
+                AddQueueWarning(warnings, $"{warningPrefix}: {GetFriendlyExceptionMessage(ex, fallbackMessage)}");
+                yield break;
+            }
+
+            using (enumerator)
+            {
+                while (true)
+                {
+                    string current;
+                    try
+                    {
+                        if (!enumerator.MoveNext())
+                        {
+                            yield break;
+                        }
+
+                        current = enumerator.Current;
+                    }
+                    catch (Exception ex)
+                    {
+                        AddQueueWarning(warnings, $"{warningPrefix}: {GetFriendlyExceptionMessage(ex, fallbackMessage)}");
+                        yield break;
+                    }
+
+                    yield return current;
+                }
+            }
+        }
+
+        private static bool IsReparsePointDirectory(string directoryPath, List<string> warnings)
         {
             try
             {
                 if ((File.GetAttributes(directoryPath) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint)
                 {
-                    warnings.Add($"Skipped reparse-point folder: {directoryPath}");
+                    AddQueueWarning(warnings, $"Skipped reparse-point folder: {directoryPath}");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                warnings.Add($"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
+                AddQueueWarning(warnings, $"Unable to inspect folder attributes for {directoryPath}: {GetFriendlyExceptionMessage(ex, "Folder inspection failed.")}");
             }
 
             return false;
+        }
+
+        internal static void AddQueueWarning(List<string> warnings, string? message)
+        {
+            string warning = NormalizeQueueWarning(message);
+            if (string.IsNullOrWhiteSpace(warning))
+            {
+                return;
+            }
+
+            if (warnings.Count < MaxQueueExpansionWarnings)
+            {
+                warnings.Add(warning);
+                return;
+            }
+
+            if (warnings.Count == MaxQueueExpansionWarnings)
+            {
+                warnings.Add("Additional folder scan warnings were omitted.");
+            }
+        }
+
+        internal static string NormalizeQueueWarning(string? message)
+        {
+            string redacted = SensitiveDataRedactor.RedactMessage(message);
+            if (string.IsNullOrWhiteSpace(redacted))
+            {
+                return string.Empty;
+            }
+
+            if (redacted.Length <= MaxQueueExpansionWarningChars)
+            {
+                return redacted;
+            }
+
+            const string truncationMessage = "Warning truncated.";
+            string suffix = $"{Environment.NewLine}{truncationMessage}";
+            int bodyLength = Math.Max(0, MaxQueueExpansionWarningChars - suffix.Length);
+            return redacted[..bodyLength].TrimEnd() + suffix;
         }
 
         private void ShowBatchInfoBar(string message, InfoBarSeverity severity)
@@ -418,7 +543,7 @@ namespace FileLocker
         private static string FormatFileSize(long bytes)
         {
             string[] sizes = ["B", "KB", "MB", "GB"];
-            double len = bytes;
+            double len = Math.Max(bytes, 0);
             int order = 0;
             while (len >= 1024 && order < sizes.Length - 1)
             {
@@ -533,12 +658,7 @@ namespace FileLocker
 
             try
             {
-                using Process? process = Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = $"/select,\"{item.SourcePath}\"",
-                    UseShellExecute = true
-                });
+                using Process? process = Process.Start(CreateExplorerSelectStartInfo(item.SourcePath));
 
                 if (process == null)
                 {
@@ -549,6 +669,17 @@ namespace FileLocker
             {
                 SetStatus($"Unable to open file location: {GetFriendlyExceptionMessage(ex, "Explorer could not open the location.")}");
             }
+        }
+
+        internal static ProcessStartInfo CreateExplorerSelectStartInfo(string sourcePath)
+        {
+            string safePath = RequireExistingPath(sourcePath);
+            return new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{safePath}\"",
+                UseShellExecute = true
+            };
         }
 
         private void QueueItemRemoveButton_Click(object sender, RoutedEventArgs e)
@@ -695,8 +826,10 @@ namespace FileLocker
             SetComboSelection(OperationModeCombo, "Encrypt / Decrypt");
             if (_isUpdatingModeOptions) return;
             ConfigureModeOptions();
-            SetComboSelection(AlgorithmCombo, "AES-GCM");
-            SetComboSelection(KeySizeCombo, "256");
+            SetComboSelection(AlgorithmCombo, EncryptionAlgorithmCatalog.Aes256Gcm);
+            SetComboSelection(
+                KeySizeCombo,
+                EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm).ToString(CultureInfo.InvariantCulture));
             RemoveOriginalsToggle.IsOn = false;
             SecureDeleteOriginalsToggle.IsOn = false;
             VerifyAfterWriteToggle.IsOn = true;
@@ -704,7 +837,7 @@ namespace FileLocker
             UpdateRunSummaryBanner();
             UpdateSafetyBanner();
             RefreshPreflightPreview();
-            SetStatus("Recommended mode applied: AES-256-GCM");
+            SetStatus($"Recommended mode applied: {EncryptionAlgorithmCatalog.Aes256Gcm}");
         }
 
         private void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -799,10 +932,27 @@ namespace FileLocker
             _isApplyingProfile = true;
             try
             {
+                string normalizedAlgorithm;
+                try
+                {
+                    normalizedAlgorithm = EncryptionAlgorithmCatalog.NormalizeForNewPayload(profile.Algorithm);
+                }
+                catch (NotSupportedException ex)
+                {
+                    SetStatus(GetFriendlyExceptionMessage(ex, "Unsupported file encryption algorithm."));
+                    return;
+                }
+
+                if (profile.UseSteganography && !EncryptionAlgorithmCatalog.IsAesGcm(normalizedAlgorithm))
+                {
+                    SetStatus($"Profile {profile.Name} uses PNG carrier output with an unsupported algorithm.");
+                    return;
+                }
+
                 SetComboSelection(OperationModeCombo, "Encrypt / Decrypt");
                 ConfigureModeOptions();
-                SetComboSelection(AlgorithmCombo, profile.Algorithm);
-                SetComboSelection(KeySizeCombo, profile.KeySizeBits.ToString(CultureInfo.InvariantCulture));
+                SetComboSelection(AlgorithmCombo, normalizedAlgorithm);
+                SetComboSelection(KeySizeCombo, EncryptionAlgorithmCatalog.GetKeySizeBits(normalizedAlgorithm).ToString(CultureInfo.InvariantCulture));
                 CompressModeToggle.IsOn = profile.CompressFiles;
                 ScrambleNamesToggle.IsOn = profile.ScrambleNames;
                 SteganographyToggle.IsOn = profile.UseSteganography;
@@ -828,10 +978,16 @@ namespace FileLocker
 
         private async void SaveProfileButton_Click(object sender, RoutedEventArgs e)
         {
+            string suggestedProfileName = ProfileCombo.SelectedItem as string ?? "Custom Profile";
+            if (IsBuiltInProfileName(suggestedProfileName))
+            {
+                suggestedProfileName = "Custom Profile";
+            }
+
             string? profileName = await PromptForTextAsync(
                 "Save Profile",
                 "Enter a name for this profile:",
-                ProfileCombo.SelectedItem as string ?? "Custom Profile");
+                suggestedProfileName);
 
             if (string.IsNullOrWhiteSpace(profileName))
             {
@@ -844,19 +1000,50 @@ namespace FileLocker
                 return;
             }
 
+            if (IsBuiltInProfileName(profileName))
+            {
+                await ShowErrorDialogAsync("Choose a custom profile name that does not match a built-in profile.");
+                SetStatus("Profile was not saved because the name is reserved.");
+                return;
+            }
+
+            string normalizedAlgorithm;
+            try
+            {
+                normalizedAlgorithm = EncryptionAlgorithmCatalog.NormalizeForNewPayload(GetComboContent(AlgorithmCombo));
+            }
+            catch (NotSupportedException ex)
+            {
+                SetStatus(GetFriendlyExceptionMessage(ex, "Unsupported file encryption algorithm."));
+                return;
+            }
+
+            if (!EncryptionAlgorithmCatalog.TryGetDefinition(normalizedAlgorithm, out EncryptionAlgorithmDefinition? definition) ||
+                !PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime(definition))
+            {
+                SetStatus("The selected encryption algorithm is not available on this Windows runtime.");
+                return;
+            }
+
+            if (SteganographyToggle.IsOn && !EncryptionAlgorithmCatalog.IsAesGcm(normalizedAlgorithm))
+            {
+                SetStatus($"PNG carrier profiles must use {EncryptionAlgorithmCatalog.Aes256Gcm}.");
+                return;
+            }
+
             _customProfiles.RemoveAll(profile => string.Equals(profile.Name, profileName, StringComparison.OrdinalIgnoreCase));
             _customProfiles.Add(new EncryptionProfile
             {
                 Name = profileName,
                 Description = $"Custom profile saved on {DateTime.Now:g}",
-                Algorithm = GetComboContent(AlgorithmCombo) ?? "AES-GCM",
-                KeySizeBits = ParseKeySizeSelection(),
+                Algorithm = normalizedAlgorithm,
+                KeySizeBits = definition.KeySizeBits,
                 CompressFiles = CompressModeToggle.IsOn,
                 ScrambleNames = ScrambleNamesToggle.IsOn,
                 UseSteganography = SteganographyToggle.IsOn,
                 RandomizeMetadata = MetadataRandomizeToggle.IsOn,
                 RemoveOriginalsAfterSuccess = RemoveOriginalsToggle.IsOn,
-                SecureDeleteOriginals = SecureDeleteOriginalsToggle.IsOn,
+                SecureDeleteOriginals = RemoveOriginalsToggle.IsOn && SecureDeleteOriginalsToggle.IsOn,
                 VerifyAfterWrite = VerifyAfterWriteToggle.IsOn,
                 BackupFolderPath = BackupFolderBox.Text?.Trim() ?? string.Empty,
                 KeyfilePath = KeyfilePathBox.Text?.Trim() ?? string.Empty,
@@ -893,7 +1080,9 @@ namespace FileLocker
             bool pendingWhitespace = false;
             foreach (char character in profileName.Trim())
             {
-                if (char.IsControl(character) || char.IsWhiteSpace(character))
+                if (char.IsControl(character) ||
+                    char.IsWhiteSpace(character) ||
+                    CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format)
                 {
                     pendingWhitespace = true;
                     continue;
@@ -909,7 +1098,19 @@ namespace FileLocker
             }
 
             string normalized = builder.ToString().Trim();
-            return normalized.Length > 80 ? normalized[..80] : normalized;
+            return normalized.Length > 80 ? normalized[..80].Trim() : normalized;
+        }
+
+        private static bool IsBuiltInProfileName(string? profileName)
+        {
+            if (string.IsNullOrWhiteSpace(profileName))
+            {
+                return false;
+            }
+
+            string normalizedName = NormalizeProfileName(profileName);
+            return GetBuiltInProfiles().Any(profile =>
+                string.Equals(profile.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
         }
 
         private void ConfigureModeOptions()
@@ -925,7 +1126,7 @@ namespace FileLocker
                     AlgorithmCombo,
                     isHashMode ? HashAlgorithms : EncryptionAlgorithms,
                     string.IsNullOrWhiteSpace(currentAlgorithm)
-                        ? isHashMode ? "SHA-256" : "AES-GCM"
+                        ? isHashMode ? FileHashService.Sha256 : EncryptionAlgorithmCatalog.Aes256Gcm
                         : currentAlgorithm);
 
                 PopulateKeySizes(isHashMode);
@@ -956,7 +1157,8 @@ namespace FileLocker
             {
                 comboBox.Items.Add(new ComboBoxItem { Content = value });
                 if (!string.IsNullOrWhiteSpace(preferredSelection) &&
-                    string.Equals(value, preferredSelection, StringComparison.OrdinalIgnoreCase))
+                    (string.Equals(value, preferredSelection, StringComparison.OrdinalIgnoreCase) ||
+                     AreSameEncryptionAlgorithm(value, preferredSelection)))
                 {
                     selectedIndex = index;
                 }
@@ -990,7 +1192,7 @@ namespace FileLocker
 
         private void UpdateAlgorithmHelper()
         {
-            string algorithm = GetComboContent(AlgorithmCombo) ?? "AES-GCM";
+            string algorithm = GetComboContent(AlgorithmCombo) ?? EncryptionAlgorithmCatalog.Aes256Gcm;
             int keySize = ParseKeySizeSelection();
             string mode = GetComboContent(OperationModeCombo) ?? "Encrypt / Decrypt";
             bool isHashMode = mode.Contains("Hash", StringComparison.OrdinalIgnoreCase);
@@ -1004,7 +1206,10 @@ namespace FileLocker
             }
             else
             {
-                AlgorithmHintText.Text = "Preset: AES-256-GCM for file encryption";
+                string fileAlgorithm = EncryptionAlgorithmCatalog.TryNormalize(algorithm, out string normalizedAlgorithm)
+                    ? normalizedAlgorithm
+                    : EncryptionAlgorithmCatalog.Aes256Gcm;
+                AlgorithmHintText.Text = $"Preset: {fileAlgorithm} for file encryption";
             }
         }
 
@@ -1201,7 +1406,7 @@ namespace FileLocker
 
                     if (!File.Exists(item.SourcePath) || !IsPayloadV3File(item.SourcePath))
                     {
-                        item.SetNeedsAttention("Key rotation is available for version 3 payloads only.");
+                        item.SetNeedsAttention("Key rotation is available for FileLocker payloads only.");
                         continue;
                     }
 
@@ -1296,6 +1501,23 @@ namespace FileLocker
 
             bool hasPassword = !string.IsNullOrWhiteSpace(PasswordBox.Password);
             bool hasRecoveryKey = !string.IsNullOrWhiteSpace(RecoveryKeyBox.Text);
+            try
+            {
+                if (hasPassword)
+                {
+                    ValidateKdfSecretTextLength(PasswordBox.Password);
+                }
+
+                if (hasRecoveryKey)
+                {
+                    ValidateKdfSecretTextLength(RecoveryKeyBox.Text);
+                }
+            }
+            catch (ArgumentException ex)
+            {
+                await ShowErrorDialogAsync(ex.Message);
+                return false;
+            }
 
             if (intent == ProcessingIntent.Encrypt && !hasPassword)
             {
@@ -1367,24 +1589,86 @@ namespace FileLocker
                 return null;
             }
 
-            string trimmed = keyfilePath.Trim();
-            if (!File.Exists(trimmed))
+            string path = NormalizeKeyfilePath(keyfilePath);
+            if (Directory.Exists(path))
             {
-                throw new FileNotFoundException("The selected keyfile could not be found.", trimmed);
+                throw new InvalidOperationException("The selected keyfile path must reference a file.");
             }
 
-            var fileInfo = new FileInfo(trimmed);
-            if (fileInfo.Length == 0)
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException("The selected keyfile could not be found.", path);
+            }
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length == 0)
             {
                 throw new InvalidOperationException("The selected keyfile is empty.");
             }
 
-            if (fileInfo.Length > MaxKeyfileBytes)
+            if (stream.Length > MaxKeyfileBytes)
             {
                 throw new InvalidOperationException($"The selected keyfile is too large. Choose a keyfile up to {MaxKeyfileBytes / 1024 / 1024} MB.");
             }
 
-            return File.ReadAllBytes(trimmed);
+            byte[] keyfileBytes = new byte[(int)stream.Length];
+            try
+            {
+                int totalRead = 0;
+                while (totalRead < keyfileBytes.Length)
+                {
+                    int read = stream.Read(keyfileBytes, totalRead, keyfileBytes.Length - totalRead);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException("The selected keyfile changed while it was being read.");
+                    }
+
+                    totalRead += read;
+                }
+
+                if (stream.ReadByte() != -1)
+                {
+                    throw new InvalidOperationException("The selected keyfile is too large. Choose a smaller keyfile.");
+                }
+
+                return keyfileBytes;
+            }
+            catch
+            {
+                CryptographicOperations.ZeroMemory(keyfileBytes);
+                throw;
+            }
+        }
+
+        private static string NormalizeKeyfilePath(string keyfilePath)
+        {
+            string trimmed = keyfilePath.Trim();
+            if (trimmed.Any(character => char.IsControl(character) || CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.Format))
+            {
+                throw new InvalidOperationException("The selected keyfile path is not valid.");
+            }
+
+            if (!Path.IsPathFullyQualified(trimmed))
+            {
+                throw new InvalidOperationException("The selected keyfile path must be fully qualified.");
+            }
+
+            try
+            {
+                string fullPath = Path.GetFullPath(trimmed);
+                string root = Path.GetPathRoot(fullPath) ?? string.Empty;
+                string pathWithoutRoot = fullPath.Length > root.Length ? fullPath[root.Length..] : string.Empty;
+                if (pathWithoutRoot.Contains(':', StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("The selected keyfile path must reference a normal file.");
+                }
+
+                return fullPath;
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                throw new InvalidOperationException("The selected keyfile path is not valid.", ex);
+            }
         }
 
         private async void HashRunButton_Click(object sender, RoutedEventArgs e)
@@ -1396,7 +1680,7 @@ namespace FileLocker
                 return;
             }
 
-            string algorithm = GetComboContent(AlgorithmCombo) ?? "AES-GCM";
+            string algorithm = GetComboContent(AlgorithmCombo) ?? EncryptionAlgorithmCatalog.Aes256Gcm;
             int keySize = ParseKeySizeSelection();
             string password = PasswordBox.Password;
             string keyfilePath = KeyfilePathBox.Text;
@@ -1430,20 +1714,51 @@ namespace FileLocker
         private string RunHashOrEncode(string input, string algorithm, int keySize, string password, byte[]? keyfileBytes)
         {
             byte[] inputBytes = Encoding.UTF8.GetBytes(input);
-
-            if (algorithm.Contains("SHA", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                byte[] hash = keySize >= 512 ? SHA512.HashData(inputBytes) : SHA256.HashData(inputBytes);
-                return Convert.ToHexString(hash);
-            }
+                if (TryNormalizeTextHashAlgorithm(algorithm, out string hashAlgorithm))
+                {
+                    byte[] hash = FileHashService.GetDigestBits(hashAlgorithm) == 512
+                        ? SHA512.HashData(inputBytes)
+                        : SHA256.HashData(inputBytes);
+                    try
+                    {
+                        return Convert.ToHexString(hash);
+                    }
+                    finally
+                    {
+                        ClearSensitiveBuffer(hash);
+                    }
+                }
 
-            if (algorithm.Contains("Base64", StringComparison.OrdinalIgnoreCase))
+                if (IsBase64TextAlgorithm(algorithm))
+                {
+                    return Convert.ToBase64String(inputBytes);
+                }
+
+                return EncryptTextWithAes(inputBytes, algorithm, keySize, password, keyfileBytes);
+            }
+            finally
             {
-                return Convert.ToBase64String(inputBytes);
+                ClearSensitiveBuffer(inputBytes);
             }
-
-            return EncryptTextWithAes(inputBytes, algorithm, keySize, password, keyfileBytes);
         }
+
+        private static bool TryNormalizeTextHashAlgorithm(string algorithm, out string hashAlgorithm)
+        {
+            hashAlgorithm = string.Empty;
+            string candidate = algorithm.Trim();
+            if (!candidate.StartsWith("SHA", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            hashAlgorithm = FileHashService.NormalizeAlgorithmName(candidate);
+            return true;
+        }
+
+        private static bool IsBase64TextAlgorithm(string algorithm) =>
+            string.Equals(algorithm.Trim(), "Base64", StringComparison.OrdinalIgnoreCase);
 
         private string EncryptTextWithAes(byte[] inputBytes, string algorithm, int keySize, string password, byte[]? keyfileBytes)
         {
@@ -1452,29 +1767,57 @@ namespace FileLocker
                 throw new InvalidOperationException("Enter a password for AES-based helpers.");
             }
 
-            if (!algorithm.Contains("GCM", StringComparison.OrdinalIgnoreCase))
+            if (!EncryptionAlgorithmCatalog.IsAesGcm(algorithm))
             {
                 throw new InvalidOperationException("FileLocker only exposes authenticated AES-GCM helpers.");
             }
 
-            byte[] salt = GenerateRandomBytes(16);
-            int keySizeBytes = Math.Max(16, keySize / 8);
-            byte[] key = DeriveKey(password, salt, keyfileBytes, keySizeBytes);
-            return EncodeAesGcmPayload(inputBytes, key, salt, keySize);
+            int requiredKeySize = EncryptionAlgorithmCatalog.GetKeySizeBits(EncryptionAlgorithmCatalog.Aes256Gcm);
+            if (keySize != requiredKeySize)
+            {
+                throw new InvalidOperationException($"AES-GCM text helpers require a {requiredKeySize}-bit key.");
+            }
+
+            byte[]? salt = null;
+            byte[]? key = null;
+            try
+            {
+                salt = GenerateRandomBytes(16);
+                int keySizeBytes = keySize / 8;
+                key = DeriveKey(password, salt, keyfileBytes, keySizeBytes);
+                return EncodeAesGcmPayload(inputBytes, key, salt, keySize);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(salt);
+                ClearSensitiveBuffer(key);
+            }
         }
 
         private static string EncodeAesGcmPayload(byte[] inputBytes, byte[] key, byte[] salt, int keySize)
         {
-            byte[] iv = GenerateRandomBytes(IV_SIZE);
-            byte[] ciphertext = new byte[inputBytes.Length];
-            byte[] tag = new byte[TAG_SIZE];
-
-            using (var aes = new AesGcm(key, TAG_SIZE))
+            byte[]? iv = null;
+            byte[]? ciphertext = null;
+            byte[]? tag = null;
+            try
             {
-                aes.Encrypt(iv, inputBytes, ciphertext, tag);
-            }
+                iv = GenerateRandomBytes(IV_SIZE);
+                ciphertext = new byte[inputBytes.Length];
+                tag = new byte[TAG_SIZE];
 
-            return EncodeLabeledPayload("AES-GCM", keySize, salt, iv, tag, ciphertext);
+                using (var aes = new AesGcm(key, TAG_SIZE))
+                {
+                    aes.Encrypt(iv, inputBytes, ciphertext, tag);
+                }
+
+                return EncodeLabeledPayload("AES-GCM", keySize, salt, iv, tag, ciphertext);
+            }
+            finally
+            {
+                ClearSensitiveBuffer(iv);
+                ClearSensitiveBuffer(ciphertext);
+                ClearSensitiveBuffer(tag);
+            }
         }
 
         private static string EncodeLabeledPayload(string label, int keySize, byte[] salt, byte[] iv, byte[] tag, byte[] ciphertext)
@@ -1485,13 +1828,29 @@ namespace FileLocker
             WriteLengthPrefixed(stream, tag);
             WriteLengthPrefixed(stream, ciphertext);
 
-            return $"{label} ({keySize}-bit): {Convert.ToBase64String(stream.ToArray())}";
+            byte[]? payload = null;
+            try
+            {
+                payload = stream.ToArray();
+                return $"{label} ({keySize}-bit): {Convert.ToBase64String(payload)}";
+            }
+            finally
+            {
+                ClearSensitiveBuffer(payload);
+            }
         }
 
         private static void WriteLengthPrefixed(Stream stream, byte[] data)
         {
+            if (data.Length > ushort.MaxValue)
+            {
+                throw new InvalidOperationException("AES-GCM text helper input is too large for the labeled payload format.");
+            }
+
             ushort length = (ushort)data.Length;
-            stream.Write(BitConverter.GetBytes(length), 0, sizeof(ushort));
+            Span<byte> lengthBytes = stackalloc byte[sizeof(ushort)];
+            BinaryPrimitives.WriteUInt16LittleEndian(lengthBytes, length);
+            stream.Write(lengthBytes);
             stream.Write(data, 0, data.Length);
         }
 
@@ -1619,12 +1978,20 @@ namespace FileLocker
             {
                 if (comboBox.Items[i] is ComboBoxItem item &&
                     item.Content is string value &&
-                    string.Equals(value, content, StringComparison.OrdinalIgnoreCase))
+                    (string.Equals(value, content, StringComparison.OrdinalIgnoreCase) ||
+                     AreSameEncryptionAlgorithm(value, content)))
                 {
                     comboBox.SelectedIndex = i;
                     return;
                 }
             }
+        }
+
+        private static bool AreSameEncryptionAlgorithm(string left, string right)
+        {
+            return EncryptionAlgorithmCatalog.TryNormalize(left, out string normalizedLeft) &&
+                EncryptionAlgorithmCatalog.TryNormalize(right, out string normalizedRight) &&
+                string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
         }
 
         private int ParseKeySizeSelection()
@@ -1635,7 +2002,16 @@ namespace FileLocker
                 return keySize;
             }
 
-            return 256;
+            string? mode = GetComboContent(OperationModeCombo);
+            if (mode != null && mode.Contains("Hash", StringComparison.OrdinalIgnoreCase))
+            {
+                return FileHashService.GetDigestBits(FileHashService.Sha256);
+            }
+
+            string algorithm = EncryptionAlgorithmCatalog.TryNormalize(GetComboContent(AlgorithmCombo), out string normalizedAlgorithm)
+                ? normalizedAlgorithm
+                : EncryptionAlgorithmCatalog.Aes256Gcm;
+            return EncryptionAlgorithmCatalog.GetKeySizeBits(algorithm);
         }
         private void ShowPasswordCheckBox_Checked(object sender, RoutedEventArgs e)
         {
@@ -1662,7 +2038,7 @@ namespace FileLocker
                 string password = PasswordBox.Password;
                 string keyfilePath = KeyfilePathBox.Text?.Trim() ?? string.Empty;
                 byte[]? keyfileBytes = await Task.Run(() => ReadKeyfileBytesIfConfigured(keyfilePath));
-                runOptions = CaptureProcessingRunOptions(keyfilePath, keyfileBytes);
+                runOptions = CaptureProcessingRunOptions(keyfilePath, keyfileBytes, intent == ProcessingIntent.Encrypt);
                 if (!await ConfirmPreflightAsync(intent, runOptions))
                 {
                     return;
