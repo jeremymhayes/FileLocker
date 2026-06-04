@@ -21,7 +21,7 @@ import { isSafeLocalPathForReveal, mergeUniquePaths } from "@/lib/format"
 import type { DashboardState, EncryptionAlgorithmOption, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
 
 const pageTitles: Record<PageKey, { title: string; description?: string }> = {
-  dashboard: { title: "Dashboard" },
+  dashboard: { title: "Home" },
   encrypt: { title: "Encrypt Files" },
   decrypt: { title: "Decrypt Files" },
   hash: { title: "Hash Files" },
