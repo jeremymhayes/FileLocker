@@ -32,6 +32,19 @@
   --accent-red: #ef617d;
   --nav-active-bg: rgba(93, 141, 255, 0.14);
   --nav-active-border: rgba(114, 155, 255, 0.55);
+  --signal-success: #38c98f;
+  --signal-success-strong: #22a976;
+  --signal-success-soft: rgba(56, 201, 143, 0.12);
+  --signal-success-border: rgba(56, 201, 143, 0.34);
+  --signal-success-foreground: #051f17;
+  --signal-review: #e6a14a;
+  --signal-review-strong: #c9852d;
+  --signal-review-soft: rgba(230, 161, 74, 0.12);
+  --signal-review-border: rgba(230, 161, 74, 0.34);
+  --signal-review-foreground: #211406;
+  --row-hover: rgba(93, 141, 255, 0.09);
+  --row-selected: rgba(93, 141, 255, 0.14);
+  --row-selected-border: rgba(114, 155, 255, 0.55);
   --transition-fast: 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --transition-panel: 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --app-sidebar-width: 232px;
@@ -72,6 +85,7 @@
   --sidebar-border: var(--border);
   --sidebar-ring: var(--accent);
   --radius: 8px;
+  --radius-panel: 8px;
   --window-titlebar-area-x: env(titlebar-area-x, 0px);
   --window-titlebar-area-width: env(titlebar-area-width, calc(100vw - var(--window-caption-fallback-width)));
   --window-titlebar-reserved-left: max(0px, var(--window-titlebar-area-x));
@@ -147,6 +161,19 @@ select {
   --color-accent-red: var(--accent-red);
   --color-nav-active-bg: var(--nav-active-bg);
   --color-nav-active-border: var(--nav-active-border);
+  --color-signal-success: var(--signal-success);
+  --color-signal-success-strong: var(--signal-success-strong);
+  --color-signal-success-soft: var(--signal-success-soft);
+  --color-signal-success-border: var(--signal-success-border);
+  --color-signal-success-foreground: var(--signal-success-foreground);
+  --color-signal-review: var(--signal-review);
+  --color-signal-review-strong: var(--signal-review-strong);
+  --color-signal-review-soft: var(--signal-review-soft);
+  --color-signal-review-border: var(--signal-review-border);
+  --color-signal-review-foreground: var(--signal-review-foreground);
+  --color-row-hover: var(--row-hover);
+  --color-row-selected: var(--row-selected);
+  --color-row-selected-border: var(--row-selected-border);
 
   --color-background: var(--background);
   --color-surface: var(--surface);
@@ -181,6 +208,7 @@ select {
   --color-sidebar-ring: var(--sidebar-ring);
 
   --radius-sm: 6px;
+  --radius-panel: var(--radius-panel);
   --radius-md: 8px;
   --radius-lg: 10px;
   --radius-xl: 12px;
@@ -410,6 +438,36 @@ select {
 
   .app-tab-active {
     @apply border-accent bg-transparent text-primary;
+  }
+
+  .data-table-row {
+    @apply transition-colors;
+  }
+
+  .data-table-row:hover {
+    background: var(--row-hover);
+  }
+
+  .data-table-row[data-selected="true"],
+  .data-table-row[aria-selected="true"] {
+    background: var(--row-selected);
+    box-shadow: inset 2px 0 0 0 var(--row-selected-border);
+  }
+
+  .signal-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+
+  .signal-pill-success {
+    border: 1px solid var(--signal-success-border);
+    background: var(--signal-success-soft);
+    color: var(--signal-success);
+  }
+
+  .signal-pill-review {
+    border: 1px solid var(--signal-review-border);
+    background: var(--signal-review-soft);
+    color: var(--signal-review);
   }
 }
 
