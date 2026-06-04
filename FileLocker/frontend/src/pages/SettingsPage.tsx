@@ -19,6 +19,17 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -510,7 +521,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
   return (
     <div className="security-page">
       <div className="border-y border-border bg-transparent">
-        <header className="flex flex-col gap-3 border-b border-border py-3 xl:flex-row xl:items-center xl:justify-between">
+        <header className="sticky top-0 z-20 flex flex-col gap-3 border-b border-border bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <h1 className="font-display text-lg font-semibold leading-tight text-primary">Settings</h1>
           </div>
@@ -629,7 +640,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
               <SettingRow label="Incognito Mode" detail="Do not save history or recent files.">
                 <Switch size="sm" checked={draft.preferences.incognitoMode} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, incognitoMode: value } }))} />
               </SettingRow>
-              <SettingRow label="Full paths in exports" detail="Include complete local paths in JSON and CSV history exports.">
+              <SettingRow label="Include full file paths in exports" detail="When disabled, exported history uses redacted paths so local file locations stay private.">
                 <Switch size="sm" checked={draft.preferences.includeFullPathsInExports} onCheckedChange={(value) => updateDraft((current) => ({ ...current, preferences: { ...current.preferences, includeFullPathsInExports: value } }))} />
               </SettingRow>
               <SettingRow label="History export">
@@ -642,10 +653,28 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                     {historyAction === "csv" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Download data-icon="inline-start" />}
                     {historyAction === "csv" ? "Exporting" : "CSV"}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={clearHistory} disabled={Boolean(historyAction)}>
-                    {historyAction === "clear" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
-                    {historyAction === "clear" ? "Clearing" : "Clear"}
-                  </Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="outline" size="sm" disabled={Boolean(historyAction)}>
+                        {historyAction === "clear" ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Trash2 data-icon="inline-start" />}
+                        {historyAction === "clear" ? "Clearing" : "Clear"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Clear activity history?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This permanently deletes locally stored FileLocker history. Export your history first if you need a copy.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel disabled={historyAction === "clear"}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction variant="destructive" disabled={historyAction === "clear"} onClick={clearHistory}>
+                          {historyAction === "clear" ? "Clearing" : "Clear History"}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
               </SettingRow>
             </SettingsPanel>
