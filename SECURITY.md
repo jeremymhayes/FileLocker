@@ -1,14 +1,5 @@
 # Security Policy
 
-## Supported Versions
-
-Security fixes are prioritized for the latest published FileLocker release.
-
-| Version | Supported |
-| --- | --- |
-| 1.2.x | Yes |
-| Earlier versions | No |
-
 ## Reporting a Vulnerability
 
 Please do not open a public issue for a suspected security vulnerability.
@@ -56,3 +47,7 @@ Coordinated disclosure is expected. Please give maintainers reasonable time to v
 FileLocker is local-first. It does not provide cloud recovery, remote key escrow, or a password reset path. If a password, keyfile, or recovery material is lost, protected data should be treated as inaccessible.
 
 FileLocker performs destructive operations such as secure delete and cleanup only after user action. Some System Care operations require administrator mode because Windows protects the target locations.
+If you discover a security vulnerability in FileLocker, please report it responsibly.
+
+Contact:
+jeremy@jeremymhayes.com
