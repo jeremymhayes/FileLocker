@@ -6,7 +6,7 @@
         <ResourceDictionary x:Key="Dark">
             <Color x:Key="AppAccentColor">#247BFF</Color>
             <Color x:Key="AppAccentSoftColor">#17325A</Color>
-            <Color x:Key="AppBackgroundStartColor">#07101D</Color>
+            <Color x:Key="AppBackgroundStartColor">#0D1420</Color>
             <Color x:Key="AppBackgroundEndColor">#0A111D</Color>
             <Color x:Key="AppHeaderSurfaceColor">#091423</Color>
             <Color x:Key="AppSidebarSurfaceColor">#08111F</Color>

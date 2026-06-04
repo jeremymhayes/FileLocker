@@ -34,8 +34,13 @@
   --nav-active-border: rgba(114, 155, 255, 0.55);
   --transition-fast: 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --transition-panel: 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --app-sidebar-width: 232px;
+  --window-titlebar-area-height: env(titlebar-area-height, 16px);
+  --window-titlebar-height: clamp(12px, var(--window-titlebar-area-height), 16px);
+  --window-caption-fallback-width: 138px;
 
   --background: var(--bg-base);
+  --window-chrome-background: var(--background);
   --surface: var(--bg-surface);
   --surface-elevated: var(--bg-surface-hover);
   --surface-strong: var(--bg-surface-strong);
@@ -67,6 +72,15 @@
   --sidebar-border: var(--border);
   --sidebar-ring: var(--accent);
   --radius: 8px;
+  --window-titlebar-area-x: env(titlebar-area-x, 0px);
+  --window-titlebar-area-width: env(titlebar-area-width, calc(100vw - var(--window-caption-fallback-width)));
+  --window-titlebar-reserved-left: max(0px, var(--window-titlebar-area-x));
+  --window-titlebar-reserved-right: max(0px, calc(100vw - var(--window-titlebar-area-x) - var(--window-titlebar-area-width)));
+}
+
+[dir="rtl"] {
+  --window-titlebar-area-x: env(titlebar-area-x, var(--window-caption-fallback-width));
+  --window-titlebar-area-width: env(titlebar-area-width, calc(100vw - var(--window-caption-fallback-width)));
 }
 
 html {
@@ -218,6 +232,41 @@ select {
 }
 
 @layer components {
+  .app-window-titlebar {
+    display: grid;
+    grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr);
+    height: var(--window-titlebar-height);
+    flex: 0 0 var(--window-titlebar-height);
+    background: var(--window-chrome-background);
+    user-select: none;
+    app-region: drag;
+    -webkit-app-region: drag;
+  }
+
+  .app-window-titlebar-sidebar {
+    min-width: 0;
+    background: var(--sidebar);
+  }
+
+  .app-window-titlebar-main {
+    display: grid;
+    grid-template-columns: var(--window-titlebar-reserved-left) minmax(0, 1fr) var(--window-titlebar-reserved-right);
+    min-width: 0;
+    background: var(--window-chrome-background);
+  }
+
+  .app-window-titlebar-drag {
+    min-width: 0;
+    app-region: drag;
+    -webkit-app-region: drag;
+  }
+
+  .app-window-titlebar-caption-space,
+  .app-window-titlebar :is(button, a, input, textarea, select, [role="button"], [role="link"], [tabindex]) {
+    app-region: no-drag;
+    -webkit-app-region: no-drag;
+  }
+
   .security-page {
     @apply w-full px-4 py-4 xl:px-5;
   }

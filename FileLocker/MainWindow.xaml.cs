@@ -61,6 +61,16 @@ namespace FileLocker
         internal const int MaxResolveAvailablePathAttempts = 1_000;
         internal const long MaxPngCarrierSourceBytes = 64L * 1024L * 1024L;
         internal const long MaxPngCarrierPayloadBytes = 128L * 1024L * 1024L;
+        private static readonly Windows.UI.Color WindowChromeDarkBackgroundColor = ColorHelper.FromArgb(255, 13, 20, 32);
+        private static readonly Windows.UI.Color WindowChromeLightBackgroundColor = ColorHelper.FromArgb(255, 248, 251, 255);
+        private static readonly Windows.UI.Color WindowChromeDarkForegroundColor = ColorHelper.FromArgb(255, 244, 247, 251);
+        private static readonly Windows.UI.Color WindowChromeDarkInactiveForegroundColor = ColorHelper.FromArgb(255, 172, 184, 202);
+        private static readonly Windows.UI.Color WindowChromeLightForegroundColor = ColorHelper.FromArgb(255, 22, 32, 43);
+        private static readonly Windows.UI.Color WindowChromeLightInactiveForegroundColor = ColorHelper.FromArgb(255, 86, 101, 120);
+        private static readonly Windows.UI.Color WindowChromeDarkButtonHoverColor = ColorHelper.FromArgb(46, 244, 247, 251);
+        private static readonly Windows.UI.Color WindowChromeDarkButtonPressedColor = ColorHelper.FromArgb(64, 93, 141, 255);
+        private static readonly Windows.UI.Color WindowChromeLightButtonHoverColor = ColorHelper.FromArgb(255, 221, 234, 254);
+        private static readonly Windows.UI.Color WindowChromeLightButtonPressedColor = ColorHelper.FromArgb(255, 214, 224, 237);
         private static string[] EncryptionAlgorithms => EncryptionAlgorithmCatalog.Definitions
             .Where(PayloadChunkedService.CanEncryptNewPayloadOnThisRuntime)
             .Select(definition => definition.DisplayName)
@@ -243,7 +253,7 @@ namespace FileLocker
             _themePreference = _preferences.ThemePreference;
             InitializeComponent();
             ExtendsContentIntoTitleBar = true;
-            SetTitleBar(NativeTitleBar);
+            SetTitleBar(null);
             Closed += MainWindow_Closed;
             _currentExperienceLevel = _preferences.ExperienceLevel;
 
@@ -305,17 +315,6 @@ namespace FileLocker
 
         private void ApplyWindowTitleBarColors()
         {
-            if (isDarkTheme)
-            {
-                NativeTitleBar.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 20, 28, 46));
-                NativeTitleBar.BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 11, 19, 32));
-            }
-            else
-            {
-                NativeTitleBar.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 248, 251, 255));
-                NativeTitleBar.BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 214, 224, 237));
-            }
-
             // Keep native window behavior intact; only tint the system title bar when supported.
             if (_appWindow?.TitleBar == null || !AppWindowTitleBar.IsCustomizationSupported())
             {
@@ -325,33 +324,33 @@ namespace FileLocker
             AppWindowTitleBar titleBar = _appWindow.TitleBar;
             if (isDarkTheme)
             {
-                titleBar.BackgroundColor = ColorHelper.FromArgb(255, 20, 28, 46);
-                titleBar.ForegroundColor = Colors.White;
-                titleBar.InactiveBackgroundColor = ColorHelper.FromArgb(255, 20, 28, 46);
-                titleBar.InactiveForegroundColor = ColorHelper.FromArgb(255, 170, 180, 195);
-                titleBar.ButtonBackgroundColor = ColorHelper.FromArgb(255, 20, 28, 46);
-                titleBar.ButtonForegroundColor = Colors.White;
-                titleBar.ButtonInactiveBackgroundColor = ColorHelper.FromArgb(255, 20, 28, 46);
-                titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(255, 170, 180, 195);
-                titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(255, 20, 36, 59);
-                titleBar.ButtonHoverForegroundColor = Colors.White;
-                titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(255, 23, 51, 92);
-                titleBar.ButtonPressedForegroundColor = Colors.White;
+                titleBar.BackgroundColor = WindowChromeDarkBackgroundColor;
+                titleBar.ForegroundColor = WindowChromeDarkForegroundColor;
+                titleBar.InactiveBackgroundColor = WindowChromeDarkBackgroundColor;
+                titleBar.InactiveForegroundColor = WindowChromeDarkInactiveForegroundColor;
+                titleBar.ButtonBackgroundColor = Colors.Transparent;
+                titleBar.ButtonForegroundColor = WindowChromeDarkForegroundColor;
+                titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+                titleBar.ButtonInactiveForegroundColor = WindowChromeDarkInactiveForegroundColor;
+                titleBar.ButtonHoverBackgroundColor = WindowChromeDarkButtonHoverColor;
+                titleBar.ButtonHoverForegroundColor = WindowChromeDarkForegroundColor;
+                titleBar.ButtonPressedBackgroundColor = WindowChromeDarkButtonPressedColor;
+                titleBar.ButtonPressedForegroundColor = WindowChromeDarkForegroundColor;
             }
             else
             {
-                titleBar.BackgroundColor = ColorHelper.FromArgb(255, 248, 251, 255);
-                titleBar.ForegroundColor = ColorHelper.FromArgb(255, 22, 32, 43);
-                titleBar.InactiveBackgroundColor = ColorHelper.FromArgb(255, 232, 238, 246);
-                titleBar.InactiveForegroundColor = ColorHelper.FromArgb(255, 86, 101, 120);
-                titleBar.ButtonBackgroundColor = ColorHelper.FromArgb(255, 248, 251, 255);
-                titleBar.ButtonForegroundColor = ColorHelper.FromArgb(255, 22, 32, 43);
-                titleBar.ButtonInactiveBackgroundColor = ColorHelper.FromArgb(255, 232, 238, 246);
-                titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(255, 86, 101, 120);
-                titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(255, 221, 234, 254);
-                titleBar.ButtonHoverForegroundColor = ColorHelper.FromArgb(255, 22, 32, 43);
-                titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(255, 214, 224, 237);
-                titleBar.ButtonPressedForegroundColor = ColorHelper.FromArgb(255, 22, 32, 43);
+                titleBar.BackgroundColor = WindowChromeLightBackgroundColor;
+                titleBar.ForegroundColor = WindowChromeLightForegroundColor;
+                titleBar.InactiveBackgroundColor = WindowChromeLightBackgroundColor;
+                titleBar.InactiveForegroundColor = WindowChromeLightInactiveForegroundColor;
+                titleBar.ButtonBackgroundColor = Colors.Transparent;
+                titleBar.ButtonForegroundColor = WindowChromeLightForegroundColor;
+                titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+                titleBar.ButtonInactiveForegroundColor = WindowChromeLightInactiveForegroundColor;
+                titleBar.ButtonHoverBackgroundColor = WindowChromeLightButtonHoverColor;
+                titleBar.ButtonHoverForegroundColor = WindowChromeLightForegroundColor;
+                titleBar.ButtonPressedBackgroundColor = WindowChromeLightButtonPressedColor;
+                titleBar.ButtonPressedForegroundColor = WindowChromeLightForegroundColor;
             }
         }
 

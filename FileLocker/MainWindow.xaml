@@ -9,34 +9,8 @@
     mc:Ignorable="d">
 
     <Grid Background="{ThemeResource MainWindowBackgroundBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="38" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <Border
-            x:Name="NativeTitleBar"
-            Grid.Row="0"
-            Padding="16,0,140,0"
-            Background="{ThemeResource HeaderSurfaceBrush}"
-            BorderBrush="{ThemeResource AppBorderBrush}"
-            BorderThickness="0,0,0,1">
-            <Grid>
-                <TextBlock
-                    x:Name="NativeTitleText"
-                    VerticalAlignment="Center"
-                    FontFamily="Segoe UI"
-                    FontSize="13"
-                    FontWeight="SemiBold"
-                    Foreground="{ThemeResource TextPrimaryBrush}"
-                    Text="FileLocker — Dashboard"
-                    TextTrimming="CharacterEllipsis" />
-            </Grid>
-        </Border>
-
         <WebView2
             x:Name="AppWebView"
-            Grid.Row="1"
             HorizontalAlignment="Stretch"
             VerticalAlignment="Stretch" />
     </Grid>

@@ -56,7 +56,7 @@ export function Sidebar({ activePage, onNavigate, version, settings, onThemeTogg
   const darkModeEnabled = settings?.preferences.themePreference !== "Light"
 
   return (
-    <aside className="flex h-screen w-[232px] shrink-0 flex-col overflow-y-auto border-r border-layout-separator bg-sidebar text-sidebar-foreground">
+    <aside className="flex h-full w-[var(--app-sidebar-width)] shrink-0 flex-col overflow-y-auto border-r border-layout-separator bg-sidebar text-sidebar-foreground">
       <div className="border-b border-sidebar-border px-3 py-3">
         <div className="sidebar-logo-area flex items-center gap-3">
           {logoFailed ? (

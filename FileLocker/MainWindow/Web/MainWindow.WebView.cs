@@ -98,6 +98,7 @@ namespace FileLocker
             AppWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
 #endif
             AppWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            AppWebView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
 
             Uri source = await ResolveAppInterfaceSourceAsync();
             AppWebView.Source = source;
@@ -533,7 +534,12 @@ namespace FileLocker
             string pageName = NormalizeTitlePageName(request.PageName);
 
             string title = $"FileLocker — {pageName}";
-            NativeTitleText.Text = title;
+            Title = title;
+            if (_appWindow != null)
+            {
+                _appWindow.Title = title;
+            }
+
             return new { title };
         }
 

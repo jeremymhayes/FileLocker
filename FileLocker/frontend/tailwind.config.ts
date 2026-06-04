@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        "bg-base": "#0f1623",
+        "bg-base": "#0d1420",
         "bg-sidebar": "#141c2e",
         "bg-surface": "#1a2440",
         "bg-surface-hover": "#1e2a4a",
@@ -25,7 +25,7 @@ export default {
         "accent-red": "#ef4444",
         "nav-active-bg": "#1e3a5f",
         "nav-active-border": "#3b82f6",
-        background: "#0f1623",
+        background: "#0d1420",
         sidebar: "#141c2e",
         surface: "#1a2440",
         "surface-elevated": "#1e2a4a",
