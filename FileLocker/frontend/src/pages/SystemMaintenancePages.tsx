@@ -20,6 +20,7 @@ import {
   Search,
   Settings2,
   ShieldAlert,
+  ShieldCheck,
   Trash2,
   Wrench,
 } from "lucide-react"
@@ -39,6 +40,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   filterStartupItems,
   sortStartupItems,
@@ -255,7 +257,7 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
       <AdminStatusBanner
         isAdministrator={isAdministrator}
         onRestartAsAdministrator={onRestartAsAdministrator}
-        description="Partition Cleaner uses Windows cipher against the selected drive. Restart in administrator mode before starting the wipe."
+        description="Free Space Wipe uses Windows cipher against the selected drive. Restart in administrator mode before starting the wipe."
       />
       <DrivePicker
         drives={drives}
@@ -266,10 +268,15 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
         onRefresh={refreshDrives}
       />
       <section className="section-surface">
-        <div className="flex items-center gap-2.5">
-          <HardDrive className="size-4 shrink-0 text-muted" aria-hidden />
-          <span className="font-display text-sm font-semibold tracking-tight text-primary">Free-Space Wipe</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <HardDrive className="size-4 shrink-0 text-muted" aria-hidden />
+            <span className="font-display text-sm font-semibold tracking-tight text-primary">Free Space Wipe</span>
+            <RiskBadge level="Destructive" />
+          </div>
+          <ScanStepIndicator current={result ? "apply" : selectedDrive?.isReady ? "review" : "scan"} applyLabel="Wipe" />
         </div>
+        <p className="mt-2 text-sm text-secondary">Existing files stay. Deleted-file traces are overwritten where Windows allows it.</p>
         <div className="mt-3 grid grid-cols-3 divide-x divide-border border-y border-border">
           <MetricTile label="Drive" value={selectedDrive?.rootPath ?? "None"} />
           <MetricTile label="Free space" value={selectedDrive?.freeSpaceDisplay ?? "Unknown"} />
@@ -279,20 +286,28 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
           <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
           <span>Wipes free space with Windows cipher so deleted data is harder to recover. Does not rewrite the partition table or delete existing files.</span>
         </div>
-        <div className="mt-3">
-          <Button variant="destructive" onClick={requestWipe} disabled={!canStart}>
-            <Play data-icon="inline-start" />
-            {isRunning ? "Wiping..." : "Start Wipe"}
-          </Button>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <ActionWithReason disabled={!canStart} reason={!isAdministrator ? "Restart as Administrator" : !selectedDrive?.isReady ? "Select a ready drive first" : "Wait for the current wipe to finish"}>
+            <Button variant="destructive" onClick={requestWipe} disabled={!canStart}>
+              <Play data-icon="inline-start" />
+              {isRunning ? "Wiping..." : "Wipe Free Space"}
+            </Button>
+          </ActionWithReason>
+          {!isAdministrator ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-amber-300">
+              <ShieldAlert className="size-3.5" aria-hidden />
+              Administrator mode required to wipe free space.
+            </span>
+          ) : null}
         </div>
       </section>
       <ToolOutput result={result} runningLabel={isRunning ? "Windows cipher is running. This can take a long time on large drives." : undefined} errorMessage={wipeError} />
       <MaintenanceConfirmDialog
         open={showWipeConfirmation}
         onOpenChange={setShowWipeConfirmation}
-        title="Start free-space wipe?"
+        title="Wipe free space?"
         description={`This will run Windows cipher against ${selectedDrive?.rootPath ?? "the selected drive"} and can take a long time. Existing files are kept in place, but deleted-file traces in free space are overwritten where Windows allows it.`}
-        confirmLabel="Start Wipe"
+        confirmLabel="Wipe Free Space"
         onConfirm={() => void runWipe()}
         onDontShowAgain={() => { setSkipWipeConfirmation(true); void runWipe() }}
         isBusy={isRunning}
@@ -309,6 +324,7 @@ export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdminis
   const [isRunning, setIsRunning] = useState(false)
   const [result, setResult] = useState<MaintenanceToolResult | null>(null)
   const [optimizationError, setOptimizationError] = useState("")
+  const [hasAnalyzed, setHasAnalyzed] = useState(false)
   const selectedDrive = useSelectedDrive(drives, selectedDriveRoot)
 
   useEffect(() => {
@@ -319,6 +335,7 @@ export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdminis
     if (isRunning) { toast.error("Wait for the current drive operation to finish before changing drives."); return }
     setSelectedDriveRoot(root)
     setOptimizationError("")
+    setHasAnalyzed(false)
   }
 
   function refreshDrives() {
@@ -339,6 +356,7 @@ export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdminis
       const response = await invoke<MaintenanceToolResult>("maintenance.optimizeDrive", { driveRoot: selectedDrive.rootPath, mode })
       setResult(response)
       setOptimizationError("")
+      if (mode === "analyze") setHasAnalyzed(true)
       toast[response.ok ? "success" : "error"](response.message)
     } catch (error) {
       setOptimizationError(showMaintenanceError(error, "Drive optimization failed."))
@@ -363,25 +381,44 @@ export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdminis
         onRefresh={refreshDrives}
       />
       <section className="section-surface">
-        <div className="flex items-center gap-2.5">
-          <RefreshCcw className="size-4 shrink-0 text-muted" aria-hidden />
-          <span className="font-display text-sm font-semibold tracking-tight text-primary">Windows Drive Optimization</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <RefreshCcw className="size-4 shrink-0 text-muted" aria-hidden />
+            <span className="font-display text-sm font-semibold tracking-tight text-primary">Drive Optimizer</span>
+            <RiskBadge level="Admin" />
+          </div>
+          <ScanStepIndicator current={hasAnalyzed ? "review" : "scan"} applyLabel="Optimize" />
         </div>
+        <p className="mt-2 text-sm text-secondary">Analyze the drive first. SSDs are sent a TRIM command; hard drives are defragmented and optimized.</p>
         <div className="mt-3 grid grid-cols-3 divide-x divide-border border-y border-border">
           <MetricTile label="Drive" value={selectedDrive?.rootPath ?? "None"} />
           <MetricTile label="Total size" value={selectedDrive?.totalSizeDisplay ?? "Unknown"} />
           <MetricTile label="Drive type" value={selectedDrive?.driveType ?? "Unknown"} />
         </div>
-        <div className="mt-3 flex gap-2">
-          <Button variant="secondary" onClick={() => void runOptimization("analyze")} disabled={!isAdministrator || !selectedDrive || isRunning}>
-            <ScanLine data-icon="inline-start" />
-            Analyze
-          </Button>
-          <Button onClick={() => void runOptimization("optimize")} disabled={!isAdministrator || !selectedDrive || isRunning}>
-            <Wrench data-icon="inline-start" />
-            Optimize / Trim
-          </Button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <ActionWithReason disabled={!isAdministrator || !selectedDrive || isRunning} reason={!isAdministrator ? "Restart as Administrator" : !selectedDrive ? "Select a ready drive first" : "Wait for the current operation to finish"}>
+            <Button onClick={() => void runOptimization("analyze")} disabled={!isAdministrator || !selectedDrive || isRunning}>
+              <ScanLine data-icon="inline-start" />
+              {isRunning ? "Working..." : "Analyze Drive"}
+            </Button>
+          </ActionWithReason>
+          {hasAnalyzed ? (
+            <ActionWithReason disabled={!isAdministrator || !selectedDrive || isRunning} reason={!isAdministrator ? "Restart as Administrator" : !selectedDrive ? "Select a ready drive first" : "Wait for the current operation to finish"}>
+              <Button variant="secondary" onClick={() => void runOptimization("optimize")} disabled={!isAdministrator || !selectedDrive || isRunning}>
+                <Wrench data-icon="inline-start" />
+                Optimize / Trim
+              </Button>
+            </ActionWithReason>
+          ) : null}
         </div>
+        {!isAdministrator ? (
+          <span className="mt-3 inline-flex items-center gap-1.5 text-xs text-amber-300">
+            <ShieldAlert className="size-3.5" aria-hidden />
+            Administrator mode is required to analyze or optimize drives.
+          </span>
+        ) : !hasAnalyzed ? (
+          <p className="mt-3 text-xs text-muted">Optimize / Trim becomes available after you analyze the drive.</p>
+        ) : null}
       </section>
       <ToolOutput result={result} runningLabel={isRunning ? "Windows defrag is running with the selected mode." : undefined} errorMessage={optimizationError} />
     </MaintenanceFrame>
@@ -593,20 +630,27 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
         />
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button variant="outline" onClick={() => setCleanupItemsSelected(selectableCategories, !allSelectableItemsSelected)} disabled={selectableCategories.length === 0 || isScanning || isCleaning}>
-          <CheckCircle2 data-icon="inline-start" />
-          {allSelectableItemsSelected ? "Clear All" : "Select All"}
-        </Button>
-        <Button variant="outline" onClick={() => void scanCleanup()} disabled={isScanning || isCleaning}>
-          <RefreshCcw data-icon="inline-start" />
-          {isScanning ? "Scanning..." : "Rescan"}
-        </Button>
-        <Button onClick={() => requestCleanup()} disabled={!canRunCleanup}>
-          <Trash2 data-icon="inline-start" />
-          {isCleaning ? "Cleaning..." : "Clean Selected"}
-        </Button>
-      </div>
+      {hasResults ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <ScanStepIndicator current={lastRun ? "apply" : selectedCategories.length > 0 ? "apply" : "review"} applyLabel="Clean" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => setCleanupItemsSelected(selectableCategories, !allSelectableItemsSelected)} disabled={selectableCategories.length === 0 || isScanning || isCleaning}>
+              <CheckCircle2 data-icon="inline-start" />
+              {allSelectableItemsSelected ? "Clear All" : "Select All"}
+            </Button>
+            <Button variant="outline" onClick={() => void scanCleanup()} disabled={isScanning || isCleaning}>
+              <RefreshCcw data-icon="inline-start" />
+              {isScanning ? "Scanning..." : "Rescan"}
+            </Button>
+            <ActionWithReason disabled={!canRunCleanup} reason={selectedCategories.length === 0 ? "Select an item" : cleanupNeedsAdministrator && !isAdministrator ? "Restart as Administrator" : "Wait for the current scan to finish"}>
+              <Button onClick={() => requestCleanup()} disabled={!canRunCleanup}>
+                <Trash2 data-icon="inline-start" />
+                {isCleaning ? "Cleaning..." : "Clean Selected"}
+              </Button>
+            </ActionWithReason>
+          </div>
+        </div>
+      ) : null}
 
       {!hasResults ? (
         <section className="rounded-md border border-border bg-transparent px-4 py-10">
@@ -1219,16 +1263,23 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
         />
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button variant="outline" onClick={() => void scanRegistry()} disabled={isScanning || isFixing}>
-          <RefreshCcw data-icon="inline-start" />
-          {isScanning ? "Scanning..." : "Rescan"}
-        </Button>
-        <Button onClick={() => requestFixRegistry()} disabled={!canFix}>
-          <Wrench data-icon="inline-start" />
-          {isFixing ? "Fixing..." : "Fix Selected Issues"}
-        </Button>
-      </div>
+      {hasResults ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <ScanStepIndicator current={lastClean ? "apply" : selectedIssues.length > 0 ? "apply" : "review"} applyLabel="Fix" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => void scanRegistry()} disabled={isScanning || isFixing}>
+              <RefreshCcw data-icon="inline-start" />
+              {isScanning ? "Scanning..." : "Rescan"}
+            </Button>
+            <ActionWithReason disabled={!canFix} reason={selectedIssues.length === 0 ? "Select an item" : registryNeedsAdministrator && !isAdministrator ? "Restart as Administrator" : "Wait for the current scan to finish"}>
+              <Button onClick={() => requestFixRegistry()} disabled={!canFix}>
+                <Wrench data-icon="inline-start" />
+                {isFixing ? "Fixing..." : "Fix Selected Issues"}
+              </Button>
+            </ActionWithReason>
+          </div>
+        </div>
+      ) : null}
 
       {!hasResults ? (
         <section className="rounded-md border border-border bg-transparent px-4 py-10">
@@ -1236,7 +1287,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Database className="size-5" aria-hidden />
             </div>
-            <p className="mt-3 text-sm text-secondary">Scan for invalid file references, uninstall entries, COM servers, file associations, app paths, and shared DLL records.</p>
+            <p className="mt-3 text-sm text-secondary">Scan for invalid file references, uninstall entries, COM servers, file associations, app paths, and shared DLL records. FileLocker saves a backup before any fix.</p>
             <Button className="mt-4" onClick={() => void scanRegistry()} disabled={isScanning}>
               <ScanLine data-icon="inline-start" />
               {isScanning ? "Scanning..." : "Run Scan"}
@@ -1246,6 +1297,11 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_330px]">
           <div className="min-w-0 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-display text-sm font-semibold tracking-tight text-primary">Registry Cleanup</span>
+              <RiskBadge level={registryNeedsAdministrator ? "Admin" : "Review"} />
+              <span className="text-xs text-muted">FileLocker creates a .reg backup before every fix.</span>
+            </div>
             <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
               <InstalledAppSummaryCard label="Issues Found" value={registryScanError ? "Failed" : String(scan?.issueCount ?? 0)} description="Registry issues detected" icon={<AlertTriangle className="size-5" aria-hidden />} tone="blue" />
               <InstalledAppSummaryCard label="Selected for Fix" value={String(selectedIssues.length)} description={selectedIssues.length === 1 ? "One issue selected" : "Issues selected"} icon={<Wrench className="size-5" aria-hidden />} tone="blue" />
@@ -1653,7 +1709,7 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
   const [trustFilter] = useState<StartupTrustFilter>("all")
   const [locationFilter, setLocationFilter] = useState("all")
   const [sourceFilter, setSourceFilter] = useState("all")
-  const [impactFilter, setImpactFilter] = useState("all")
+  const [impactFilter, setImpactFilter] = useState("High")
   const [ignoredFilter, setIgnoredFilter] = useState<StartupIgnoredFilter>("active")
   const [sortKey, setSortKey] = useState<StartupSortKey>("risk")
   const [isScanning, setIsScanning] = useState(false)
@@ -1698,6 +1754,8 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
     try {
       const response = await invoke<StartupScanResult>("maintenance.scanStartup", {})
       setScan(response)
+      // Default to the high-impact view, but fall back to all items when there is nothing high-impact to review.
+      setImpactFilter((current) => current === "High" && !response.items.some((item) => getStartupImpactLevel(item) === "High") ? "all" : current)
       setSelectedItemId((current) => current && response.items.some((item) => item.id === current) ? current : response.items[0]?.id ?? "")
     } catch (error) {
       const message = error instanceof Error ? error.message : "Startup scan failed."
@@ -1815,7 +1873,7 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Power className="size-5" aria-hidden />
             </div>
-            <p className="mt-3 text-sm text-secondary">Run a startup scan to load startup entries and review their status.</p>
+            <p className="mt-3 text-sm text-secondary">Run a startup scan to review startup entries. Results open on high-impact apps first so you can disable the ones that slow boot.</p>
             <Button className="mt-4" onClick={() => void scanStartup()} disabled={isScanning}>
               <ScanLine data-icon="inline-start" />
               {isScanning ? "Scanning..." : "Run Scan"}
@@ -2044,10 +2102,14 @@ function StartupSummaryPanel({
     <section className="rounded-md border border-border bg-transparent px-4 py-3.5">
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
-          <div className="font-display text-base font-semibold tracking-tight text-primary">Startup Impact Summary</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-display text-base font-semibold tracking-tight text-primary">Startup Impact Summary</span>
+            <RiskBadge level="Review" />
+          </div>
           <div className="mt-1 text-sm text-secondary">
             {scan ? `${scan.items.length} programs found` : "No scan has run"} <span className="px-1 text-muted">•</span> {scan ? `${scan.enabledCount} enabled` : "Run a scan to load entries"}
           </div>
+          {scan ? <ScanStepIndicator current="review" applyLabel="Apply" className="mt-2" /> : null}
         </div>
         <div className="flex flex-wrap items-center gap-4">
           <StartupSummaryMetric label="High Impact" value={impactSummary.High} tone="high" />
@@ -2560,20 +2622,30 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
 
   return (
     <MaintenanceFrame>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button variant="outline" onClick={() => void scanInstalledApps()} disabled={isAppManagerBusy}>
-          <RefreshCcw data-icon="inline-start" />
-          {isScanningApps ? "Scanning..." : "Rescan"}
-        </Button>
-        <Button variant="destructive" onClick={() => selectedApp && setPendingUninstall(selectedApp)} disabled={!canUninstallSelected}>
-          <Trash2 data-icon="inline-start" />
-          Uninstall Selected
-        </Button>
-        <Button variant="outline" onClick={() => void exportVisibleApps()} disabled={visibleApps.length === 0 || isAppManagerBusy}>
-          <Download data-icon="inline-start" />
-          Export List
-        </Button>
-      </div>
+      {hasResults ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <ScanStepIndicator current="review" applyLabel="Uninstall" />
+            <RiskBadge level="Destructive" />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => void scanInstalledApps()} disabled={isAppManagerBusy}>
+              <RefreshCcw data-icon="inline-start" />
+              {isScanningApps ? "Scanning..." : "Rescan"}
+            </Button>
+            <ActionWithReason disabled={!canUninstallSelected} reason={!selectedApp ? "Select an item" : !selectedApp.canLaunchUninstaller ? "No visible uninstaller for this app" : "Wait for the current scan to finish"}>
+              <Button variant="destructive" onClick={() => selectedApp && setPendingUninstall(selectedApp)} disabled={!canUninstallSelected}>
+                <Trash2 data-icon="inline-start" />
+                Uninstall Selected
+              </Button>
+            </ActionWithReason>
+            <Button variant="outline" onClick={() => void exportVisibleApps()} disabled={visibleApps.length === 0 || isAppManagerBusy}>
+              <Download data-icon="inline-start" />
+              Export List
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {!hasResults ? (
         <section className="rounded-md border border-border bg-transparent px-4 py-10">
@@ -2581,10 +2653,10 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
             <div className="flex size-11 items-center justify-center rounded-md border border-border-strong bg-accent/10 text-accent">
               <Package className="size-5" aria-hidden />
             </div>
-            <p className="mt-3 text-sm text-secondary">Scan to list installed apps, inspect uninstall details, and find leftover cleanup opportunities.</p>
+            <p className="mt-3 text-sm text-secondary">Scan to list installed apps, inspect uninstall details, and find leftover cleanup opportunities. FileLocker opens the vendor uninstaller and never silently removes apps.</p>
             <Button className="mt-4" onClick={() => void scanInstalledApps()} disabled={isScanningApps}>
               <ScanLine data-icon="inline-start" />
-              {isScanningApps ? "Scanning..." : "Run Scan"}
+              {isScanningApps ? "Scanning..." : "Scan installed apps"}
             </Button>
           </div>
         </section>
@@ -3208,6 +3280,99 @@ function MaintenanceFrame({ children }: { children: React.ReactNode }) {
     <div className="security-page">
       <div className="flex flex-col gap-3">{children}</div>
     </div>
+  )
+}
+
+// Local shared safety scale used across all system-care pages.
+// Kept in this file so the system-care unit owns its own labeling.
+type RiskLevel = "Safe" | "Review" | "Admin" | "Destructive" | "Advanced"
+
+function getRiskBadgeClass(level: RiskLevel) {
+  switch (level) {
+    case "Safe":
+      return "border-accent-green/35 bg-accent-green/10 text-accent-green"
+    case "Review":
+      return "border-amber-400/45 bg-amber-400/12 text-amber-200"
+    case "Admin":
+      return "border-accent/35 bg-accent/12 text-accent"
+    case "Advanced":
+      return "border-border-strong bg-bg-subtle text-secondary"
+    case "Destructive":
+      return "border-red-400/45 bg-red-500/14 text-red-200"
+  }
+}
+
+function RiskBadge({ level, className }: { level: RiskLevel; className?: string }) {
+  const Icon = level === "Destructive" ? AlertTriangle : level === "Admin" ? ShieldAlert : level === "Safe" ? ShieldCheck : Info
+  return (
+    <Badge variant="outline" className={cn("h-6 w-fit items-center gap-1 px-2 text-xs", getRiskBadgeClass(level), className)}>
+      <Icon className="size-3.5" aria-hidden />
+      {level}
+    </Badge>
+  )
+}
+
+// Scan -> Review -> Apply progress for system-modifying tools.
+type MaintenanceStep = "scan" | "review" | "apply"
+
+function ScanStepIndicator({ current, applyLabel = "Apply", className }: { current: MaintenanceStep; applyLabel?: string; className?: string }) {
+  const steps: Array<{ key: MaintenanceStep; label: string }> = [
+    { key: "scan", label: "Scan" },
+    { key: "review", label: "Review" },
+    { key: "apply", label: applyLabel },
+  ]
+  const activeIndex = steps.findIndex((step) => step.key === current)
+  return (
+    <ol className={cn("flex flex-wrap items-center gap-1.5 text-xs font-medium", className)} aria-label="Scan, review, apply progress">
+      {steps.map((step, index) => {
+        const state = index < activeIndex ? "done" : index === activeIndex ? "current" : "upcoming"
+        return (
+          <li key={step.key} className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-md border px-2 py-1",
+                state === "current" && "border-accent/55 bg-accent/12 text-accent",
+                state === "done" && "border-accent-green/35 bg-accent-green/10 text-accent-green",
+                state === "upcoming" && "border-border/70 bg-bg-subtle/50 text-muted"
+              )}
+            >
+              <span className={cn(
+                "flex size-4 items-center justify-center rounded-full text-[10px] font-semibold",
+                state === "current" && "bg-accent text-[#08111f]",
+                state === "done" && "bg-accent-green/80 text-[#08111f]",
+                state === "upcoming" && "bg-border/70 text-secondary"
+              )}>{index + 1}</span>
+              {step.label}
+            </span>
+            {index < steps.length - 1 ? <span className="text-muted" aria-hidden>›</span> : null}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+// Wraps a primary action so a disabled button still surfaces its reason via Tooltip.
+// (Radix needs a focusable wrapper because a disabled <button> swallows pointer events.)
+function ActionWithReason({
+  disabled,
+  reason,
+  children,
+}: {
+  disabled: boolean
+  reason: string
+  children: React.ReactNode
+}) {
+  if (!disabled || !reason) return <>{children}</>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-not-allowed" tabIndex={0}>
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{reason}</TooltipContent>
+    </Tooltip>
   )
 }
 
