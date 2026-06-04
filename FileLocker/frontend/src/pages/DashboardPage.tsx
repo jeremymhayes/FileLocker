@@ -142,6 +142,14 @@ const ACTIVITY_ICONS = {
   delete:   Trash2,
 } as const
 
+const QUICK_ACTIONS: Array<{ page: PageKey; label: string; detail: string; icon: typeof LockKeyhole; tone: "blue" | "teal" | "purple" | "orange" | "red" }> = [
+  { page: "encrypt", label: "Encrypt", detail: "Protect files", icon: LockKeyhole, tone: "blue" },
+  { page: "hash", label: "Hash", detail: "Verify integrity", icon: Hash, tone: "teal" },
+  { page: "encode", label: "Encode", detail: "Convert text", icon: Binary, tone: "orange" },
+  { page: "metadata", label: "Metadata", detail: "Inspect privacy", icon: Fingerprint, tone: "purple" },
+  { page: "secure-delete", label: "Delete", detail: "Remove safely", icon: Trash2, tone: "red" },
+]
+
 const dashboardEncryptDefaults = {
   algorithm: DEFAULT_ENCRYPTION_ALGORITHM_ID,
   compressFiles: true,
@@ -609,6 +617,42 @@ function ActivitySection({
           </div>
         ))
       )}
+    </section>
+  )
+}
+
+function QuickActionsPanel({ onNavigate }: { onNavigate: (page: PageKey) => void }) {
+  return (
+    <section className="px-4 py-3">
+      <div className="mb-3">
+        <h2 className="font-display text-base font-semibold leading-[1.3] text-primary">Quick actions</h2>
+        <p className="mt-1 text-[13px] leading-snug text-secondary">Jump straight to the common protection tools.</p>
+      </div>
+      <div className="grid gap-2">
+        {QUICK_ACTIONS.map((item) => {
+          const Icon = item.icon
+          const tone = TONE_COLORS[item.tone] ?? TONE_COLORS.blue
+          return (
+            <button
+              key={item.page}
+              type="button"
+              className="grid min-h-11 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2 text-left transition-colors hover:border-border-accent hover:bg-bg-surface-hover/60"
+              onClick={() => onNavigate(item.page)}
+            >
+              <span
+                className="flex size-8 shrink-0 items-center justify-center rounded-md border"
+                style={{ color: tone, background: `${tone}1f`, borderColor: `${tone}33` }}
+              >
+                <Icon className="size-4" aria-hidden />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate font-display text-sm font-semibold leading-tight text-primary">{item.label}</span>
+                <span className="mt-0.5 block truncate text-xs text-secondary">{item.detail}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
     </section>
   )
 }
@@ -1412,6 +1456,9 @@ export function DashboardPage({
 
         {/* ── Aside ── */}
         <aside className="flex flex-col min-w-0 border-t border-border">
+          <div className="border-b border-border">
+            <QuickActionsPanel onNavigate={onNavigate} />
+          </div>
           <div className="border-b border-border">
             <StorageSavedCard dashboard={dashboard} />
           </div>
