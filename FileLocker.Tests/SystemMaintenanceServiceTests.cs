@@ -447,6 +447,45 @@ public sealed class SystemMaintenanceServiceTests
     }
 
     [Fact]
+    public void CreateCompletedStatus_PreservesUnknownPass()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\");
+
+        FreeSpaceWipeProgress completed = FreeSpaceWipeOperationService.CreateCompletedStatus(running);
+
+        Assert.Equal("Completed", completed.state);
+        Assert.Equal("Unknown", completed.pass);
+        Assert.DoesNotContain("Complete", completed.pass, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateCancelledStatus_ReportsIncompleteWipeAndCleanupStatus()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\");
+
+        FreeSpaceWipeProgress cancelled = FreeSpaceWipeOperationService.CreateCancelledStatus(running, "cleanupFailed", "Residual cipher temporary files may remain.");
+
+        Assert.Equal("Cancelled", cancelled.state);
+        Assert.Equal("cleanupFailed", cancelled.cleanupStatus);
+        Assert.Contains("incomplete", cancelled.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Residual", cancelled.message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("EFSTMPWP", true)]
+    [InlineData("efstmp-123.tmp", true)]
+    [InlineData("EFSTMP_01.backup", true)]
+    [InlineData("EFSTMP", false)]
+    [InlineData("EFSTMP backup", false)]
+    [InlineData("EFSTMP#backup", false)]
+    [InlineData("cipher backups", false)]
+    [InlineData("user-cipher-folder", false)]
+    public void IsKnownCipherTemporaryDirectoryName_OnlyAllowsConservativeEfsTempPattern(string directoryName, bool expected)
+    {
+        Assert.Equal(expected, FreeSpaceWipeOperationService.IsKnownCipherTemporaryDirectoryName(directoryName));
+    }
+
+    [Fact]
     public void EstimateWipeDuration_UsesWideHddRange()
     {
         FreeSpaceWipeEstimate estimate = FreeSpaceWipeOperationService.EstimateWipe(412L * 1024 * 1024 * 1024, "HDD");

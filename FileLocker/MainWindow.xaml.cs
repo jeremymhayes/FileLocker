@@ -309,6 +309,7 @@ namespace FileLocker
             _isWindowClosed = true;
             _processingCancellation?.Cancel();
             _preflightRefreshCancellation?.Cancel();
+            CancelFreeSpaceWipeForShutdown();
             CancelCurrentHashGeneration();
             DetachWebViewHandlers();
         }

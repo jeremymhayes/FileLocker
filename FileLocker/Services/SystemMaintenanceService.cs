@@ -137,6 +137,8 @@ internal static class SystemMaintenanceService
         }
     }
 
+    internal static void RequireAdministratorForBridge(string operationName) => RequireAdministrator(operationName);
+
     internal static async Task<MaintenanceToolResult> OptimizeDriveAsync(string? driveRoot, string? mode)
     {
         string root = NormalizeDriveRoot(driveRoot);

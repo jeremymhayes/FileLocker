@@ -53,6 +53,10 @@ namespace FileLocker
 
         private IReadOnlyList<string> _launchPaths = [];
         private string? _launchAction;
+        private readonly object _freeSpaceWipeLock = new();
+        private FreeSpaceWipeProgress? _freeSpaceWipeStatus;
+        private CancellationTokenSource? _freeSpaceWipeCancellation;
+        private Task? _freeSpaceWipeTask;
 
 #if DEBUG
         private const bool IsDebugBuild = true;
@@ -316,6 +320,9 @@ namespace FileLocker
                 "maintenance.runCleanup" => RunBridgeWorkerAsync(() => RunCleanupFromBridge(ReadPayload<MaintenanceCleanupRequest>(request.Payload))),
                 "maintenance.optimizeDrive" => OptimizeDriveFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
                 "maintenance.wipeFreeSpace" => WipeFreeSpaceFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.startWipeFreeSpace" => StartWipeFreeSpaceFromBridge(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.getWipeFreeSpaceStatus" => Task.FromResult<object?>(GetWipeFreeSpaceStatusFromBridge()),
+                "maintenance.cancelWipeFreeSpace" => Task.FromResult<object?>(CancelWipeFreeSpaceFromBridge()),
                 "maintenance.scanRegistry" => RunBridgeWorkerAsync(() => SystemMaintenanceService.ScanRegistry()),
                 "maintenance.cleanRegistry" => RunBridgeWorkerAsync(() => CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
                 "maintenance.scanStartup" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanStartup()),
@@ -1998,6 +2005,101 @@ namespace FileLocker
         private async Task<object?> WipeFreeSpaceFromBridgeAsync(MaintenanceDriveActionRequest request)
         {
             return await SystemMaintenanceService.WipeFreeSpaceAsync(request.DriveRoot, request.Confirmation);
+        }
+
+        private Task<object?> StartWipeFreeSpaceFromBridge(MaintenanceDriveActionRequest request)
+        {
+            string root = SystemMaintenanceService.NormalizeDriveRoot(request.DriveRoot);
+            SystemMaintenanceService.RequireAdministratorForBridge("Free-space wiping");
+            if (!string.Equals(request.Confirmation, "WIPE FREE SPACE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Confirm the free-space wipe before starting.");
+            }
+
+            FreeSpaceWipeProgress initialStatus;
+            CancellationTokenSource cancellation;
+            string operationId = Guid.NewGuid().ToString("N");
+            lock (_freeSpaceWipeLock)
+            {
+                if (_freeSpaceWipeTask is { IsCompleted: false })
+                {
+                    throw new InvalidOperationException("A free-space wipe is already running.");
+                }
+
+                _freeSpaceWipeCancellation?.Dispose();
+                cancellation = new CancellationTokenSource();
+                _freeSpaceWipeCancellation = cancellation;
+                initialStatus = FreeSpaceWipeOperationService.CreateInitialStatus(operationId, root);
+                _freeSpaceWipeStatus = initialStatus;
+                _freeSpaceWipeTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        FreeSpaceWipeProgress final = await FreeSpaceWipeOperationService.RunCipherAsync(
+                            operationId,
+                            root,
+                            status => UpdateFreeSpaceWipeStatus(status),
+                            cancellation.Token);
+                        UpdateFreeSpaceWipeStatus(final);
+                    }
+                    catch (Exception ex)
+                    {
+                        FreeSpaceWipeProgress current;
+                        lock (_freeSpaceWipeLock)
+                        {
+                            current = _freeSpaceWipeStatus ?? FreeSpaceWipeOperationService.CreateInitialStatus(operationId, root);
+                        }
+
+                        FreeSpaceWipeProgress failed = FreeSpaceWipeOperationService.CreateFailedStatus(
+                            current,
+                            $"Free-space wipe failed for {root}. {ex.Message}");
+                        UpdateFreeSpaceWipeStatus(failed);
+                    }
+                });
+            }
+
+            PostFreeSpaceWipeStatus(initialStatus);
+            return Task.FromResult<object?>(initialStatus);
+        }
+
+        private object? GetWipeFreeSpaceStatusFromBridge()
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                return _freeSpaceWipeStatus;
+            }
+        }
+
+        private object? CancelWipeFreeSpaceFromBridge()
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeCancellation?.Cancel();
+                return _freeSpaceWipeStatus;
+            }
+        }
+
+        private void CancelFreeSpaceWipeForShutdown()
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeCancellation?.Cancel();
+            }
+        }
+
+        private void UpdateFreeSpaceWipeStatus(FreeSpaceWipeProgress status)
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeStatus = status;
+            }
+
+            PostFreeSpaceWipeStatus(status);
+        }
+
+        private void PostFreeSpaceWipeStatus(FreeSpaceWipeProgress status)
+        {
+            PostBridgeEvent(new { type = "maintenanceWipeStatus", status });
         }
 
         private static object RunCleanupFromBridge(MaintenanceCleanupRequest request)
