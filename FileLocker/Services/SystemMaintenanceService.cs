@@ -287,6 +287,12 @@ internal static class SystemMaintenanceService
         bool isReady = drive.IsReady;
         long totalSizeBytes = isReady ? drive.TotalSize : 0;
         long freeSpaceBytes = isReady ? drive.AvailableFreeSpace : 0;
+        DriveMediaInfo media = !isReady
+            ? new DriveMediaInfo("Unknown", "Unsupported", "The drive is not ready.")
+            : drive.DriveType == DriveType.Removable
+                ? DriveMediaTypeDetector.Removable()
+                : DriveMediaTypeDetector.DetectForDriveRoot(drive.Name);
+
         return new MaintenanceDrive(
             drive.Name,
             string.IsNullOrWhiteSpace(drive.VolumeLabel) ? drive.Name : $"{drive.VolumeLabel} ({drive.Name.TrimEnd('\\')})",
@@ -297,7 +303,10 @@ internal static class SystemMaintenanceService
             FormatFileSize(totalSizeBytes),
             freeSpaceBytes,
             FormatFileSize(freeSpaceBytes),
-            isReady);
+            isReady,
+            media.mediaType,
+            media.mediaDetectionStatus,
+            media.mediaDescription);
     }
 
     private static HashSet<string> NormalizeCategoryIds(IReadOnlyCollection<string>? categoryIds)
@@ -2157,7 +2166,10 @@ internal sealed record MaintenanceDrive(
     string totalSizeDisplay,
     long freeSpaceBytes,
     string freeSpaceDisplay,
-    bool isReady);
+    bool isReady,
+    string mediaType,
+    string mediaDetectionStatus,
+    string mediaDescription);
 
 internal sealed record MaintenanceDriveList(MaintenanceDrive[] drives);
 

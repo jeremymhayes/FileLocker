@@ -356,4 +356,60 @@ public sealed class SystemMaintenanceServiceTests
 
         Assert.False(SystemMaintenanceService.IsMissingPath(adsPath));
     }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsHddForSingleHddPhysicalDisk()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3], physicalDiskCount: 1, timedOut: false, unsupported: false);
+
+        Assert.Equal("HDD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("traditional hard drive", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsSsdForSingleSsdPhysicalDisk()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([4], physicalDiskCount: 1, timedOut: false, unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("TRIM", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsMixedForConflictingPhysicalDisks()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3, 4], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Mixed", media.mediaType);
+        Assert.Equal("Mixed", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownForMultiDiskSameMediaVolume()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3, 3], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("Unknown", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownWhenOnlyOneOfMultipleDisksResolves()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("Unknown", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownForTimeout()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([], physicalDiskCount: 0, timedOut: true, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("TimedOut", media.mediaDetectionStatus);
+    }
 }
