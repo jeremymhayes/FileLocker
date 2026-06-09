@@ -108,10 +108,12 @@ The right-side review panel should be the core inspector. It should add value be
 - Estimated write volume: `freeSpaceBytes * 3`, because cipher performs three overwrite passes.
 - Estimated time range from selected drive free-space bytes and media type.
 - Operation: Windows cipher free-space wipe.
-- Media-specific recommendation when media type is available:
+- Media-specific recommendation based on the resolved `mediaType`:
   - HDD: good fit; free-space overwrite works as intended on traditional hard drives.
   - SSD: warn or discourage; TRIM and wear leveling limit the usefulness of free-space overwrite and add write wear.
-  - Unknown: neutral copy explaining that results vary by drive/media.
+  - Removable: limited-benefit guidance because USB flash media can be wear-leveled like SSD storage.
+  - Mixed: neutral caution that the volume maps to multiple physical media types.
+  - Unknown: neutral copy explaining that FileLocker could not confidently identify the underlying media.
 
 The warning copy should be direct:
 
@@ -158,12 +160,19 @@ These are directly related to the page and are in scope for the revamp because t
 
 ### Media Type
 
-Add optional media information to `MaintenanceDrive`:
+Add media information to `MaintenanceDrive`:
 
-- `mediaType`: `SSD`, `HDD`, `Removable`, or `Unknown`.
-- `mediaDescription` or `mediaWarning` only if needed.
+- `mediaType`: `SSD`, `HDD`, `Removable`, `Mixed`, or `Unknown`.
+- `mediaDetectionStatus`: `Detected`, `Mixed`, `Unsupported`, `TimedOut`, or `Unknown`.
+- `mediaDescription` for the user-facing explanation when the type is not a straightforward HDD.
 
-The frontend should gracefully handle unknown media type, but the design expects the drive list and review panel to surface media-aware guidance whenever the host can detect it.
+Media type is a property of the physical disk, while the UI selects a volume such as `D:\`. The host must resolve volume to partition to physical disk before labeling a volume as HDD or SSD. Use the Storage WMI namespace, with `MSFT_PhysicalDisk.MediaType` as the preferred source (`3` = HDD, `4` = SSD). Do not use `Win32_DiskDrive.MediaType` as the deciding source because it commonly reports generic text such as `Fixed hard disk` for both HDDs and SSDs.
+
+Return `Unknown` when the mapping cannot be resolved, when the WMI query fails, when the query times out, or when the volume maps to zero physical disks. Return `Mixed` when the selected volume maps to multiple physical disks with conflicting media types, such as Storage Spaces, striped/spanned volumes, virtual disks, or other composite storage. The frontend must never guess SSD/HDD labels from `DriveType`, `driveFormat`, or volume name.
+
+Drive enumeration must not hang on media detection. Run media lookup with a short timeout and return drives with `Unknown` media if detection is slow.
+
+`Status` in the drive table is a frontend composite, not a raw backend field. It is derived from readiness, format support, admin state, running state, and media guidance. Examples: `Ready`, `Running`, `Unsupported`, `Limited`, `Unknown media`.
 
 ### Estimate
 
@@ -172,21 +181,29 @@ The frontend can compute a rough estimate from existing free-space data:
 - write volume: `freeSpaceBytes * 3`.
 - time range: conservative assumptions based on media type when known.
 
-For HDDs, a broad estimate such as `~2-5 hours` for 412 GB free is acceptable. If media type is unknown, use less precise copy and label the estimate as rough.
+For HDDs, a broad estimate such as `~2-5+ hours` for 412 GB free is acceptable. Keep ranges intentionally wide because `cipher.exe` can be much slower than raw sequential throughput due to temporary file creation and disk-full behavior, especially on old, busy, or nearly full drives. If media type is unknown, use less precise copy and label the estimate as rough.
 
 ### Progress and Cancel
 
-Current `maintenance.wipeFreeSpace` returns after the process exits, so the revamp needs a small directly related operation enhancement for `cipher.exe`.
+Current `maintenance.wipeFreeSpace` returns after the process exits, so the revamp needs a directly related operation enhancement for `cipher.exe`. This is more than a cosmetic UI change: the main process must own the running operation, stream status to the renderer, and allow the renderer to request cancellation.
 
 The implementation should support:
 
+- one active free-space wipe at a time,
+- an operation id that the page can reattach to after navigation or remount,
 - running-state updates while the process is active,
 - coarse pass status derived from real command output where possible,
 - a fallback indeterminate running state if pass parsing is unavailable,
 - user-triggered cancellation by stopping the running process tree,
 - a cancelled report that clearly says the wipe is incomplete.
 
-The progress UI must not claim byte-level precision unless the backend can support it. A three-pass indicator is acceptable when it reflects actual cipher output.
+Running state cannot live only in React component state. It must be held by the host or a bridge-level store so users can leave Partition Cleaner and return while a multi-hour wipe is still running.
+
+Progress events should use the existing bridge event mechanism or a similarly explicit event channel. The design expects invoke-for-start plus event-for-status, not a single invoke response that blocks all UI updates until the process exits.
+
+Pass parsing is best effort. `cipher.exe` output strings such as the 0x00, 0xFF, and random-number passes can be localized, so the parser must fall back to an indeterminate running state when output does not match tested patterns. The progress UI must not claim byte-level precision unless the backend can support it. A three-pass indicator is acceptable only when it reflects actual parsed cipher output.
+
+Cancellation uses process termination of the running `cipher.exe` process tree. After cancellation, FileLocker attempts best-effort cleanup of cipher-created temporary fill files and reports `cleanupSucceeded`, `cleanupFailed`, `notNeeded`, or `unknown`. The cleanup locator must not assume a single hardcoded folder name; it should identify likely cipher temporary artifacts conservatively and report residual files honestly when they remain.
 
 ## Components and Code Shape
 
@@ -217,7 +234,7 @@ Reuse existing local utilities where useful:
 - Loading drives: compact loading row or inline status.
 - No drives: clear empty state with refresh action.
 - Drive load failed: inline error with retry.
-- Not administrator: action area explains that elevation is required and offers restart.
+- Not administrator: action area explains that elevation is required and offers restart. Copy must state that restarting as administrator relaunches FileLocker and any in-progress non-elevated UI state is not preserved.
 - Selected drive unavailable: keep row visible, disabled, and explain why.
 - Wipe failed: report area shows service message and output.
 - Wipe timed out: report area says the operation timed out and did not complete.
@@ -249,10 +266,19 @@ After implementation:
    - running state,
    - completed output,
    - error state where practical.
-4. Confirm no unrelated pages were intentionally changed.
+4. Add or update test fixtures/mocks for:
+   - HDD media guidance,
+   - SSD media guidance,
+   - Removable media guidance,
+   - Mixed and Unknown media fallback,
+   - unsupported RAW/unformatted drive,
+   - running state,
+   - cancel confirmation,
+   - cancelled report with cleanup status.
+5. Confirm no unrelated pages were intentionally changed.
 
 ## Implementation Decisions
 
-- Add media type to the drive payload when the host can detect it, with `Unknown` as the safe fallback.
-- Implement real running/cancel/report behavior for the free-space wipe rather than rendering fake progress controls.
+- Add media type to the drive payload through conservative volume-to-physical-disk detection, with `Mixed` and `Unknown` as safe fallbacks.
+- Implement host-owned running/cancel/report behavior for the free-space wipe rather than rendering fake progress controls.
 - Keep the route/sidebar label as `Partition Cleaner`; use `Free-Space Sanitizer` as the page-local tool title.
