@@ -412,4 +412,47 @@ public sealed class SystemMaintenanceServiceTests
         Assert.Equal("Unknown", media.mediaType);
         Assert.Equal("TimedOut", media.mediaDetectionStatus);
     }
+
+    [Theory]
+    [InlineData("Writing 0x00", "Zeros", 20)]
+    [InlineData("Writing 0xFF", "Ones", 55)]
+    [InlineData("Writing Random Numbers", "Random", 85)]
+    public void ParseCipherPass_RecognizesEnglishCipherPasses(string line, string expectedPass, double expectedPercent)
+    {
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress(line, "operation-1", "D:\\");
+
+        Assert.Equal(expectedPass, progress.pass);
+        Assert.Equal(expectedPercent, progress.percent);
+    }
+
+    [Fact]
+    public void ParseCipherPass_FallsBackForLocalizedOrUnexpectedOutput()
+    {
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress("Schreibe freie Speicherbereiche", "operation-1", "D:\\");
+
+        Assert.Equal("Unknown", progress.pass);
+        Assert.Equal(0, progress.percent);
+        Assert.Contains("Running", progress.status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseCipherPass_PreservesCurrentProgressForUnrecognizedOutput()
+    {
+        FreeSpaceWipeProgress current = FreeSpaceWipeOperationService.ParseCipherProgress("Writing 0x00", "operation-1", "D:\\");
+
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress("Some ordinary cipher output", "operation-1", "D:\\", current);
+
+        Assert.Equal("Zeros", progress.pass);
+        Assert.Equal(20, progress.percent);
+    }
+
+    [Fact]
+    public void EstimateWipeDuration_UsesWideHddRange()
+    {
+        FreeSpaceWipeEstimate estimate = FreeSpaceWipeOperationService.EstimateWipe(412L * 1024 * 1024 * 1024, "HDD");
+
+        Assert.Equal(412L * 1024 * 1024 * 1024 * 3, estimate.estimatedWriteBytes);
+        Assert.Contains("2", estimate.durationDisplay, StringComparison.Ordinal);
+        Assert.Contains("5", estimate.durationDisplay, StringComparison.Ordinal);
+    }
 }

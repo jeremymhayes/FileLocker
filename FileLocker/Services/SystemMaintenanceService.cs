@@ -2093,6 +2093,8 @@ internal static class SystemMaintenanceService
             : "HKEY_CURRENT_USER";
     }
 
+    internal static string FormatFileSizeForDisplay(long bytes) => FormatFileSize(bytes);
+
     private static string FormatFileSize(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];
