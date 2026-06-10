@@ -40,6 +40,7 @@ namespace FileLocker
         {
             WriteIndented = false
         };
+        private static readonly TimeSpan ShutdownWipeCancelWaitTimeout = TimeSpan.FromSeconds(12);
 
         private static readonly HashSet<string> RestartPageKeys = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -2039,6 +2040,7 @@ namespace FileLocker
                             operationId,
                             root,
                             status => UpdateFreeSpaceWipeStatus(status),
+                            SystemMaintenanceService.DriveToolTimeout,
                             cancellation.Token);
                         UpdateFreeSpaceWipeStatus(final);
                     }
@@ -2081,9 +2083,27 @@ namespace FileLocker
 
         private void CancelFreeSpaceWipeForShutdown()
         {
+            Task? wipeTask;
             lock (_freeSpaceWipeLock)
             {
                 _freeSpaceWipeCancellation?.Cancel();
+                wipeTask = _freeSpaceWipeTask;
+            }
+
+            if (wipeTask is null || wipeTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                wipeTask.Wait(ShutdownWipeCancelWaitTimeout);
+            }
+            catch (AggregateException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
             }
         }
 

@@ -114,6 +114,26 @@ internal static class FreeSpaceWipeOperationService
         };
     }
 
+    internal static FreeSpaceWipeProgress CreateTimedOutStatus(FreeSpaceWipeProgress current, TimeSpan timeout, string cleanupStatus, string cleanupMessage)
+    {
+        string message = $"Free-space wipe for {current.driveRoot} exceeded the {FormatTimeout(timeout)} time limit and was stopped. The wipe is incomplete.";
+        if (!string.IsNullOrWhiteSpace(cleanupMessage))
+        {
+            message = $"{message} {cleanupMessage.Trim()}";
+        }
+
+        return current with
+        {
+            state = "TimedOut",
+            percent = Math.Min(current.percent, 99),
+            status = "Timed out",
+            output = SystemMaintenanceService.NormalizeMaintenanceToolOutput(current.output),
+            completedAtUtc = DateTime.UtcNow,
+            cleanupStatus = NormalizeCleanupStatus(cleanupStatus),
+            message = message
+        };
+    }
+
     internal static FreeSpaceWipeProgress CreateFailedStatus(FreeSpaceWipeProgress current, string? message = null) =>
         current with
         {
@@ -129,11 +149,15 @@ internal static class FreeSpaceWipeOperationService
         string operationId,
         string driveRoot,
         Action<FreeSpaceWipeProgress> onProgress,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         FreeSpaceWipeProgress current = CreateInitialStatus(operationId, driveRoot);
         onProgress(current);
 
+        using var timeoutCancellation = new CancellationTokenSource(timeout);
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCancellation.Token);
+        CancellationToken runCancellationToken = linkedCancellation.Token;
         RootEntrySnapshot rootSnapshot = SnapshotRootEntries(driveRoot);
         DateTime processStartedAtUtc = DateTime.UtcNow;
         var outputBuilder = new StringBuilder();
@@ -171,10 +195,11 @@ internal static class FreeSpaceWipeOperationService
 
         try
         {
-            await process.WaitForExitAsync(cancellationToken);
+            await process.WaitForExitAsync(runCancellationToken);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (runCancellationToken.IsCancellationRequested)
         {
+            bool timedOut = timeoutCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
             TryKill(process);
             bool exitedAfterKill = await WaitForProcessExitAfterKillAsync(process, ProcessExitAfterKillTimeout);
             await WaitForReadTasksAfterCancellationAsync(ProcessReadDrainTimeout, stdoutTask, stderrTask);
@@ -186,7 +211,10 @@ internal static class FreeSpaceWipeOperationService
             {
                 output = GetNormalizedOutput()
             };
-            return CreateCancelledStatus(cancelledBase, cleanup.Status, cleanup.Message);
+
+            return timedOut
+                ? CreateTimedOutStatus(cancelledBase, timeout, cleanup.Status, cleanup.Message)
+                : CreateCancelledStatus(cancelledBase, cleanup.Status, cleanup.Message);
         }
 
         try
@@ -215,7 +243,7 @@ internal static class FreeSpaceWipeOperationService
         {
             while (true)
             {
-                string? line = await process.StandardOutput.ReadLineAsync(cancellationToken);
+                string? line = await process.StandardOutput.ReadLineAsync(runCancellationToken);
                 if (line == null)
                 {
                     break;
@@ -242,7 +270,7 @@ internal static class FreeSpaceWipeOperationService
         {
             while (true)
             {
-                string? line = await process.StandardError.ReadLineAsync(cancellationToken);
+                string? line = await process.StandardError.ReadLineAsync(runCancellationToken);
                 if (line == null)
                 {
                     break;
@@ -311,6 +339,27 @@ internal static class FreeSpaceWipeOperationService
         int lowHours = Math.Max(1, (int)Math.Floor(writeGiB / 600d));
         int highHours = Math.Max(lowHours + 1, (int)Math.Ceiling(writeGiB / 250d));
         return $"~{lowHours}-{highHours}+ hours";
+    }
+
+    private static string FormatTimeout(TimeSpan timeout)
+    {
+        if (timeout.TotalHours >= 1)
+        {
+            double hours = timeout.TotalHours;
+            return Math.Abs(hours - Math.Round(hours)) < 0.01
+                ? $"{(int)Math.Round(hours)}-hour"
+                : $"{hours:0.#}-hour";
+        }
+
+        if (timeout.TotalMinutes >= 1)
+        {
+            double minutes = timeout.TotalMinutes;
+            return Math.Abs(minutes - Math.Round(minutes)) < 0.01
+                ? $"{(int)Math.Round(minutes)}-minute"
+                : $"{minutes:0.#}-minute";
+        }
+
+        return $"{Math.Max(1, (int)Math.Ceiling(timeout.TotalSeconds))}-second";
     }
 
     private static string NormalizeCleanupStatus(string cleanupStatus)

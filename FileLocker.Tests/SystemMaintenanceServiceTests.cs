@@ -471,6 +471,35 @@ public sealed class SystemMaintenanceServiceTests
         Assert.Contains("Residual", cancelled.message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void CreateTimedOutStatus_ReportsIncompleteWipeAndCleanupStatus()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\") with
+        {
+            percent = 55,
+            output = "Writing 0xFF"
+        };
+
+        FreeSpaceWipeProgress timedOut = FreeSpaceWipeOperationService.CreateTimedOutStatus(
+            running,
+            TimeSpan.FromMinutes(120),
+            "cleanupSucceeded",
+            "Removed 1 cipher temporary folder left by the stopped wipe.");
+
+        Assert.Equal("TimedOut", timedOut.state);
+        Assert.Equal(55, timedOut.percent);
+        Assert.Equal("cleanupSucceeded", timedOut.cleanupStatus);
+        Assert.Contains("2-hour", timedOut.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("incomplete", timedOut.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Removed 1 cipher temporary folder", timedOut.message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DriveToolTimeout_RemainsOneHundredTwentyMinutes()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(120), SystemMaintenanceService.DriveToolTimeout);
+    }
+
     [Theory]
     [InlineData("EFSTMPWP", true)]
     [InlineData("efstmp-123.tmp", true)]

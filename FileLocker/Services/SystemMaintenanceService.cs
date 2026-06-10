@@ -29,7 +29,7 @@ internal static class SystemMaintenanceService
     private const int MaxWarningMessageChars = 2048;
     private const int MaxRequestIdCount = 500;
     private const int MaxRequestIdChars = 256;
-    private static readonly TimeSpan DriveToolTimeout = TimeSpan.FromMinutes(120);
+    internal static readonly TimeSpan DriveToolTimeout = TimeSpan.FromMinutes(120);
     private static readonly string[] RegistryExecutableExtensions = [".exe", ".bat", ".cmd", ".com", ".msi", ".dll", ".ocx", ".cpl", ".scr", ".chm", ".hlp"];
 
     internal static MaintenanceDriveList GetDrives()
