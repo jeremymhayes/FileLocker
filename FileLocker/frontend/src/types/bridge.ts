@@ -204,7 +204,44 @@ export type UpdateAvailableEvent = {
   result: UpdateCheckResult
 }
 
-export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent | UpdateAvailableEvent
+export type DriveMediaType = "HDD" | "SSD" | "Removable" | "Mixed" | "Unknown"
+
+export type MaintenanceDrive = {
+  id: string
+  name: string
+  rootPath: string
+  driveType: string
+  driveFormat: string
+  totalSizeBytes: number
+  totalSizeDisplay: string
+  freeSpaceBytes: number
+  freeSpaceDisplay: string
+  isReady: boolean
+  mediaType: DriveMediaType
+  mediaDetectionStatus: string
+  mediaDescription: string
+}
+
+export type FreeSpaceWipeStatus = {
+  operationId: string
+  driveRoot: string
+  state: "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut"
+  pass: "Unknown" | "Zeros" | "Ones" | "Random"
+  percent: number
+  status: string
+  output: string
+  startedAtUtc: string
+  completedAtUtc?: string | null
+  cleanupStatus: "cleanupSucceeded" | "cleanupFailed" | "notNeeded" | "unknown"
+  message: string
+}
+
+export type MaintenanceWipeStatusEvent = {
+  type: "maintenanceWipeStatus"
+  status: FreeSpaceWipeStatus
+}
+
+export type BridgeEvent = ProgressEvent | DroppedPathsEvent | DropErrorEvent | UpdateAvailableEvent | MaintenanceWipeStatusEvent
 
 export type FileOperationRequest = {
   operationId: string

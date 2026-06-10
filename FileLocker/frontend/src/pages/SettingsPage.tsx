@@ -525,7 +525,7 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
           <div className="min-w-0">
             <h1 className="font-display text-lg font-semibold leading-tight text-primary">Settings</h1>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="app-caption-action-safe flex flex-wrap items-center gap-2">
             {isLoadingSettings ? (
               <span className="inline-flex items-center gap-2 rounded-md border border-border bg-bg-dropzone px-3 py-1.5 text-xs text-secondary">
                 <Loader2 className="size-3.5 animate-spin" aria-hidden />

@@ -1,0 +1,132 @@
+<h2>Partition Cleaner Direction</h2>
+<p class="subtitle">Three ways to polish the existing free-space wipe tool without changing its backend behavior.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. Utility Workbench</div>
+        <div class="mockup-body">
+          <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid #2f3a4d;padding-bottom:12px">
+            <div>
+              <div style="font-weight:650;color:#eef4ff">Partition Cleaner</div>
+              <div style="margin-top:4px;color:#98a5b8;font-size:13px">Overwrite free space on a selected drive.</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="mock-button">Refresh</button>
+              <button class="mock-button">Wipe Free Space</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:14px;margin-top:14px">
+            <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:1.2fr .8fr .8fr .6fr;gap:10px;background:#172033;color:#98a5b8;font-size:11px;padding:8px 10px">
+                <span>Drive</span><span>Free</span><span>Format</span><span>Status</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1.2fr .8fr .8fr .6fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d">
+                <span>C: Windows</span><span>118 GB</span><span>NTFS</span><span style="color:#38c98f">Ready</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1.2fr .8fr .8fr .6fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;background:#19243a">
+                <span>D: Storage</span><span>412 GB</span><span>NTFS</span><span style="color:#38c98f">Ready</span>
+              </div>
+            </div>
+            <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px">
+              <div style="font-weight:650;color:#eef4ff">Selected drive</div>
+              <div style="margin-top:10px;display:grid;gap:8px;color:#98a5b8;font-size:13px">
+                <div>Root <b style="color:#eef4ff">D:\</b></div>
+                <div>Free space <b style="color:#eef4ff">412 GB</b></div>
+                <div>Risk <b style="color:#ef617d">Destructive</b></div>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:12px;border:1px solid #5f4521;background:#251d12;color:#e6a14a;border-radius:6px;padding:10px;font-size:12px">
+            Existing files stay; deleted-file traces are overwritten where Windows allows it.
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Utility Workbench</h3>
+      <p>Recommended. Compact header, drive table, selected-drive details, and a clear destructive action area. Feels like a serious Windows maintenance tool.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. Split Inspector</div>
+        <div class="mockup-body">
+          <div style="display:grid;grid-template-columns:260px 1fr;gap:14px">
+            <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+              <div style="padding:10px;background:#172033;font-weight:650;color:#eef4ff">Partitions</div>
+              <div style="padding:10px;border-top:1px solid #2f3a4d;color:#98a5b8">C: Windows<br><span style="font-size:12px">118 GB free</span></div>
+              <div style="padding:10px;border-top:1px solid #2f3a4d;background:#19243a;color:#eef4ff">D: Storage<br><span style="font-size:12px;color:#98a5b8">412 GB free</span></div>
+            </div>
+            <div style="border:1px solid #2f3a4d;border-radius:6px;padding:14px">
+              <div style="display:flex;justify-content:space-between;gap:12px">
+                <div>
+                  <div style="font-weight:650;color:#eef4ff">D: Storage</div>
+                  <div style="margin-top:4px;color:#98a5b8;font-size:13px">NTFS fixed drive</div>
+                </div>
+                <button class="mock-button">Wipe Free Space</button>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-top:14px;background:#2f3a4d">
+                <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Free</span><br><b>412 GB</b></div>
+                <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Total</span><br><b>1 TB</b></div>
+                <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Mode</span><br><b>Cipher</b></div>
+              </div>
+              <div style="margin-top:14px;color:#98a5b8;font-size:13px">Command output appears below after the wipe starts.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Split Inspector</h3>
+      <p>Clear selected-drive focus. Good for detail, but less efficient when users want to compare multiple partitions quickly.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. Guided Flow</div>
+        <div class="mockup-body">
+          <div style="display:flex;gap:8px;color:#98a5b8;font-size:12px">
+            <span style="color:#5d8dff">1 Select</span><span>›</span><span>2 Review</span><span>›</span><span>3 Wipe</span><span>›</span><span>4 Report</span>
+          </div>
+          <div style="margin-top:14px;border:1px solid #2f3a4d;border-radius:6px;padding:16px">
+            <div style="font-weight:650;color:#eef4ff">Select a partition</div>
+            <div style="margin-top:10px;display:grid;gap:8px">
+              <button class="mock-button">C: Windows - 118 GB free</button>
+              <button class="mock-button">D: Storage - 412 GB free</button>
+            </div>
+          </div>
+          <div style="margin-top:12px;color:#98a5b8;font-size:13px">Next step explains risk before enabling wipe.</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Guided Flow</h3>
+      <p>Safest-feeling structure, but it adds extra steps to a tool that currently has one real operation.</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>Recommendation</h4>
+    <ul>
+      <li>Use A: Utility Workbench.</li>
+      <li>It keeps the tool fast, dense, and direct.</li>
+      <li>It makes the destructive action obvious without turning the whole page into a warning.</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>Scope Guardrails</h4>
+    <ul>
+      <li>No fake scan or cleanup results.</li>
+      <li>No new backend actions.</li>
+      <li>No broad redesign outside Partition Cleaner.</li>
+    </ul>
+  </div>
+</div>

@@ -15,6 +15,7 @@
 import type {
   AppLeftoverScanResult,
   DashboardState,
+  FreeSpaceWipeStatus,
   InitialState,
   InstalledAppsScanResult,
   SettingsState,
@@ -60,6 +61,7 @@ const defaultSettings: SettingsState = {
 }
 
 let settings: SettingsState = cloneSettings(defaultSettings)
+let mockWipeStatus: FreeSpaceWipeStatus | null = null
 
 const dashboard: DashboardState = {
   incognitoMode: false,
@@ -153,7 +155,7 @@ const dashboard: DashboardState = {
 const initialState: InitialState = {
   app: {
     name: "FileLocker",
-    version: "1.2.2.1",
+    version: "1.3.0.0",
     repositoryUrl: "https://github.com/jeremymhayes/FileLocker",
     launchPaths: [],
     launchAction: undefined,
@@ -262,7 +264,7 @@ function handle(action: string, payload: unknown): unknown {
       return { exportPath: "C:\\Users\\you\\Documents\\filelocker-history.csv", fileName: "filelocker-history.csv", recordCount: dashboard.history.length }
     case "updates.check":
     case "updates.testStartupCheck":
-      return { currentVersion: "1.2.2.1", isUpdateAvailable: false, statusMessage: "FileLocker is up to date." }
+      return { currentVersion: "1.3.0.0", isUpdateAvailable: false, statusMessage: "FileLocker is up to date." }
     case "updates.skip":
       settings = { ...settings, updates: { ...settings.updates, skippedVersion: (payload as { version?: string } | null)?.version } }
       return cloneSettings(settings)
@@ -272,9 +274,9 @@ function handle(action: string, payload: unknown): unknown {
     case "updates.testDialog":
       return { tested: true }
     case "updates.download":
-      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.2.2.1.exe", fileName: "FileLocker-Setup-1.2.2.1.exe" }
+      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.0.0.exe", fileName: "FileLocker-Setup-1.3.0.0.exe" }
     case "updates.install":
-      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.2.2.1.exe", fileName: "FileLocker-Setup-1.2.2.1.exe" }
+      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.0.0.exe", fileName: "FileLocker-Setup-1.3.0.0.exe" }
     case "shell.setExplorerIntegration": {
       const enabled = (payload as { enabled?: boolean } | null)?.enabled === true
       settings = {
@@ -399,6 +401,29 @@ function handle(action: string, payload: unknown): unknown {
       return registryScan
     case "maintenance.cleanRegistry":
       return { cleanedCount: registryScan.issues.length, failedCount: 0, backupPath: "C:\\Users\\you\\Documents\\FileLocker\\registry-backup.reg", cleanedIssues: registryScan.issues, failures: [], scan: { ...registryScan, issues: [], issueCount: 0, status: "No issues found" } }
+    case "maintenance.startWipeFreeSpace": {
+      const driveRoot = typeof payload === "object" && payload && "driveRoot" in payload ? String((payload as { driveRoot?: unknown }).driveRoot) : "D:\\"
+      mockWipeStatus = {
+        operationId: crypto.randomUUID(),
+        driveRoot,
+        state: "Running",
+        pass: "Zeros",
+        percent: 20,
+        status: "Pass 1 of 3: writing zeros",
+        output: `cipher /w:${driveRoot}
+Writing 0x00 ...`,
+        startedAtUtc: new Date().toISOString(),
+        completedAtUtc: null,
+        cleanupStatus: "notNeeded",
+        message: "Free-space wipe started.",
+      }
+      return mockWipeStatus
+    }
+    case "maintenance.getWipeFreeSpaceStatus":
+      return mockWipeStatus
+    case "maintenance.cancelWipeFreeSpace":
+      mockWipeStatus = mockWipeStatus ? { ...mockWipeStatus, state: "Cancelled", status: "Wipe incomplete", completedAtUtc: new Date().toISOString(), cleanupStatus: "unknown", message: "Wipe incomplete. FileLocker attempted to locate residual cipher temporary files." } : null
+      return mockWipeStatus
     case "maintenance.wipeFreeSpace":
       return { ok: true, title: "Free space wiped", message: "Free space on C: was overwritten once.", driveRoot: "C:\\", output: "Wiped 132 GB of free space.\nCompleted in 4m 12s.", startedAtUtc: new Date(Date.now() - 252_000).toISOString(), completedAtUtc: new Date().toISOString() }
     case "maintenance.optimizeDrive":
@@ -406,8 +431,10 @@ function handle(action: string, payload: unknown): unknown {
     case "maintenance.getDrives":
       return {
         drives: [
-          { id: "C", name: "Windows", rootPath: "C:\\", driveType: "Fixed", driveFormat: "NTFS", totalSizeBytes: 511_000_000_000, totalSizeDisplay: "476 GB", freeSpaceBytes: 142_000_000_000, freeSpaceDisplay: "132 GB", isReady: true },
-          { id: "D", name: "Data", rootPath: "D:\\", driveType: "Fixed", driveFormat: "NTFS", totalSizeBytes: 2_000_000_000_000, totalSizeDisplay: "1.8 TB", freeSpaceBytes: 1_400_000_000_000, freeSpaceDisplay: "1.3 TB", isReady: true },
+          { id: "C", name: "Windows", rootPath: "C:\\", driveType: "Fixed", driveFormat: "NTFS", totalSizeBytes: 511_000_000_000, totalSizeDisplay: "476 GB", freeSpaceBytes: 142_000_000_000, freeSpaceDisplay: "132 GB", isReady: true, mediaType: "SSD", mediaDetectionStatus: "Detected", mediaDescription: "TRIM and wear-leveling limit free-space overwrite benefit." },
+          { id: "D", name: "Data", rootPath: "D:\\", driveType: "Fixed", driveFormat: "NTFS", totalSizeBytes: 2_000_000_000_000, totalSizeDisplay: "1.8 TB", freeSpaceBytes: 442_381_631_488, freeSpaceDisplay: "412 GB", isReady: true, mediaType: "HDD", mediaDetectionStatus: "Detected", mediaDescription: "Good fit for traditional hard drives." },
+          { id: "E", name: "USB Backup", rootPath: "E:\\", driveType: "Removable", driveFormat: "exFAT", totalSizeBytes: 64_000_000_000, totalSizeDisplay: "59.6 GB", freeSpaceBytes: 30_064_771_072, freeSpaceDisplay: "28 GB", isReady: true, mediaType: "Removable", mediaDetectionStatus: "Detected", mediaDescription: "Limited benefit on wear-leveling flash media." },
+          { id: "R", name: "Recovery", rootPath: "R:\\", driveType: "Fixed", driveFormat: "RAW", totalSizeBytes: 0, totalSizeDisplay: "0 B", freeSpaceBytes: 0, freeSpaceDisplay: "0 B", isReady: false, mediaType: "Unknown", mediaDetectionStatus: "Unsupported", mediaDescription: "Drive is not ready or uses an unsupported RAW format." },
         ],
       }
     case "files.revealPath":

@@ -468,7 +468,7 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="lg">

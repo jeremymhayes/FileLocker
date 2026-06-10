@@ -50,7 +50,8 @@
   --app-sidebar-width: 232px;
   --window-titlebar-area-height: env(titlebar-area-height, 0px);
   --window-titlebar-height: clamp(0px, var(--window-titlebar-area-height), 0px);
-  --window-caption-fallback-width: 138px;
+  --window-caption-fallback-width: 146px;
+  --window-caption-clearance: 12px;
 
   --background: var(--bg-base);
   --window-chrome-background: var(--background);
@@ -89,7 +90,10 @@
   --window-titlebar-area-x: env(titlebar-area-x, 0px);
   --window-titlebar-area-width: env(titlebar-area-width, calc(100vw - var(--window-caption-fallback-width)));
   --window-titlebar-reserved-left: max(0px, var(--window-titlebar-area-x));
-  --window-titlebar-reserved-right: max(0px, calc(100vw - var(--window-titlebar-area-x) - var(--window-titlebar-area-width)));
+  --window-titlebar-reserved-right: max(
+    calc(var(--window-caption-fallback-width) + var(--window-caption-clearance)),
+    calc(100vw - var(--window-titlebar-area-x) - var(--window-titlebar-area-width))
+  );
 }
 
 [dir="rtl"] {
@@ -468,6 +472,14 @@ select {
     border: 1px solid var(--signal-review-border);
     background: var(--signal-review-soft);
     color: var(--signal-review);
+  }
+}
+
+@layer utilities {
+  @media (min-width: 760px) {
+    .app-caption-action-safe {
+      padding-inline-end: var(--window-titlebar-reserved-right);
+    }
   }
 }
 

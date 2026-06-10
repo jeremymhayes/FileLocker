@@ -14,7 +14,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
           <h1 className="page-title truncate font-display text-lg font-semibold leading-tight text-primary">{title}</h1>
           {description ? <p className="mt-1 max-w-3xl text-sm leading-snug text-secondary">{description}</p> : null}
         </div>
-        {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        {actions ? <div className="app-caption-action-safe flex shrink-0 items-center gap-2">{actions}</div> : null}
       </div>
     </header>
   )

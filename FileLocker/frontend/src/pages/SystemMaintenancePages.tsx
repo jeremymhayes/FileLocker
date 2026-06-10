@@ -54,8 +54,10 @@ import { cn } from "@/lib/utils"
 import type {
   AppLeftoverCleanResult,
   AppLeftoverScanResult,
+  FreeSpaceWipeStatus,
   InstalledApp,
   InstalledAppsScanResult,
+  MaintenanceDrive as BridgeMaintenanceDrive,
   StartupItem,
   StartupExportResult,
   StartupIgnoreResult,
@@ -76,18 +78,7 @@ type MaintenancePageProps = {
 
 const MAX_STORED_STRING_ARRAY_JSON_CHARS = 32 * 1024
 
-type MaintenanceDrive = {
-  id: string
-  name: string
-  rootPath: string
-  driveType: string
-  driveFormat: string
-  totalSizeBytes: number
-  totalSizeDisplay: string
-  freeSpaceBytes: number
-  freeSpaceDisplay: string
-  isReady: boolean
-}
+type MaintenanceDrive = BridgeMaintenanceDrive
 
 type MaintenanceDriveList = {
   drives: MaintenanceDrive[]
@@ -191,37 +182,65 @@ const registryIssueTabs = [
   { key: "Other", label: "Other" },
 ]
 
-export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdministrator }: MaintenancePageProps) {
+type PartitionCleanerPageProps = MaintenancePageProps & {
+  wipeStatus: FreeSpaceWipeStatus | null
+  onWipeStatusChange: (status: FreeSpaceWipeStatus | null) => void
+}
+
+export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdministrator, wipeStatus, onWipeStatusChange }: PartitionCleanerPageProps) {
   const [drives, setDrives] = useState<MaintenanceDrive[]>([])
   const [selectedDriveRoot, setSelectedDriveRoot] = useState("")
   const [showWipeConfirmation, setShowWipeConfirmation] = useState(false)
+  const [showCancelConfirmation, setShowCancelConfirmation] = useState(false)
   const [skipWipeConfirmation, setSkipWipeConfirmation] = useStoredBoolean("filelocker.skipWipeFreeSpaceConfirmation")
   const [isLoading, setIsLoading] = useState(true)
+  const [isStartingWipe, setIsStartingWipe] = useState(false)
   const [driveLoadError, setDriveLoadError] = useState("")
-  const [isRunning, setIsRunning] = useState(false)
-  const [result, setResult] = useState<MaintenanceToolResult | null>(null)
   const [wipeError, setWipeError] = useState("")
   const selectedDrive = useSelectedDrive(drives, selectedDriveRoot)
-  const canStart = isAdministrator && Boolean(selectedDrive?.isReady) && !isRunning
+  const activeWipe = wipeStatus?.state === "Running" ? wipeStatus : null
+  const isRunning = Boolean(activeWipe)
+  const isBusyStartingOrRunning = isStartingWipe || isRunning
+  const canStart = isAdministrator && Boolean(selectedDrive?.isReady) && !isStartingWipe && !isRunning
+  const partitionStep = getPartitionFlowStep(selectedDrive, wipeStatus)
 
   useEffect(() => {
     void loadDrives(invoke, setDrives, setSelectedDriveRoot, setIsLoading, setDriveLoadError)
-  }, [invoke])
+    void invoke<FreeSpaceWipeStatus | null>("maintenance.getWipeFreeSpaceStatus", {})
+      .then((response) => {
+        if (response !== null && !isFreeSpaceWipeStatus(response)) {
+          onWipeStatusChange(null)
+          return
+        }
+        onWipeStatusChange(response)
+        if (response?.driveRoot) {
+          setSelectedDriveRoot(response.driveRoot)
+        }
+      })
+      .catch((error) => {
+        setWipeError(showMaintenanceError(error, "Unable to load free-space wipe status."))
+      })
+  }, [invoke, onWipeStatusChange])
+
+  useEffect(() => {
+    if (!wipeStatus?.driveRoot) return
+    setSelectedDriveRoot((current) => rootsEqual(current, wipeStatus.driveRoot) ? current : wipeStatus.driveRoot)
+  }, [wipeStatus?.driveRoot])
 
   function selectDrive(root: string) {
-    if (isRunning) { toast.error("Wait for the current free-space wipe to finish before changing drives."); return }
+    if (isBusyStartingOrRunning) { toast.error("Wait for the current free-space wipe to finish before changing drives."); return }
     setSelectedDriveRoot(root)
     setWipeError("")
   }
 
   function refreshDrives() {
-    if (isRunning) return
+    if (isBusyStartingOrRunning) return
     setWipeError("")
     void loadDrives(invoke, setDrives, setSelectedDriveRoot, setIsLoading, setDriveLoadError)
   }
 
   function requestWipe() {
-    if (isRunning) return
+    if (isStartingWipe || isRunning) return
     if (!isAdministrator) { toast.error("Restart FileLocker as administrator before starting a free-space wipe."); return }
     if (!selectedDrive) { toast.error("Select a drive first."); return }
     if (!selectedDrive.isReady) { toast.error("Select a ready drive before starting a free-space wipe."); return }
@@ -230,78 +249,110 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
   }
 
   async function runWipe() {
-    if (isRunning) return
+    if (isStartingWipe || isRunning) return
     if (!isAdministrator) { toast.error("Restart FileLocker as administrator before starting a free-space wipe."); return }
     if (!selectedDrive) { toast.error("Select a drive first."); return }
     if (!selectedDrive.isReady) { toast.error("Select a ready drive before starting a free-space wipe."); return }
-    setIsRunning(true)
-    setResult(null)
+    setShowWipeConfirmation(false)
     setWipeError("")
+    setIsStartingWipe(true)
     try {
-      const response = await invoke<MaintenanceToolResult>("maintenance.wipeFreeSpace", {
+      const response = await invoke<FreeSpaceWipeStatus>("maintenance.startWipeFreeSpace", {
         driveRoot: selectedDrive.rootPath,
         confirmation: "WIPE FREE SPACE",
       })
-      setResult(response)
+      if (!isFreeSpaceWipeStatus(response)) {
+        onWipeStatusChange(null)
+        throw new Error("FileLocker returned an invalid free-space wipe status.")
+      }
+      onWipeStatusChange(response)
       setWipeError("")
-      toast[response.ok ? "success" : "error"](response.message)
+      toast[response.state === "Running" || response.state === "Completed" ? "success" : "error"](response.message || response.status)
     } catch (error) {
-      setWipeError(showMaintenanceError(error, "Free-space wipe failed."))
+      setWipeError(showMaintenanceError(error, "Free-space wipe failed to start."))
     } finally {
-      setIsRunning(false)
+      setIsStartingWipe(false)
+    }
+  }
+
+  function requestCancelWipe() {
+    if (!isRunning) return
+    setShowCancelConfirmation(true)
+  }
+
+  async function cancelWipe() {
+    setShowCancelConfirmation(false)
+    try {
+      const response = await invoke<FreeSpaceWipeStatus | null>("maintenance.cancelWipeFreeSpace", {})
+      onWipeStatusChange(response === null || isFreeSpaceWipeStatus(response) ? response : null)
+      toast.warning("Free-space wipe cancellation requested.")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to cancel free-space wipe.")
     }
   }
 
   return (
     <MaintenanceFrame>
-      <AdminStatusBanner
-        isAdministrator={isAdministrator}
-        onRestartAsAdministrator={onRestartAsAdministrator}
-        description="Free Space Wipe uses Windows cipher against the selected drive. Restart in administrator mode before starting the wipe."
-      />
-      <DrivePicker
-        drives={drives}
-        selectedDriveRoot={selectedDriveRoot}
-        onSelect={selectDrive}
-        isLoading={isLoading || isRunning}
-        loadError={driveLoadError}
-        onRefresh={refreshDrives}
-      />
       <section className="section-surface">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <HardDrive className="size-4 shrink-0 text-muted" aria-hidden />
-            <span className="font-display text-sm font-semibold tracking-tight text-primary">Free Space Wipe</span>
-            <RiskBadge level="Destructive" />
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2.5">
+              <HardDrive className="size-4 shrink-0 text-muted" aria-hidden />
+              <span className="font-display text-lg font-semibold tracking-tight text-primary">Free-Space Sanitizer</span>
+            </div>
+            <p className="mt-1 max-w-3xl text-sm text-secondary">
+              Overwrite unused space so already-deleted files on the selected drive are harder to recover.
+            </p>
           </div>
-          <ScanStepIndicator current={result ? "apply" : selectedDrive?.isReady ? "review" : "scan"} applyLabel="Wipe" />
-        </div>
-        <p className="mt-2 text-sm text-secondary">Existing files stay. Deleted-file traces are overwritten where Windows allows it.</p>
-        <div className="mt-3 grid grid-cols-3 divide-x divide-border border-y border-border">
-          <MetricTile label="Drive" value={selectedDrive?.rootPath ?? "None"} />
-          <MetricTile label="Free space" value={selectedDrive?.freeSpaceDisplay ?? "Unknown"} />
-          <MetricTile label="Format" value={selectedDrive?.driveFormat ?? "Unknown"} />
-        </div>
-        <div className="app-inline-notice app-inline-notice-warning mt-3">
-          <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
-          <span>Wipes free space with Windows cipher so deleted data is harder to recover. Does not rewrite the partition table or delete existing files.</span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <ActionWithReason disabled={!canStart} reason={!isAdministrator ? "Restart as Administrator" : !selectedDrive?.isReady ? "Select a ready drive first" : "Wait for the current wipe to finish"}>
-            <Button variant="destructive" onClick={requestWipe} disabled={!canStart}>
-              <Play data-icon="inline-start" />
-              {isRunning ? "Wiping..." : "Wipe Free Space"}
+          <div className="flex flex-wrap items-center gap-2">
+            <PartitionPill tone={isAdministrator ? "good" : "warning"}>
+              {isAdministrator ? <ShieldCheck className="size-3.5" aria-hidden /> : <ShieldAlert className="size-3.5" aria-hidden />}
+              {isAdministrator ? "Running as administrator" : "Administrator required"}
+            </PartitionPill>
+            {!isAdministrator ? (
+              <Button variant="secondary" size="sm" onClick={onRestartAsAdministrator} disabled={isBusyStartingOrRunning}>
+                <ShieldAlert data-icon="inline-start" />
+                Restart as Administrator
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" onClick={refreshDrives} disabled={isLoading || isBusyStartingOrRunning}>
+              <RefreshCcw data-icon="inline-start" />
+              {isLoading ? "Refreshing..." : "Refresh Drives"}
             </Button>
-          </ActionWithReason>
-          {!isAdministrator ? (
-            <span className="inline-flex items-center gap-1.5 text-xs text-amber-300">
-              <ShieldAlert className="size-3.5" aria-hidden />
-              Administrator mode required to wipe free space.
-            </span>
-          ) : null}
+          </div>
         </div>
+        {!isAdministrator ? (
+          <div className="app-inline-notice app-inline-notice-warning mt-3">
+            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+            <span>Relaunching as admin closes current in-page state. Refresh drives again after FileLocker reopens.</span>
+          </div>
+        ) : null}
+        <PartitionStepIndicator current={partitionStep} className="mt-3" />
       </section>
-      <ToolOutput result={result} runningLabel={isRunning ? "Windows cipher is running. This can take a long time on large drives." : undefined} errorMessage={wipeError} />
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+        <PartitionDriveTable
+          drives={drives}
+          selectedDriveRoot={selectedDriveRoot}
+          wipeStatus={wipeStatus}
+          isLoading={isLoading}
+          loadError={driveLoadError}
+          disabled={isBusyStartingOrRunning}
+          onSelect={selectDrive}
+        />
+        <PartitionReviewPanel
+          drives={drives}
+          selectedDrive={selectedDrive}
+          wipeStatus={wipeStatus}
+          isAdministrator={isAdministrator}
+          canStart={canStart}
+          isRunning={isRunning}
+          isStartingWipe={isStartingWipe}
+          wipeError={wipeError}
+          onRequestWipe={requestWipe}
+          onRequestCancel={requestCancelWipe}
+        />
+      </div>
+      <PartitionRunStatus status={wipeStatus} />
       <MaintenanceConfirmDialog
         open={showWipeConfirmation}
         onOpenChange={setShowWipeConfirmation}
@@ -310,10 +361,534 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
         confirmLabel="Wipe Free Space"
         onConfirm={() => void runWipe()}
         onDontShowAgain={() => { setSkipWipeConfirmation(true); void runWipe() }}
-        isBusy={isRunning}
+        isBusy={isBusyStartingOrRunning}
       />
+      <AlertDialog open={showCancelConfirmation} onOpenChange={setShowCancelConfirmation}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel free-space wipe?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Windows cipher will be interrupted, the drive will only be partially processed, and FileLocker will attempt cleanup and report the result.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Running</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => void cancelWipe()}>
+              Cancel Wipe
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </MaintenanceFrame>
   )
+}
+
+type PartitionFlowStep = "select" | "review" | "wipe" | "report"
+
+function getPartitionFlowStep(selectedDrive: MaintenanceDrive | null, wipeStatus: FreeSpaceWipeStatus | null): PartitionFlowStep {
+  if (wipeStatus?.state === "Running") return "wipe"
+  if (wipeStatus) return "report"
+  return selectedDrive?.isReady ? "review" : "select"
+}
+
+function PartitionStepIndicator({ current, className }: { current: PartitionFlowStep; className?: string }) {
+  const steps: Array<{ key: PartitionFlowStep; label: string }> = [
+    { key: "select", label: "Select drive" },
+    { key: "review", label: "Review impact" },
+    { key: "wipe", label: "Wipe free space" },
+    { key: "report", label: "Report" },
+  ]
+  const activeIndex = steps.findIndex((step) => step.key === current)
+  return (
+    <ol className={cn("flex flex-wrap items-center gap-1.5 text-xs font-medium", className)} aria-label="Free-space sanitizer progress">
+      {steps.map((step, index) => {
+        const state = index < activeIndex ? "done" : index === activeIndex ? "current" : "upcoming"
+        return (
+          <li key={step.key} className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-md border px-2 py-1",
+                state === "current" && "border-accent/55 bg-accent/12 text-accent",
+                state === "done" && "border-accent-green/35 bg-accent-green/10 text-accent-green",
+                state === "upcoming" && "border-border/70 bg-bg-subtle/50 text-muted"
+              )}
+            >
+              <span className={cn(
+                "flex size-4 items-center justify-center rounded-full text-[10px] font-semibold",
+                state === "current" && "bg-accent text-[#08111f]",
+                state === "done" && "bg-accent-green/80 text-[#08111f]",
+                state === "upcoming" && "bg-border/70 text-secondary"
+              )}>{index + 1}</span>
+              {step.label}
+            </span>
+            {index < steps.length - 1 ? <span className="text-muted" aria-hidden>›</span> : null}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+function isFreeSpaceWipeStatus(value: unknown): value is FreeSpaceWipeStatus {
+  if (typeof value !== "object" || value === null) return false
+  const candidate = value as Partial<FreeSpaceWipeStatus>
+  const states: FreeSpaceWipeStatus["state"][] = ["Running", "Completed", "Failed", "Cancelled", "TimedOut"]
+  const passes: FreeSpaceWipeStatus["pass"][] = ["Unknown", "Zeros", "Ones", "Random"]
+  const cleanupStatuses: FreeSpaceWipeStatus["cleanupStatus"][] = ["cleanupSucceeded", "cleanupFailed", "notNeeded", "unknown"]
+  return (
+    typeof candidate.operationId === "string" &&
+    typeof candidate.driveRoot === "string" &&
+    states.includes(candidate.state as FreeSpaceWipeStatus["state"]) &&
+    passes.includes(candidate.pass as FreeSpaceWipeStatus["pass"]) &&
+    typeof candidate.percent === "number" &&
+    typeof candidate.status === "string" &&
+    typeof candidate.output === "string" &&
+    typeof candidate.startedAtUtc === "string" &&
+    cleanupStatuses.includes(candidate.cleanupStatus as FreeSpaceWipeStatus["cleanupStatus"]) &&
+    typeof candidate.message === "string"
+  )
+}
+
+function getDriveMediaGuidance(drive: MaintenanceDrive | null) {
+  if (!drive) {
+    return {
+      tone: "neutral" as const,
+      label: "Select a ready drive",
+      description: "Choose a ready partition to review the media type, write estimate, and free-space wipe scope.",
+    }
+  }
+
+  switch (drive.mediaType) {
+    case "HDD":
+      return {
+        tone: "good" as const,
+        label: "Traditional hard drive",
+        description: "Free-space overwrite works as intended on traditional hard drives because deleted sectors can be overwritten in place.",
+      }
+    case "SSD":
+      return {
+        tone: "warning" as const,
+        label: "SSD caution",
+        description: "TRIM and wear leveling limit how useful overwrites are on SSDs, and the three-pass write adds unnecessary wear.",
+      }
+    case "Removable":
+      return {
+        tone: "warning" as const,
+        label: "Removable media caution",
+        description: "Flash storage often uses wear leveling, so overwrites may not reach every deleted-data block and can add write wear.",
+      }
+    case "Mixed":
+      return {
+        tone: "warning" as const,
+        label: "Mixed media caution",
+        description: "Windows reported mixed backing media. Treat the wipe estimate as uncertain and review the drive before running cipher.",
+      }
+    case "Unknown":
+    default:
+      return {
+        tone: "neutral" as const,
+        label: "Media type unknown",
+        description: drive.mediaDescription || "FileLocker could not confidently classify this drive, so review the Windows drive details before wiping free space.",
+      }
+  }
+}
+
+function estimateWipeWriteDisplay(drive: MaintenanceDrive | null) {
+  if (!drive) return "0 B"
+  return formatBytes(Math.max(0, drive.freeSpaceBytes) * 3)
+}
+
+function estimateWipeDurationDisplay(drive: MaintenanceDrive | null) {
+  if (!drive) return "Select a drive"
+  if (drive.mediaType !== "HDD") return "Unavailable for this media"
+
+  const writeGiB = (Math.max(0, drive.freeSpaceBytes) * 3) / 1024 / 1024 / 1024
+  if (writeGiB <= 0) return "Under 1 minute"
+
+  const lowHours = writeGiB / 600
+  const highHours = writeGiB / 250
+  return formatWipeDurationRange(lowHours, highHours)
+}
+
+function formatWipeDurationRange(lowHours: number, highHours: number) {
+  if (!Number.isFinite(lowHours) || !Number.isFinite(highHours) || highHours <= 0) return "Unknown"
+  const lowMinutes = Math.max(1, Math.round(lowHours * 60))
+  const highMinutes = Math.max(1, Math.round(highHours * 60))
+  if (highHours < 1) {
+    return `~${lowMinutes}-${highMinutes} min`
+  }
+  const highHourLabel = `${Math.max(1, Math.round(highHours))}${highHours >= 4 ? "+" : ""}`
+  if (lowHours < 1) {
+    return `~${lowMinutes} min-${highHourLabel} hours`
+  }
+  return `~${Math.max(1, Math.round(lowHours))}-${highHourLabel} hours`
+}
+
+function getPartitionDriveStatus(drive: MaintenanceDrive, selected: boolean, wipeStatus: FreeSpaceWipeStatus | null) {
+  if (wipeStatus?.state === "Running" && rootsEqual(wipeStatus.driveRoot, drive.rootPath)) {
+    return { label: "Wiping now", tone: "accent" as const }
+  }
+  if (!drive.isReady) return { label: "Not ready", tone: "muted" as const }
+  if (drive.mediaType === "SSD" || drive.mediaType === "Removable" || drive.mediaType === "Mixed") {
+    return { label: selected ? "Review media" : "Caution", tone: "warning" as const }
+  }
+  if (drive.mediaType === "HDD") return { label: selected ? "Selected" : "Ready", tone: "good" as const }
+  return { label: selected ? "Selected" : "Review", tone: "neutral" as const }
+}
+
+function getPartitionRiskLabel(drive: MaintenanceDrive | null) {
+  if (!drive) return "Select a drive"
+  if (!drive.isReady) return "Not ready"
+  switch (drive.mediaType) {
+    case "HDD":
+      return "Good fit for free-space overwrite"
+    case "SSD":
+      return "Limited value on SSD"
+    case "Removable":
+      return "Flash wear-leveling caution"
+    case "Mixed":
+      return "Mixed media caution"
+    case "Unknown":
+    default:
+      return "Media requires review"
+  }
+}
+
+function getMediaGuidanceClass(tone: "good" | "warning" | "neutral") {
+  if (tone === "good") return "border-accent-green/30 bg-accent-green/10 text-accent-green"
+  if (tone === "warning") return "border-amber-400/30 bg-amber-400/10 text-amber-200"
+  return "border-border-strong bg-bg-subtle text-secondary"
+}
+
+function getWipeElapsedDisplay(status: FreeSpaceWipeStatus) {
+  const startedAt = Date.parse(status.startedAtUtc)
+  if (Number.isNaN(startedAt)) return "Unknown"
+
+  const completedAt = status.completedAtUtc ? Date.parse(status.completedAtUtc) : Date.now()
+  const end = Number.isNaN(completedAt) ? Date.now() : completedAt
+  const seconds = Math.max(0, Math.round((end - startedAt) / 1000))
+  if (seconds < 60) return `${seconds}s`
+
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
+
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+}
+
+function getWipePassSummary(status: FreeSpaceWipeStatus) {
+  if (status.state === "Completed") {
+    return "3 of 3"
+  }
+
+  switch (status.pass) {
+    case "Zeros":
+      return "Zeros pass"
+    case "Ones":
+      return "Ones pass"
+    case "Random":
+      return "Random pass"
+    case "Unknown":
+    default:
+      return "Waiting for pass"
+  }
+}
+
+function getWipePassMetricLabel(status: FreeSpaceWipeStatus) {
+  return status.state === "Completed" ? "Passes completed" : "Pass"
+}
+
+function getDriveRootForSentence(root: string) {
+  return root.trim().replace(/[\\/]+$/, "") || "the selected drive"
+}
+
+function getWipeFinalMessage(status: FreeSpaceWipeStatus) {
+  if (status.state === "Completed") {
+    return `Deleted-file traces on ${getDriveRootForSentence(status.driveRoot)} are overwritten.`
+  }
+
+  return status.message || status.status || "FileLocker has no status message for this free-space wipe."
+}
+
+function PartitionDriveTable({
+  drives,
+  selectedDriveRoot,
+  wipeStatus,
+  isLoading,
+  loadError,
+  disabled,
+  onSelect,
+}: {
+  drives: MaintenanceDrive[]
+  selectedDriveRoot: string
+  wipeStatus: FreeSpaceWipeStatus | null
+  isLoading: boolean
+  loadError: string
+  disabled: boolean
+  onSelect: (root: string) => void
+}) {
+  return (
+    <section className="section-surface min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <ScanLine className="size-4 shrink-0 text-muted" aria-hidden />
+          <span className="font-display text-sm font-semibold tracking-tight text-primary">Drive Inspector</span>
+        </div>
+        <span className="text-xs text-muted">{drives.length} partition{drives.length === 1 ? "" : "s"} scanned</span>
+      </div>
+      {loadError ? (
+        <div className="app-inline-notice app-inline-notice-warning mt-3">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+          <span>{loadError}</span>
+        </div>
+      ) : null}
+      <div className="mt-3 overflow-x-auto app-list-surface">
+        <table className="min-w-[760px] w-full text-left text-sm">
+          <thead className="border-b border-border/70 bg-bg-subtle/65 text-xs font-medium text-muted">
+            <tr>
+              <th className="px-3 py-2">Drive</th>
+              <th className="px-3 py-2">Media</th>
+              <th className="px-3 py-2">Free</th>
+              <th className="px-3 py-2">Format</th>
+              <th className="px-3 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/60">
+            {drives.map((drive) => {
+              const selected = rootsEqual(drive.rootPath, selectedDriveRoot)
+              const rowDisabled = disabled || !drive.isReady
+              const status = getPartitionDriveStatus(drive, selected, wipeStatus)
+              return (
+                <tr key={drive.id} className={cn("transition-colors", selected && "bg-accent/8", !drive.isReady && "opacity-60")}>
+                  <td className="px-3 py-2.5">
+                    <button
+                      type="button"
+                      className={cn("flex min-w-0 flex-col text-left", rowDisabled ? "cursor-not-allowed" : "hover:text-accent")}
+                      disabled={rowDisabled}
+                      aria-pressed={selected}
+                      onClick={() => onSelect(drive.rootPath)}
+                    >
+                      <span className="truncate font-medium text-primary">{drive.name}</span>
+                      <span className="text-xs text-muted">{drive.rootPath} · {drive.driveType}</span>
+                    </button>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex flex-col">
+                      <span className="text-secondary">{drive.mediaType}</span>
+                      <span className="max-w-[220px] truncate text-xs text-muted">{drive.mediaDetectionStatus || drive.mediaDescription || "Detected by Windows"}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex flex-col">
+                      <span className="font-medium text-primary">{drive.freeSpaceDisplay}</span>
+                      <span className="text-xs text-muted">of {drive.totalSizeDisplay}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-secondary">{drive.driveFormat || "Unknown"}</td>
+                  <td className="px-3 py-2.5">
+                    <PartitionPill tone={status.tone}>{status.label}</PartitionPill>
+                  </td>
+                </tr>
+              )
+            })}
+            {drives.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-3 py-4 text-sm text-secondary">
+                  {loadError ? "Drive list could not be loaded." : isLoading ? "Loading drives..." : "No fixed or removable drives are available."}
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function PartitionReviewPanel({
+  drives,
+  selectedDrive,
+  wipeStatus,
+  isAdministrator,
+  canStart,
+  isRunning,
+  isStartingWipe,
+  wipeError,
+  onRequestWipe,
+  onRequestCancel,
+}: {
+  drives: MaintenanceDrive[]
+  selectedDrive: MaintenanceDrive | null
+  wipeStatus: FreeSpaceWipeStatus | null
+  isAdministrator: boolean
+  canStart: boolean
+  isRunning: boolean
+  isStartingWipe: boolean
+  wipeError: string
+  onRequestWipe: () => void
+  onRequestCancel: () => void
+}) {
+  const guidance = getDriveMediaGuidance(selectedDrive)
+  const disabledReason = !isAdministrator
+    ? "Restart as Administrator"
+    : isStartingWipe
+      ? "Starting wipe"
+    : !selectedDrive?.isReady
+      ? "Select a ready drive first"
+      : "Wait for the current wipe to finish"
+
+  return (
+    <section className="section-surface min-w-0">
+      <div className="flex items-center gap-2.5">
+        <ShieldCheck className="size-4 shrink-0 text-muted" aria-hidden />
+        <span className="font-display text-sm font-semibold tracking-tight text-primary">Review</span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 divide-x divide-y divide-border border-y border-border">
+        <MetricTile label="Scanned partitions" value={String(drives.length)} />
+        <MetricTile label="Reclaimable space" value="0 B" />
+        <MetricTile label="Cleanup item" value="Free-space overwrite" />
+        <MetricTile label="Existing files" value="Untouched" good />
+      </div>
+      <div className="mt-3 grid gap-2 text-sm">
+        <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-2">
+          <span className="text-muted">Selected drive</span>
+          <span className="truncate text-right font-medium text-primary">{selectedDrive?.rootPath ?? "None"}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-2">
+          <span className="text-muted">Risk / fit</span>
+          <span className="text-right text-secondary">{getPartitionRiskLabel(selectedDrive)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-2">
+          <span className="text-muted">Estimated writes</span>
+          <span className="text-right text-secondary">{estimateWipeWriteDisplay(selectedDrive)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-2">
+          <span className="text-muted">Estimated duration</span>
+          <span className="text-right text-secondary">{estimateWipeDurationDisplay(selectedDrive)}</span>
+        </div>
+      </div>
+      <div className={cn("mt-3 rounded-md border px-3 py-2 text-sm leading-snug", getMediaGuidanceClass(guidance.tone))}>
+        <div className="font-medium">{guidance.label}</div>
+        <div className="mt-1 text-secondary">{guidance.description}</div>
+      </div>
+      {wipeError ? (
+        <div className="app-inline-notice app-inline-notice-warning mt-3">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" aria-hidden />
+          <span>{wipeError}</span>
+        </div>
+      ) : null}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {isRunning ? (
+          <>
+            <Button variant="destructive" onClick={onRequestCancel}>
+              <PowerOff data-icon="inline-start" />
+              Cancel Wipe
+            </Button>
+            <Button variant="outline" disabled>
+              <Play data-icon="inline-start" />
+              Wipe Free Space
+            </Button>
+          </>
+        ) : (
+          <ActionWithReason disabled={!canStart} reason={disabledReason}>
+            <Button variant="destructive" onClick={onRequestWipe} disabled={!canStart}>
+              <Play data-icon="inline-start" />
+              {isStartingWipe ? "Starting..." : "Wipe Free Space"}
+            </Button>
+          </ActionWithReason>
+        )}
+        {wipeStatus?.state && wipeStatus.state !== "Running" ? (
+          <PartitionPill tone={wipeStatus.state === "Completed" ? "good" : "warning"}>{wipeStatus.state}</PartitionPill>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function PartitionRunStatus({ status }: { status: FreeSpaceWipeStatus | null }) {
+  if (!status) return null
+
+  const percent = Math.max(0, Math.min(100, Number.isFinite(status.percent) ? status.percent : 0))
+  const finalMessage = getWipeFinalMessage(status)
+  const cleanupLabel = getCleanupStatusLabel(status.cleanupStatus)
+  const completed = status.state !== "Running"
+
+  return (
+    <section className="section-surface">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <Download className="size-4 shrink-0 text-muted" aria-hidden />
+          <span className="font-display text-sm font-semibold tracking-tight text-primary">{completed ? "Report" : "Run Status"}</span>
+        </div>
+        <PartitionPill tone={status.state === "Completed" ? "good" : status.state === "Running" ? "accent" : "warning"}>{status.state}</PartitionPill>
+      </div>
+      <div className="mt-3">
+        <div className="flex items-center justify-between gap-3 text-xs text-muted">
+          <span>{status.status || getWipePassSummary(status)}</span>
+          <span>{Math.round(percent)}%</span>
+        </div>
+        <div className="mt-1.5 h-2 overflow-hidden rounded-sm bg-border/70" role="progressbar" aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100}>
+          <div className="h-full bg-accent" style={{ width: `${percent}%` }} />
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 divide-x divide-y divide-border border-y border-border md:grid-cols-4">
+        <MetricTile label={getWipePassMetricLabel(status)} value={getWipePassSummary(status)} />
+        <MetricTile label="Elapsed" value={getWipeElapsedDisplay(status)} />
+        <MetricTile label="Cleanup" value={cleanupLabel} good={status.cleanupStatus === "cleanupSucceeded" || status.cleanupStatus === "notNeeded"} />
+        <MetricTile label="Drive" value={status.driveRoot || "Unknown"} />
+      </div>
+      <div className={cn("mt-3 rounded-md border px-3 py-2 text-sm leading-snug", status.state === "Completed" ? "border-accent-green/30 bg-accent-green/10 text-accent-green" : status.state === "Running" ? "border-accent/30 bg-accent/10 text-accent" : "border-amber-400/30 bg-amber-400/10 text-amber-200")}>
+        {finalMessage}
+      </div>
+      {status.output ? (
+        <pre className="terminal-output mt-3 max-h-[320px]">{status.output}</pre>
+      ) : null}
+    </section>
+  )
+}
+
+function PartitionPill({
+  tone,
+  children,
+}: {
+  tone: "good" | "warning" | "neutral" | "muted" | "accent"
+  children: React.ReactNode
+}) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "inline-flex h-6 w-fit items-center gap-1 px-2 text-xs",
+        tone === "good" && "border-accent-green/35 bg-accent-green/10 text-accent-green",
+        tone === "warning" && "border-amber-400/45 bg-amber-400/12 text-amber-200",
+        tone === "accent" && "border-accent/35 bg-accent/12 text-accent",
+        tone === "neutral" && "border-border-strong bg-bg-subtle text-secondary",
+        tone === "muted" && "border-border/70 bg-bg-subtle/50 text-muted"
+      )}
+    >
+      {children}
+    </Badge>
+  )
+}
+
+function getCleanupStatusLabel(value: FreeSpaceWipeStatus["cleanupStatus"]) {
+  switch (value) {
+    case "cleanupSucceeded":
+      return "Cleanup succeeded"
+    case "cleanupFailed":
+      return "Cleanup failed"
+    case "notNeeded":
+      return "Not needed"
+    case "unknown":
+    default:
+      return "Unknown"
+  }
+}
+
+function rootsEqual(left: string, right: string) {
+  return left.trim().toLowerCase() === right.trim().toLowerCase()
 }
 
 export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdministrator }: MaintenancePageProps) {
@@ -1134,6 +1709,13 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
   const pageStartIndex = safeIssuePageIndex * registryIssuePageSize
   const pagedIssues = visibleIssues.slice(pageStartIndex, pageStartIndex + registryIssuePageSize)
   const selectedIssue = visibleIssues.find((issue) => issue.id === selectedIssueId) ?? pagedIssues[0] ?? issues[0] ?? null
+  const selectableIssues = useMemo(() => issues.filter((issue) => issue.canClean), [issues])
+  const visibleSelectableIssues = useMemo(() => visibleIssues.filter((issue) => issue.canClean), [visibleIssues])
+  const pageSelectableIssues = useMemo(() => pagedIssues.filter((issue) => issue.canClean), [pagedIssues])
+  const allPageIssuesSelected = pageSelectableIssues.length > 0 && pageSelectableIssues.every((issue) => selectedIdSet.has(issue.id))
+  const allSelectableIssuesSelected = selectableIssues.length > 0 && selectableIssues.every((issue) => selectedIdSet.has(issue.id))
+  const fixAllNeedsAdministrator = selectableIssues.some((issue) => issue.hive === "HKLM")
+  const canFixAll = selectableIssues.length > 0 && !isScanning && !isFixing && (!fixAllNeedsAdministrator || isAdministrator)
   const highIssues = issues.filter((issue) => getRegistrySeverityTone(issue.severity) === "high").length
   const mediumIssues = issues.filter((issue) => getRegistrySeverityTone(issue.severity) === "medium").length
   const visibleRangeStart = visibleIssues.length === 0 ? 0 : pageStartIndex + 1
@@ -1202,8 +1784,9 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
     const targetIssues = getIssuesForIds(targetIds)
     if (targetIssues.length === 0) { toast.error("Select at least one registry issue."); return }
     if (targetIssues.some((issue) => issue.hive === "HKLM") && !isAdministrator) { toast.error("Restart FileLocker as administrator before fixing selected registry issues."); return }
-    setPendingFixIds(targetIds)
-    if (skipRegistryConfirmation) { void fixRegistry(targetIds); return }
+    const targetIssueIds = targetIssues.map((issue) => issue.id)
+    setPendingFixIds(targetIssueIds)
+    if (skipRegistryConfirmation) { void fixRegistry(targetIssueIds); return }
     setShowRegistryConfirmation(true)
   }
 
@@ -1216,7 +1799,8 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
     setShowRegistryConfirmation(false)
     setIsFixing(true)
     try {
-      const response = await invoke<RegistryCleanResult>("maintenance.cleanRegistry", { issueIds: targetIds, confirmation: "FIX REGISTRY" })
+      const targetIssueIds = targetIssues.map((issue) => issue.id)
+      const response = await invoke<RegistryCleanResult>("maintenance.cleanRegistry", { issueIds: targetIssueIds, confirmation: "FIX REGISTRY" })
       setLastClean(response)
       setScan(response.scan)
       setLastScanTime(formatRegistryScanTime(new Date()))
@@ -1242,6 +1826,14 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
     )
   }
 
+  function setRegistryIssuesSelected(targetIssues: RegistryIssue[], selected: boolean) {
+    if (isScanning || isFixing) return
+    const ids = targetIssues.filter((issue) => issue.canClean).map((issue) => issue.id)
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    setSelectedIds((current) => selected ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !idSet.has(id)))
+  }
+
   async function copyIssueDetails(issue: RegistryIssue) {
     try {
       await navigator.clipboard.writeText(formatRegistryIssueDetails(issue))
@@ -1251,7 +1843,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
     }
   }
 
-  const pendingFixCount = pendingFixIds.length > 0 ? pendingFixIds.length : selectedIds.length
+  const pendingFixCount = pendingFixIds.length > 0 ? pendingFixIds.length : selectedIssues.length
 
   return (
     <MaintenanceFrame>
@@ -1267,10 +1859,20 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
         <div className="flex flex-wrap items-center justify-between gap-3">
           <ScanStepIndicator current={lastClean ? "apply" : selectedIssues.length > 0 ? "apply" : "review"} applyLabel="Fix" />
           <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => setRegistryIssuesSelected(selectableIssues, !allSelectableIssuesSelected)} disabled={selectableIssues.length === 0 || isScanning || isFixing}>
+              <CheckCircle2 data-icon="inline-start" />
+              {allSelectableIssuesSelected ? "Clear All" : "Select All"}
+            </Button>
             <Button variant="outline" onClick={() => void scanRegistry()} disabled={isScanning || isFixing}>
               <RefreshCcw data-icon="inline-start" />
               {isScanning ? "Scanning..." : "Rescan"}
             </Button>
+            <ActionWithReason disabled={!canFixAll} reason={selectableIssues.length === 0 ? "No cleanable issues" : fixAllNeedsAdministrator && !isAdministrator ? "Restart as Administrator" : "Wait for the current scan to finish"}>
+              <Button variant="outline" onClick={() => requestFixRegistry(selectableIssues.map((issue) => issue.id))} disabled={!canFixAll}>
+                <Wrench data-icon="inline-start" />
+                {isFixing ? "Fixing..." : "Fix All"}
+              </Button>
+            </ActionWithReason>
             <ActionWithReason disabled={!canFix} reason={selectedIssues.length === 0 ? "Select an item" : registryNeedsAdministrator && !isAdministrator ? "Restart as Administrator" : "Wait for the current scan to finish"}>
               <Button onClick={() => requestFixRegistry()} disabled={!canFix}>
                 <Wrench data-icon="inline-start" />
@@ -1358,12 +1960,21 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
                     <option value="key">Sort by: Registry Key</option>
                   </AppManagerSelect>
                 </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+                  <span>{selectedIssues.length} of {selectableIssues.length} cleanable issue{selectableIssues.length === 1 ? "" : "s"} selected</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={selectableIssues.length === 0 || isScanning || isFixing} onClick={() => setRegistryIssuesSelected(selectableIssues, true)}>Select All</Button>
+                    <Button variant="outline" size="sm" disabled={visibleSelectableIssues.length === 0 || isScanning || isFixing} onClick={() => setRegistryIssuesSelected(visibleSelectableIssues, true)}>Select Filtered</Button>
+                    <Button variant="outline" size="sm" disabled={selectedIssues.length === 0 || isScanning || isFixing} onClick={() => setSelectedIds([])}>Clear Selection</Button>
+                  </div>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
                 <div className="min-w-[980px]">
                   <div className="grid grid-cols-[36px_minmax(240px,1.15fr)_minmax(260px,1fr)_110px_minmax(180px,.8fr)_120px] gap-3 border-b border-border/70 bg-bg-subtle/65 px-4 py-2 text-xs font-medium text-muted">
-                    <span />
+                    <Checkbox checked={allPageIssuesSelected} disabled={pageSelectableIssues.length === 0 || isScanning || isFixing} aria-label="Select all registry issues on this page" onCheckedChange={(checked) => setRegistryIssuesSelected(pageSelectableIssues, checked === true)} />
                     <span>Issue</span>
                     <span>Registry Key</span>
                     <span>Severity</span>
@@ -3513,7 +4124,11 @@ function ToolOutput({ result, runningLabel, errorMessage }: { result: Maintenanc
 
 function useSelectedDrive(drives: MaintenanceDrive[], selectedDriveRoot: string) {
   return useMemo(
-    () => drives.find((d) => d.rootPath.toLowerCase() === selectedDriveRoot.toLowerCase()) ?? drives.find((d) => d.isReady) ?? null,
+    () => {
+      const normalizedRoot = selectedDriveRoot.trim().toLowerCase()
+      if (normalizedRoot) return drives.find((d) => d.rootPath.toLowerCase() === normalizedRoot) ?? null
+      return drives.find((d) => d.isReady) ?? null
+    },
     [drives, selectedDriveRoot]
   )
 }

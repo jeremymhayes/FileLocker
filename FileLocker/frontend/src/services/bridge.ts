@@ -64,7 +64,8 @@ function ensureListener() {
       message.type === "progress" ||
       message.type === "droppedPaths" ||
       message.type === "dropError" ||
-      message.type === "updateAvailable"
+      message.type === "updateAvailable" ||
+      message.type === "maintenanceWipeStatus"
     ) {
       notifyBridgeListeners(message as BridgeEvent)
       return

@@ -694,7 +694,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap gap-2">
+            <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline">
@@ -1154,7 +1154,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap gap-2">
+            <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline">
@@ -1897,7 +1897,7 @@ export function SecureDeletePage({
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline">

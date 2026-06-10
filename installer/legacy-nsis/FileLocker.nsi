@@ -19,7 +19,7 @@
 !endif
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.2.2.1"
+  !define APP_VERSION "1.3.0.0"
 !endif
 
 !ifndef APP_FILE_VERSION
