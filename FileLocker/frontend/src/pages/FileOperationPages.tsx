@@ -102,6 +102,15 @@ const defaultOptions = {
 
 const MAX_METADATA_NOTES_CHARS = 4096
 
+type EncryptPreset = "recommended" | "private" | "transfer" | "advanced"
+
+const ENCRYPT_PRESETS: Array<{ id: EncryptPreset; label: string; detail: string }> = [
+  { id: "recommended", label: "Recommended", detail: "Compress, verify, keep originals." },
+  { id: "private", label: "Private archive", detail: "Scramble names and remove originals after success." },
+  { id: "transfer", label: "Transfer copy", detail: "Use a portable PNG carrier when supported." },
+  { id: "advanced", label: "Advanced", detail: "Keep current options and tune manually." },
+]
+
 const encryptionGuidePoints = [
   "Files are encrypted locally with FileLocker. Nothing is uploaded as part of a normal encryption run.",
   "The selected cipher is written into new .locked files. Decryption reads it automatically.",
@@ -167,6 +176,8 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const [activeOperationId, setActiveOperationId] = useState("")
   const [submitAttempted, setSubmitAttempted] = useState(false)
   const [encryptOutputSuggestion, setEncryptOutputSuggestion] = useState<EncryptOutputSuggestion | null>(null)
+  const [encryptPreset, setEncryptPreset] = useState<EncryptPreset>("recommended")
+  const [encryptOutputMode, setEncryptOutputMode] = useState<"source" | "folder">("source")
   const [pathDetails, setPathDetails] = useState<SelectedPathDescriptor[]>([])
   const [pathWarnings, setPathWarnings] = useState<string[]>([])
   const [totalSizeDisplay, setTotalSizeDisplay] = useState("Calculated at run start")
@@ -186,7 +197,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
   const hasPassword = password.trim().length > 0
   const hasRecoveryKey = recoveryKey.trim().length > 0
   const hasUnlockSecret = hasPassword || hasRecoveryKey
-  const savesNextToSource = encryptOutputDirectory.trim().length === 0
+  const savesNextToSource = encryptOutputMode === "source"
   const encryptHistory = useMemo(
     () => (dashboard?.history ?? []).filter((entry) => entry.operation === "Encrypt").slice(0, 6),
     [dashboard]
@@ -308,7 +319,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
         }
 
         setEncryptOutputSuggestion(suggestion)
-        if (suggestion.suggestedPath) {
+        if (suggestion.suggestedPath && encryptOutputMode === "folder") {
           setEncryptOutputDirectory((current) => current.trim() ? current : (suggestion.suggestedPath ?? current))
         }
       })
@@ -321,7 +332,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     return () => {
       cancelled = true
     }
-  }, [invoke, isEncrypt, paths])
+  }, [encryptOutputMode, invoke, isEncrypt, paths])
 
   useEffect(() => {
     if (!(isEncrypt || isDecrypt)) {
@@ -379,6 +390,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     confirmPassword,
     keyfilePath,
     recoveryKey,
+    encryptOutputMode,
     encryptOutputDirectory,
     decryptOutputDirectory,
     backupFolderPath,
@@ -474,6 +486,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     try {
       const result = await invoke<{ path: string }>("files.pickFolder")
       if (result.path) {
+        setEncryptOutputMode("folder")
         setEncryptOutputDirectory(result.path)
       }
     } catch (error) {
@@ -515,10 +528,11 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
 
   function handleSaveNextToSourceChange(enabled: boolean) {
     if (enabled) {
-      setEncryptOutputDirectory("")
+      setEncryptOutputMode("source")
       return
     }
 
+    setEncryptOutputMode("folder")
     if (encryptOutputSuggestion?.suggestedPath) {
       setEncryptOutputDirectory(encryptOutputSuggestion.suggestedPath)
       return
@@ -531,6 +545,48 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     if (enabled) {
       setDecryptOutputDirectory("")
     }
+  }
+
+  function applyEncryptPreset(preset: EncryptPreset) {
+    setEncryptPreset(preset)
+    if (preset === "advanced") {
+      return
+    }
+
+    setOptions((current) => {
+      switch (preset) {
+        case "recommended":
+          return {
+            ...current,
+            compressFiles: true,
+            scrambleNames: false,
+            useSteganography: false,
+            verifyAfterWrite: true,
+            removeOriginalsAfterSuccess: false,
+            secureDeleteOriginals: false,
+          }
+        case "private":
+          return {
+            ...current,
+            compressFiles: true,
+            scrambleNames: true,
+            useSteganography: false,
+            verifyAfterWrite: true,
+            removeOriginalsAfterSuccess: true,
+            secureDeleteOriginals: true,
+          }
+        case "transfer":
+          return {
+            ...current,
+            compressFiles: true,
+            scrambleNames: false,
+            useSteganography: canUsePngCarrier,
+            verifyAfterWrite: true,
+            removeOriginalsAfterSuccess: false,
+            secureDeleteOriginals: false,
+          }
+      }
+    })
   }
 
   function handleAlgorithmChange(nextAlgorithm: string) {
@@ -583,7 +639,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
     const operationId = crypto.randomUUID()
     setActiveOperationId(operationId)
     try {
-      const normalizedEncryptOutputDirectory = encryptOutputDirectory.trim()
+      const normalizedEncryptOutputDirectory = encryptOutputMode === "folder" ? encryptOutputDirectory.trim() : ""
       const normalizedDecryptOutputDirectory = decryptOutputDirectory.trim()
       const normalizedBackupFolderPath = backupFolderPath.trim()
 
@@ -638,7 +694,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap gap-2">
+            <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline">
@@ -780,9 +836,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                           details: "Preparing details",
                         }))).map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                             : item.isDirectory
-                              ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                              ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                               : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -886,6 +942,28 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                   <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Encryption Options</SectionTitle>
                 </SectionHeader>
                 <SectionBody className="flex flex-col gap-3 px-4 py-3">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {ENCRYPT_PRESETS.map((preset) => {
+                      const active = encryptPreset === preset.id
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => applyEncryptPreset(preset.id)}
+                          disabled={isRunning}
+                          className={cn(
+                            "rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                            active ? "border-accent bg-accent/10 text-primary" : "border-border/60 bg-bg-subtle/35 text-secondary hover:border-border-accent hover:bg-bg-surface-hover/60"
+                          )}
+                        >
+                          <span className="block font-display text-sm font-semibold tracking-tight">{preset.label}</span>
+                          <span className="mt-0.5 block text-xs leading-snug text-secondary">{preset.detail}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+
                   <Field label="Algorithm">
                     <Select value={selectedAlgorithm?.id ?? ""} onValueChange={handleAlgorithmChange} disabled={isRunning || !selectedAlgorithm}>
                       <SelectTrigger>
@@ -921,7 +999,16 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
 
                   <Field label="Output Location">
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save next to source files" disabled={isRunning} />
+                      <Input
+                        value={encryptOutputDirectory}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          setEncryptOutputDirectory(value)
+                          setEncryptOutputMode(value.trim() ? "folder" : "source")
+                        }}
+                        placeholder="Leave blank to save next to source files"
+                        disabled={isRunning}
+                      />
                       <Button type="button" variant="secondary" onClick={() => void pickEncryptOutputFolder()} disabled={isRunning}>
                         <FolderOpen data-icon="inline-start" />
                         Browse
@@ -1067,7 +1154,7 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-wrap gap-2">
+            <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
               <Dialog>
                 <DialogTrigger asChild>
                   <Button variant="outline">
@@ -1209,11 +1296,11 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                           details: "Preparing details",
                         }))).map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                             : !hasUnlockSecret
                               ? { label: "Unlock material required", dotClass: "bg-accent-orange", textClass: "text-accent-orange" }
                               : item.isDirectory
-                                ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                                ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                                 : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -1473,7 +1560,16 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
             <Field label="Encrypt Output Folder">
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input value={encryptOutputDirectory} onChange={(event) => setEncryptOutputDirectory(event.target.value)} placeholder="Leave blank to save beside the source file" disabled={isRunning} />
+                  <Input
+                    value={encryptOutputDirectory}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      setEncryptOutputDirectory(value)
+                      setEncryptOutputMode(value.trim() ? "folder" : "source")
+                    }}
+                    placeholder="Leave blank to save beside the source file"
+                    disabled={isRunning}
+                  />
                   <Button type="button" variant="secondary" onClick={pickEncryptOutputFolder} disabled={isRunning}>
                     <FolderOpen data-icon="inline-start" />
                     Browse...
@@ -1481,11 +1577,17 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                 </div>
                 {encryptOutputSuggestion?.suggestedPath ? (
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="outline" onClick={() => setEncryptOutputDirectory(encryptOutputSuggestion.suggestedPath ?? "")} disabled={isRunning}>
+                    <Button type="button" variant="outline" onClick={() => {
+                      setEncryptOutputMode("folder")
+                      setEncryptOutputDirectory(encryptOutputSuggestion.suggestedPath ?? "")
+                    }} disabled={isRunning}>
                       Use Suggested Folder
                     </Button>
                     {encryptOutputDirectory ? (
-                      <Button type="button" variant="ghost" onClick={() => setEncryptOutputDirectory("")} disabled={isRunning}>
+                      <Button type="button" variant="ghost" onClick={() => {
+                        setEncryptOutputMode("source")
+                        setEncryptOutputDirectory("")
+                      }} disabled={isRunning}>
                         Use Source Folders Instead
                       </Button>
                     ) : null}
@@ -1795,7 +1897,7 @@ export function SecureDeletePage({
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline">
@@ -1961,7 +2063,7 @@ export function SecureDeletePage({
                       <div className="divide-y divide-border/80">
                         {resolvedItems.map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Reading", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Reading", dotClass: "bg-accent", textClass: "text-accent" }
                             : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -2018,7 +2120,7 @@ export function SecureDeletePage({
                     <div
                       className={cn(
                         "h-full transition-[width] duration-300",
-                        hasActionError ? "bg-destructive" : hasResults ? "bg-accent-green" : isRunning ? "bg-accent-blue" : "bg-border"
+                        hasActionError ? "bg-destructive" : hasResults ? "bg-accent-green" : isRunning ? "bg-accent" : "bg-border"
                       )}
                       style={{ width: `${stateProgress}%` }}
                     />
@@ -2076,7 +2178,7 @@ export function SecureDeletePage({
                       disabled={isRunning}
                       onClick={() => setDeleteMethodId(method.id)}
                     >
-                      <span className={cn("mt-0.5 flex size-5 items-center justify-center rounded-md border border-border text-transparent", isSelected && "border-accent bg-accent text-white")}>
+                      <span className={cn("mt-0.5 flex size-5 items-center justify-center rounded-md border border-border text-transparent", isSelected && "border-accent bg-accent text-accent-foreground")}>
                         <CheckCircle2 className="size-3.5" aria-hidden />
                       </span>
                       <span className="min-w-0 flex-1">

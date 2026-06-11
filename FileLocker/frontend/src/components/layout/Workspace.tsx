@@ -1,4 +1,7 @@
+import { useId, useState } from "react"
 import type { ElementType, ReactNode } from "react"
+import { ChevronDown, SlidersHorizontal } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type PrimitiveProps = {
@@ -91,6 +94,69 @@ export function SettingsRow({ label, detail, children }: { label: string; detail
         {detail ? <div className="mt-0.5 truncate text-xs text-secondary">{detail}</div> : null}
       </div>
       <div className="flex min-w-0 justify-start md:justify-end">{children}</div>
+    </div>
+  )
+}
+
+type AdvancedSectionProps = {
+  children: ReactNode
+  summary?: ReactNode
+  hint?: ReactNode
+  icon?: LucideIcon
+  defaultOpen?: boolean
+  className?: string
+}
+
+export function AdvancedSection({ children, summary = "Advanced", hint, icon: Icon = SlidersHorizontal, defaultOpen = false, className }: AdvancedSectionProps) {
+  const [open, setOpen] = useState(defaultOpen)
+  const bodyId = useId()
+
+  return (
+    <div className={cn("border-t border-border pt-3", className)}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left text-sm font-semibold text-secondary transition-colors hover:text-primary"
+      >
+        <Icon className="size-4 shrink-0" aria-hidden />
+        <span className="min-w-0 flex-1">{summary}</span>
+        <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} aria-hidden />
+      </button>
+      {hint ? <p className="ml-6 text-xs leading-snug text-muted">{hint}</p> : null}
+      <div id={bodyId} hidden={!open} className={cn(open && "mt-3 space-y-3")}>
+        {open ? children : null}
+      </div>
+    </div>
+  )
+}
+
+export const Disclosure = AdvancedSection
+
+type ScanEmptyStateProps = {
+  title: ReactNode
+  description?: ReactNode
+  eyebrow?: ReactNode
+  icon?: LucideIcon
+  action?: ReactNode
+  className?: string
+}
+
+export function ScanEmptyState({ eyebrow, title, description, icon: Icon, action, className }: ScanEmptyStateProps) {
+  return (
+    <div className={cn("app-empty-state min-h-40 items-center gap-3 px-6 py-8 text-center", className)}>
+      {Icon ? (
+        <div className="flex size-12 items-center justify-center rounded-full border border-accent/25 bg-accent/10 text-accent">
+          <Icon className="size-6" aria-hidden />
+        </div>
+      ) : null}
+      <div>
+        {eyebrow ? <p className="security-label mb-1 justify-center text-center">{eyebrow}</p> : null}
+        <p className="font-display text-lg font-semibold text-primary">{title}</p>
+        {description ? <p className="mx-auto mt-1 max-w-lg text-sm leading-snug text-secondary">{description}</p> : null}
+      </div>
+      {action ? <div>{action}</div> : null}
     </div>
   )
 }

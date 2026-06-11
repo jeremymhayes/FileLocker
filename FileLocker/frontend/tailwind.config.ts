@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        "bg-base": "#0f1623",
+        "bg-base": "#0d1420",
         "bg-sidebar": "#141c2e",
         "bg-surface": "#1a2440",
         "bg-surface-hover": "#1e2a4a",
@@ -25,7 +25,7 @@ export default {
         "accent-red": "#ef4444",
         "nav-active-bg": "#1e3a5f",
         "nav-active-border": "#3b82f6",
-        background: "#0f1623",
+        background: "#0d1420",
         sidebar: "#141c2e",
         surface: "#1a2440",
         "surface-elevated": "#1e2a4a",
@@ -37,6 +37,22 @@ export default {
         "accent-hover": "#2563eb",
         destructive: "#ef4444",
         warning: "#f97316",
+        "signal-success": "var(--signal-success)",
+        "signal-success-strong": "var(--signal-success-strong)",
+        "signal-success-soft": "var(--signal-success-soft)",
+        "signal-success-border": "var(--signal-success-border)",
+        "signal-success-foreground": "var(--signal-success-foreground)",
+        "signal-review": "var(--signal-review)",
+        "signal-review-strong": "var(--signal-review-strong)",
+        "signal-review-soft": "var(--signal-review-soft)",
+        "signal-review-border": "var(--signal-review-border)",
+        "signal-review-foreground": "var(--signal-review-foreground)",
+        "row-hover": "var(--row-hover)",
+        "row-selected": "var(--row-selected)",
+        "row-selected-border": "var(--row-selected-border)",
+      },
+      borderRadius: {
+        panel: "var(--radius-panel)",
       },
       fontFamily: {
         mono: ['"IBM Plex Mono"', "monospace"],

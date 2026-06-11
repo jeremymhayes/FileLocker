@@ -1,0 +1,120 @@
+<h2>Partition Cleaner Hybrid, Running State</h2>
+<p class="subtitle">Guided structure, inspector details, corrected risk model, and stateful controls while cipher is running.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Page: Partition Cleaner / Tool: Free-Space Sanitizer</div>
+  <div class="mockup-body">
+    <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid #2f3a4d;padding-bottom:12px">
+      <div>
+        <div style="font-weight:700;color:#eef4ff;font-size:16px">Free-Space Sanitizer</div>
+        <div style="margin-top:4px;color:#b5bfd0;font-size:13px">Overwrite unused space so already-deleted files on the selected drive are harder to recover.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="border:1px solid #31533f;background:#102219;color:#38c98f;border-radius:6px;padding:6px 8px;font-size:12px">Running as admin</span>
+        <button class="mock-button" style="opacity:.5">Refresh Drives</button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:14px;color:#98a5b8;font-size:12px">
+      <span style="border:1px solid #31533f;background:#102219;color:#38c98f;border-radius:6px;padding:5px 8px">1 Select drive</span>
+      <span>›</span>
+      <span style="border:1px solid #31533f;background:#102219;color:#38c98f;border-radius:6px;padding:5px 8px">2 Review impact</span>
+      <span>›</span>
+      <span style="border:1px solid #5d8dff;background:#162642;color:#5d8dff;border-radius:6px;padding:5px 8px">3 Wipe free space</span>
+      <span>›</span>
+      <span style="border:1px solid #2f3a4d;border-radius:6px;padding:5px 8px">4 Report</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1.08fr) 370px;gap:14px;margin-top:14px">
+      <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;background:#172033;color:#98a5b8;font-size:11px;padding:8px 10px">
+          <span>Drive</span><span>Free</span><span>Format</span><span>Media</span><span>Status</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;color:#aab5c6">
+          <span>C: Windows</span><span>118 GB</span><span>NTFS</span><span>SSD</span><span style="color:#e6a14a">Limited</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;background:#19243a;color:#eef4ff">
+          <span>D: Storage</span><span>412 GB</span><span>NTFS</span><span>HDD</span><span style="color:#38c98f">Running</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;color:#8a96a8">
+          <span>E: Recovery</span><span>Unknown</span><span>RAW</span><span>Unknown</span><span>Unsupported</span>
+        </div>
+        <div style="padding:9px 10px;border-top:1px solid #2f3a4d;color:#aab5c6;font-size:12px;background:#121b2c">
+          E: is disabled because RAW or unformatted volumes are not supported by Windows cipher.
+        </div>
+      </div>
+
+      <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+        <div style="padding:11px 12px;border-bottom:1px solid #2f3a4d;background:#141d2e">
+          <div style="font-weight:700;color:#eef4ff">Review selected drive</div>
+          <div style="margin-top:3px;color:#b5bfd0;font-size:12px">D:\ Storage, NTFS, HDD</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:#2f3a4d">
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Existing files</span><br><b style="color:#38c98f">Untouched</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Cost</span><br><b style="color:#e6a14a">Long, heavy writes</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Free space</span><br><b>412 GB</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Estimate</span><br><b>~2-5 hours</b></div>
+        </div>
+        <div style="padding:12px">
+          <div style="border:1px solid #31533f;background:#102219;color:#38c98f;border-radius:6px;padding:10px;font-size:12px;line-height:1.4">
+            Good fit for this drive. Free-space overwrite works as intended on traditional hard drives. About 1.2 TB will be written across 3 passes.
+          </div>
+          <div style="border:1px solid #5f4521;background:#251d12;color:#e6a14a;border-radius:6px;padding:10px;font-size:12px;line-height:1.4;margin-top:8px">
+            This does not erase current files. It writes temporary data into free space, then removes it. Avoid running it while the drive is busy.
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+            <button class="mock-button" style="opacity:.45">Wipe Free Space</button>
+            <button class="mock-button" style="border-color:#e6a14a;color:#e6a14a">Cancel Wipe</button>
+          </div>
+          <div style="margin-top:8px;color:#aab5c6;font-size:12px;line-height:1.35">
+            Cancel asks for confirmation and reports that the drive was only partially processed. Cleanup attempts to remove any temporary cipher files.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 370px;gap:14px;margin-top:14px">
+      <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px;color:#b5bfd0;font-size:13px">
+        <div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:8px">
+          <div style="font-weight:700;color:#eef4ff">Wipe in progress</div>
+          <div style="color:#5d8dff">Pass 1 of 3</div>
+        </div>
+        <div style="height:8px;background:#202a3a;border-radius:999px;overflow:hidden;margin-bottom:8px">
+          <div style="height:100%;width:34%;background:#5d8dff"></div>
+        </div>
+        <div>Writing zeros to free space on D:. Drive selection, refresh, and wipe actions stay disabled until the run completes or is cancelled.</div>
+      </div>
+      <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;color:#eef4ff">Command output</div>
+          <button class="mock-button">Hide</button>
+        </div>
+        <div style="background:#0b101a;border:1px solid #202a3a;border-radius:5px;padding:9px;color:#98a5b8;font-family:monospace;font-size:11px;min-height:54px">
+          cipher /w:D:\<br>Writing 0x00 ...<br>Free space is being overwritten.
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px;color:#b5bfd0;font-size:13px;margin-top:14px">
+      <div style="font-weight:700;color:#eef4ff;margin-bottom:8px">Report state after completion</div>
+      <div>Show passes completed, elapsed time, drive root, media type, and a plain result: "Deleted-file traces in free space on D: were overwritten." If cancelled, say "Wipe incomplete" and show which pass was interrupted.</div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-v3" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content">
+      <h3>Approve this structure</h3>
+      <p>Use this as the basis for the written design spec.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="needs-v4" onclick="toggleSelect(this)">
+    <div class="letter">↻</div>
+    <div class="content">
+      <h3>One more revision</h3>
+      <p>Keep the direction, but adjust the flow, copy, or state handling before spec.</p>
+    </div>
+  </div>
+</div>

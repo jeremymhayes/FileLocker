@@ -97,6 +97,35 @@ public sealed class AppPreferencesStoreTests : IDisposable
         Assert.False(preferences.IncognitoMode);
         Assert.Equal("Current time", preferences.OutputTimestampPolicy);
         Assert.Equal(ThemePreference.Dark, preferences.ThemePreference);
+        Assert.True(preferences.ExplorerIntegrationEnabled);
+    }
+
+    [Fact]
+    public async Task LoadAsync_DefaultsExplorerIntegrationToEnabled()
+    {
+        AppPreferences preferences = await AppPreferencesStore.LoadAsync(_rootPath);
+
+        Assert.True(preferences.ExplorerIntegrationEnabled);
+    }
+
+    [Fact]
+    public async Task LoadAsync_PreservesDisabledExplorerIntegration()
+    {
+        Directory.CreateDirectory(_rootPath);
+        string path = Path.Combine(_rootPath, "preferences.json");
+        await File.WriteAllTextAsync(
+            path,
+            """
+            {
+              "ExplorerIntegrationEnabled": false
+            }
+            """,
+            Encoding.UTF8,
+            TestContext.Current.CancellationToken);
+
+        AppPreferences preferences = await AppPreferencesStore.LoadAsync(_rootPath);
+
+        Assert.False(preferences.ExplorerIntegrationEnabled);
     }
 
     [Fact]

@@ -8,12 +8,14 @@
     "build": "tsc && vite build && node scripts/copy-public-files.mjs",
     "test:startup": "node scripts/test-startup-list-utils.mjs",
     "test:encryption-algorithms": "node scripts/test-encryption-algorithms.mjs",
+    "test:wipe-status": "node scripts/test-wipe-status-utils.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^10.4.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.13"
   },

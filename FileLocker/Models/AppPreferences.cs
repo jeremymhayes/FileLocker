@@ -61,6 +61,10 @@ public sealed class AppPreferences
     public string CustomDecryptOutputDirectory { get; set; } = string.Empty;
 
     public ThemePreference ThemePreference { get; set; } = ThemePreference.Dark;
+
+    public string AccentTheme { get; set; } = AppPreferencesStore.DefaultAccentTheme;
+
+    public bool ExplorerIntegrationEnabled { get; set; } = true;
 }
 
 internal static class AppPreferencesStore
@@ -76,6 +80,18 @@ internal static class AppPreferencesStore
         CurrentTimeTimestampPolicy,
         PreserveSourceTimestampsPolicy,
         RandomizeTimestampPolicy
+    ];
+
+    internal const string DefaultAccentTheme = "blue";
+
+    private static readonly string[] ValidAccentThemes =
+    [
+        DefaultAccentTheme,
+        "orange",
+        "purple",
+        "green",
+        "red",
+        "slate"
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -186,7 +202,21 @@ internal static class AppPreferencesStore
             preferences.ThemePreference = ThemePreference.Dark;
         }
 
+        preferences.AccentTheme = NormalizeAccentTheme(preferences.AccentTheme);
+
         return preferences;
+    }
+
+    internal static string NormalizeAccentTheme(string? accentTheme)
+    {
+        if (string.IsNullOrWhiteSpace(accentTheme))
+        {
+            return DefaultAccentTheme;
+        }
+
+        return ValidAccentThemes.FirstOrDefault(
+                validTheme => string.Equals(validTheme, accentTheme.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? DefaultAccentTheme;
     }
 
     internal static string NormalizePreferenceDirectory(string? directory)

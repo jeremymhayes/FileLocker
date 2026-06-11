@@ -9,7 +9,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-accent bg-accent text-[#08111f] [a]:hover:bg-accent-hover hover:border-accent-hover hover:bg-accent-hover",
+        default: "border-accent bg-accent text-accent-foreground [a]:hover:bg-accent-hover hover:border-accent-hover hover:bg-accent-hover",
         outline:
           "border-border/80 bg-transparent text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary aria-expanded:border-accent aria-expanded:text-primary",
         secondary:

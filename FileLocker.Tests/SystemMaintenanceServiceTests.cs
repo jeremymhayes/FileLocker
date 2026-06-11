@@ -356,4 +356,200 @@ public sealed class SystemMaintenanceServiceTests
 
         Assert.False(SystemMaintenanceService.IsMissingPath(adsPath));
     }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsHddForSingleHddPhysicalDisk()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3], physicalDiskCount: 1, timedOut: false, unsupported: false);
+
+        Assert.Equal("HDD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("traditional hard drive", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsSsdForSingleSsdPhysicalDisk()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([4], physicalDiskCount: 1, timedOut: false, unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("TRIM", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_InfersSsdForNvmeWhenMediaTypeIsUnspecified()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes(
+            [0],
+            ["NVMe"],
+            physicalDiskCount: 1,
+            timedOut: false,
+            unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("solid-state", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_InfersSsdWhenNvmeBusTypeIsConcatenatedByPowerShellScalarOutput()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes(
+            [0],
+            ["NVMeNVMe"],
+            physicalDiskCount: 1,
+            timedOut: false,
+            unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsMixedForConflictingPhysicalDisks()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3, 4], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Mixed", media.mediaType);
+        Assert.Equal("Mixed", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownForMultiDiskSameMediaVolume()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3, 3], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("Unknown", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownWhenOnlyOneOfMultipleDisksResolves()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3], physicalDiskCount: 2, timedOut: false, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("Unknown", media.mediaDetectionStatus);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_ReturnsUnknownForTimeout()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([], physicalDiskCount: 0, timedOut: true, unsupported: false);
+
+        Assert.Equal("Unknown", media.mediaType);
+        Assert.Equal("TimedOut", media.mediaDetectionStatus);
+    }
+
+    [Theory]
+    [InlineData("Writing 0x00", "Zeros", 20)]
+    [InlineData("Writing 0xFF", "Ones", 55)]
+    [InlineData("Writing Random Numbers", "Random", 85)]
+    public void ParseCipherPass_RecognizesEnglishCipherPasses(string line, string expectedPass, double expectedPercent)
+    {
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress(line, "operation-1", "D:\\");
+
+        Assert.Equal(expectedPass, progress.pass);
+        Assert.Equal(expectedPercent, progress.percent);
+    }
+
+    [Fact]
+    public void ParseCipherPass_FallsBackForLocalizedOrUnexpectedOutput()
+    {
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress("Schreibe freie Speicherbereiche", "operation-1", "D:\\");
+
+        Assert.Equal("Unknown", progress.pass);
+        Assert.Equal(0, progress.percent);
+        Assert.Contains("Running", progress.status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseCipherPass_PreservesCurrentProgressForUnrecognizedOutput()
+    {
+        FreeSpaceWipeProgress current = FreeSpaceWipeOperationService.ParseCipherProgress("Writing 0x00", "operation-1", "D:\\");
+
+        FreeSpaceWipeProgress progress = FreeSpaceWipeOperationService.ParseCipherProgress("Some ordinary cipher output", "operation-1", "D:\\", current);
+
+        Assert.Equal("Zeros", progress.pass);
+        Assert.Equal(20, progress.percent);
+    }
+
+    [Fact]
+    public void CreateCompletedStatus_PreservesUnknownPass()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\");
+
+        FreeSpaceWipeProgress completed = FreeSpaceWipeOperationService.CreateCompletedStatus(running);
+
+        Assert.Equal("Completed", completed.state);
+        Assert.Equal("Unknown", completed.pass);
+        Assert.DoesNotContain("Complete", completed.pass, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateCancelledStatus_ReportsIncompleteWipeAndCleanupStatus()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\");
+
+        FreeSpaceWipeProgress cancelled = FreeSpaceWipeOperationService.CreateCancelledStatus(running, "cleanupFailed", "Residual cipher temporary files may remain.");
+
+        Assert.Equal("Cancelled", cancelled.state);
+        Assert.Equal("cleanupFailed", cancelled.cleanupStatus);
+        Assert.Contains("incomplete", cancelled.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Residual", cancelled.message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CreateTimedOutStatus_ReportsIncompleteWipeAndCleanupStatus()
+    {
+        FreeSpaceWipeProgress running = FreeSpaceWipeOperationService.CreateInitialStatus("operation-1", "D:\\") with
+        {
+            percent = 55,
+            output = "Writing 0xFF"
+        };
+
+        FreeSpaceWipeProgress timedOut = FreeSpaceWipeOperationService.CreateTimedOutStatus(
+            running,
+            TimeSpan.FromMinutes(120),
+            "cleanupSucceeded",
+            "Removed 1 cipher temporary folder left by the stopped wipe.");
+
+        Assert.Equal("TimedOut", timedOut.state);
+        Assert.Equal(55, timedOut.percent);
+        Assert.Equal("cleanupSucceeded", timedOut.cleanupStatus);
+        Assert.Contains("2-hour", timedOut.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("incomplete", timedOut.message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Removed 1 cipher temporary folder", timedOut.message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DriveToolTimeout_RemainsOneHundredTwentyMinutes()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(120), SystemMaintenanceService.DriveToolTimeout);
+    }
+
+    [Theory]
+    [InlineData("EFSTMPWP", true)]
+    [InlineData("efstmp-123.tmp", true)]
+    [InlineData("EFSTMP_01.backup", true)]
+    [InlineData("EFSTMP", false)]
+    [InlineData("EFSTMP backup", false)]
+    [InlineData("EFSTMP#backup", false)]
+    [InlineData("cipher backups", false)]
+    [InlineData("user-cipher-folder", false)]
+    public void IsKnownCipherTemporaryDirectoryName_OnlyAllowsConservativeEfsTempPattern(string directoryName, bool expected)
+    {
+        Assert.Equal(expected, FreeSpaceWipeOperationService.IsKnownCipherTemporaryDirectoryName(directoryName));
+    }
+
+    [Fact]
+    public void EstimateWipeDuration_UsesWideHddRange()
+    {
+        FreeSpaceWipeEstimate estimate = FreeSpaceWipeOperationService.EstimateWipe(412L * 1024 * 1024 * 1024, "HDD");
+
+        Assert.Equal(412L * 1024 * 1024 * 1024 * 3, estimate.estimatedWriteBytes);
+        Assert.Contains("2", estimate.durationDisplay, StringComparison.Ordinal);
+        Assert.Contains("5", estimate.durationDisplay, StringComparison.Ordinal);
+    }
 }

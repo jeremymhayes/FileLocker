@@ -1,218 +1,301 @@
-<p align="center">
-  <img src="FileLocker/frontend/public/assets/FileLocker_Wordmark.png" alt="FileLocker Wordmark" width="900" />
-</p>
+<div align="center">
 
-<h1 align="center">FileLocker</h1>
+<img src="FileLocker/frontend/public/assets/FileLocker_Wordmark.png" alt="FileLocker" width="1000" />
 
-<p align="center">
-  A local-first Windows app for encrypting files, checking integrity, reviewing metadata exposure, managing startup apps, and cleaning up sensitive files without sending anything to the cloud.
-</p>
+### Encrypt, verify, and clean up sensitive files on Windows. Fully offline, no cloud, no account.
 
-<p align="center">
-  <a href="https://github.com/jeremymhayes/FileLocker/releases/latest">
-    <img src="https://img.shields.io/github/v/release/jeremymhayes/FileLocker?label=latest%20release&style=for-the-badge&logo=github" alt="Latest FileLocker release" />
-  </a>
-  <img src="https://img.shields.io/badge/Windows-10%20%26%2011-0078D4?style=for-the-badge&logo=windows11&logoColor=white" alt="Windows 10 and 11" />
-  <img src="https://img.shields.io/badge/Local%20First-No%20Cloud-198754?style=for-the-badge" alt="Local first" />
-  <img src="https://img.shields.io/badge/Encryption-Modern%20AEAD-111827?style=for-the-badge" alt="Modern AEAD encryption" />
-</p>
+FileLocker is a **local-first Windows app** for **AES-256-GCM file encryption**, integrity hashing, metadata review, startup management, and secure cleanup. Drag a file in, run the job on your machine, and nothing ever leaves your device.
 
-<p align="center">
-  <a href="https://github.com/jeremymhayes/FileLocker/releases/latest"><strong>Download the latest release</strong></a>
-  ·
-  <a href="https://github.com/jeremymhayes/FileLocker/issues">Report an issue</a>
-  ·
-  <a href="https://github.com/jeremymhayes/FileLocker">Project page</a>
-</p>
+<br/>
+
+[![Latest release](https://img.shields.io/github/v/release/jeremymhayes/FileLocker?style=for-the-badge&logo=github&label=Latest%20release&color=2563EB)][releases]
+![Windows 10 & 11](https://img.shields.io/badge/Windows-10%20%26%2011-0078D4?style=for-the-badge&logo=windows11&logoColor=white)
+![.NET 10](https://img.shields.io/badge/.NET-10%20LTS-512BD4?style=for-the-badge&logo=dotnet&logoColor=white)
+![Local-first](https://img.shields.io/badge/Local--first-No%20cloud-198754?style=for-the-badge)
+![AES-256-GCM](https://img.shields.io/badge/Default-AES--256--GCM-111827?style=for-the-badge)
+
+<br/>
+
+[**⬇️ Download the latest release**][releases] &nbsp;·&nbsp; [🐛 Report an issue][issues] &nbsp;·&nbsp; [📦 Project page][repo] &nbsp;·&nbsp; [📝 Release notes][notes-130]
+
+<br/>
+
+[![License][badge-license]][license]
+[![Downloads][badge-downloads]][all-releases]
+[![Last commit][badge-commit]][repo]
+[![Open issues][badge-issues]][issues]
+[![Stars][badge-stars]][repo]
+
+</div>
 
 ---
 
+<details>
+<summary><strong>📑 Table of contents</strong></summary>
+
+- [What FileLocker is](#what-filelocker-is)
+- [Quick start](#-quick-start)
+- [How it works](#-how-it-works)
+- [Everything you can do](#-everything-you-can-do)
+- [Folder output, without the mess](#-folder-output-without-the-mess)
+- [Security, in plain English](#-security-in-plain-english)
+- [Safety notes](#-safety-notes)
+- [What FileLocker is and isn't](#-what-filelocker-is-and-isnt)
+- [FAQ](#-faq)
+- [What's new in 1.3.0.0](#-whats-new-in-1300)
+- [For developers](#-for-developers)
+- [Project status](#-project-status)
+- [Links](#-links)
+
+</details>
+
 ## What FileLocker Is
 
-FileLocker is for people who want simple, local control over sensitive files on Windows.
+FileLocker is for people who want **simple, local control** over sensitive files on Windows.
 
-You can encrypt documents and folders, decrypt them later, generate hashes to check integrity, preview the metadata a file may expose, review startup apps, inspect installed apps, and securely remove files you no longer want left behind. It is designed to feel like a desktop app first, not a command-line utility or a cloud service.
+You can encrypt documents and folders, decrypt them later, generate hashes to check integrity, preview the metadata a file may expose, review startup and installed apps, and securely remove files you no longer want left behind. It is designed to feel like a **desktop app first**, not a command-line utility, and not a cloud service.
 
 > [!IMPORTANT]
 > FileLocker handles files locally. Passwords, keyfiles, recovery material, update downloads, and file contents stay on your device.
 
-## Why People Use It
+**People reach for it to:**
 
-- Protect personal documents, archives, client files, or portable backups with strong local encryption.
-- Keep encrypted copies in a separate folder instead of mixing `.locked` files back into the original source folder.
-- Verify files with SHA-256 or SHA-512 when you want a clear fingerprint.
-- Preview metadata before sharing a file with someone else.
-- Securely remove files when a normal delete is not enough.
-- Review startup items and installed apps without sending system details to a remote service.
-- Clean approved cache, log, temp, and leftover app folders with visible guardrails.
+- 🔐 Protect documents, archives, client files, or portable backups with strong local encryption.
+- 🗂️ Keep encrypted copies in a separate folder instead of mixing `.locked` files back into the source.
+- 🧾 Verify files with SHA-256 or SHA-512 when they want a clear fingerprint.
+- 👀 Preview metadata before sharing a file with someone else.
+- 🧹 Securely remove files when a normal delete isn't enough.
+- ⚙️ Review startup items and installed apps without sending system details anywhere.
 
-## At A Glance
+## 🚀 Quick Start
 
-| Category | What you get |
-| --- | --- |
-| Platform | Windows 10 and Windows 11 |
-| Current version | `1.2.2.1` |
-| Installer | Inno Setup installer from the latest GitHub release |
-| Internet required | No, not after installation |
-| Cloud account | None |
-| Default encryption | AES-256-GCM |
-| New `.locked` algorithms | Runtime-supported AEAD options: AES-256-GCM, ChaCha20-Poly1305, AES-256-GCM-SIV |
-| Updates | Optional GitHub Releases checks for signed or checksum-verified setup installers |
-| Interface | Drag-and-drop desktop app with quick actions, guided pages, and System Care tools |
+```text
+1. Open the latest release page
+2. Download FileLocker-Setup-1.3.0.0.exe
+3. Run the installer wizard → launch from Start Menu
+```
 
-## New In 1.2.2.1
+1. Open the [latest release page][releases].
+2. Download `FileLocker-Setup-1.3.0.0.exe` (or the newest `FileLocker-Setup-{version}.exe` asset).
+3. Run the setup executable and follow the wizard.
+4. Launch FileLocker from the **Start Menu** or desktop shortcut.
 
-- Migrated public installation and in-app updates to an Inno Setup installer named `FileLocker-Setup-1.2.2.1.exe`.
-- Restored normal Windows installer behavior: Program Files install location, setup wizard, upgrade support, shortcuts, launch-after-install, and Apps & Features uninstall.
-- Updated the in-app updater to download the setup installer from GitHub Releases, verify SHA-256 when a sidecar is published, launch the installer helper, and let the installer replace Program Files files.
-- Kept Windows assembly, file, manifest, installer, README, release notes, and release-gate metadata aligned at `1.2.2.1`.
-- Standardized new `.locked` encryption choices around runtime-supported AEAD algorithms with shared metadata, labels, validation, and payload headers.
-- Added stronger v4 `.locked` payload metadata checks while keeping existing AES-256-GCM payloads decryptable.
-- Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so invalid or unsafe inputs fail earlier with clearer messages.
-- Kept the System Care improvements from 1.2.1.0, including clearer Custom Clean, Startup Manager, Registry Fixer, and App Manager workflows.
+FileLocker is a 64-bit Windows desktop app and **works offline after installation**.
 
-## What You Can Do In The App
+> [!NOTE]
+> The app uses the **Microsoft Edge WebView2 Runtime**, which most Windows 10/11 systems already have. If the window opens but the interface looks broken, install or update WebView2 and reopen FileLocker.
+
+## 🔄 How It Works
+
+```mermaid
+flowchart LR
+    A["📁 Drag in files<br/>or folders"] --> B["🎛️ Choose an action<br/>Encrypt · Hash · Clean"]
+    B --> C["📂 Pick an output<br/>location if needed"]
+    C --> D["⚙️ Run the job<br/>100% locally"]
+    D --> E["✅ Review results,<br/>history & warnings"]
+```
+
+Drag files or folders in, choose what you want to do, pick an output location if needed, run the job locally, then review the results before you move on. That's the whole loop.
+
+## 🧰 Everything You Can Do
 
 | Area | What it does |
 | --- | --- |
-| **Dashboard** | Quick encrypt, recent activity, security status, and drag-and-drop shortcuts |
-| **Encrypt Files** | Turn files or folders into FileLocker `.locked` files |
-| **Decrypt Files** | Restore `.locked` files with the right password or recovery material |
-| **Hash Files** | Generate SHA-256 or SHA-512 hashes and create hash manifests |
-| **Encode Text** | Convert text using Base64, URL, Hex, HTML entities, and UTF-8 tools |
-| **Metadata Scrambler** | Preview metadata fields and review what may be exposed before sharing |
-| **Secure Delete** | Overwrite selected files where possible before removing them |
-| **Custom Clean** | Review and clean approved temporary, cache, recycle bin, and log locations |
-| **Partition Cleaner** | Wipe free space with Windows tools so deleted-file traces are harder to recover |
-| **Drive Optimizer** | Run Windows drive analysis and optimization from a guided page |
-| **Registry Fixer** | Review bounded stale startup and uninstall entries with backup-first cleanup |
-| **Startup Manager** | Review startup entries and disable or restore supported items |
-| **App Manager** | Review installed apps, launch visible uninstallers, and clean approved leftovers |
-| **Settings** | Choose output folders, history privacy, appearance, Explorer integration, and update behavior |
-| **About + Security Guide** | Read plain-language guidance about what FileLocker does and how to use it safely |
+| 🏠 **Dashboard** | Quick encrypt, recent activity, security status, and drag-and-drop shortcuts |
+| 🔒 **Encrypt Files** | Turn files or folders into FileLocker `.locked` files |
+| 🔓 **Decrypt Files** | Restore `.locked` files with the right password or recovery material |
+| #️⃣ **Hash Files** | Generate SHA-256 / SHA-512 hashes and create hash manifests |
+| 🔤 **Encode Text** | Convert text with Base64, URL, Hex, HTML entities, and UTF-8 tools |
+| 🧾 **Metadata Scrambler** | Preview metadata fields and review what may be exposed before sharing |
+| 🗑️ **Secure Delete** | Overwrite selected files where possible before removing them |
+| 🧹 **Custom Clean** | Review and clean approved temp, cache, recycle bin, and log locations |
+| 💽 **Partition Cleaner** | Wipe free space with Windows tools so deleted-file traces are harder to recover |
+| ⚡ **Drive Optimizer** | Run Windows drive analysis and optimization from a guided page |
+| 🛠️ **Registry Fixer** | Review bounded stale startup/uninstall entries with backup-first cleanup |
+| 🚦 **Startup Manager** | Review startup entries and disable or restore supported items |
+| 📦 **App Manager** | Review installed apps, launch visible uninstallers, and clean approved leftovers |
+| ⚙️ **Settings** | Output folders, history privacy, appearance, Explorer integration, updates |
+| ℹ️ **About + Security Guide** | Plain-language guidance on what FileLocker does and how to use it safely |
 
-## Folder Output, Without The Mess
+## 📂 Folder Output, Without the Mess
 
-One of the biggest quality-of-life details in FileLocker is how folder encryption can be routed.
+One of the nicest quality-of-life details is how folder encryption gets routed.
 
-- You can encrypt files beside the originals if you want to.
-- You can also send encrypted output to a separate sibling folder in the same parent directory.
-- When a folder is selected, FileLocker can suggest a cleaner output folder automatically.
-- If you choose a custom destination, FileLocker can preserve the original folder layout inside that destination.
+- Encrypt files **beside the originals** if you want to.
+- Or send encrypted output to a **separate sibling folder** in the same parent directory.
+- When a folder is selected, FileLocker can **suggest a cleaner output folder** automatically.
+- Choose a custom destination and FileLocker can **preserve the original folder layout** inside it.
 
 > [!TIP]
-> If you are encrypting a large folder and want to avoid filling the source tree with duplicate `.locked` files, use a separate output folder such as `Folder Name (Encrypted)`.
+> Encrypting a large folder? Use a separate output folder such as `Folder Name (Encrypted)` to avoid filling the source tree with duplicate `.locked` files.
 
-## Security, In Plain English
+## 🔐 Security, in Plain English
 
-FileLocker defaults to **AES-256-GCM** for file encryption and can expose **ChaCha20-Poly1305** and **AES-256-GCM-SIV** for new `.locked` payloads when the local runtime supports the implementation safely. In practical terms, that means:
+FileLocker defaults to **AES-256-GCM** for file encryption, and can expose **ChaCha20-Poly1305** and **AES-256-GCM-SIV** for new `.locked` payloads when the local runtime supports the implementation safely. In practical terms:
 
-- your files are encrypted with a strong modern cipher,
-- the selected algorithm is saved in the payload header for automatic decryption,
-- the app can detect tampering before it restores output,
-- and a wrong password should fail safely instead of quietly giving you damaged results.
+- ✅ Your files are encrypted with a strong, modern AEAD cipher.
+- ✅ The chosen algorithm is saved in the payload header for **automatic decryption**.
+- ✅ The app can **detect tampering** before it restores output.
+- ✅ A wrong password **fails safely** instead of quietly handing you damaged results.
 
-New `.locked` files use FileLocker's header-authenticated v4 payload format, with explicit algorithm and key-size metadata checked against the authenticated header. Existing AES-256-GCM v3 payloads remain supported for decryption.
+New `.locked` files use FileLocker's **header-authenticated v4 payload format**, with explicit algorithm and key-size metadata checked against the authenticated header. Existing **AES-256-GCM v3 payloads remain decryptable**.
 
-The v4 header stores the format version, stable payload algorithm id, KDF id, Argon2id settings, chunk size, nonce prefix, and encrypted key slots. Each key slot has its own salt, nonce, and authentication tag, and encrypted payload chunks carry their own AEAD tags so tampering fails before plaintext is restored.
-
-FileLocker also supports optional extra protection material such as a **keyfile** and **recovery key** for people who want that workflow, but the main experience still works as a normal password-based desktop app.
-
-PNG carrier output uses the older AES-GCM carrier path, is only available with AES-256-GCM, and is capped at 64 MB per source file to avoid the memory pressure of wrapping the payload inside an image. Standard `.locked` files should be used for larger files or when choosing ChaCha20-Poly1305 or AES-256-GCM-SIV.
-
-FileLocker does **not** upload your files or give you a cloud password reset path. If you lose both the password and any recovery material you chose to use, the protected file should be treated as inaccessible.
-
-## What FileLocker Feels Like To Use
-
-- Drag files or folders into the app.
-- Choose what you want to do.
-- Pick an output location if needed.
-- Run the job locally.
-- Review the results, history, and any warnings before you move on.
-
-The app keeps a strong boundary between the interface and the file-handling logic. That means the visible app stays easy to use, while the file access, encryption, validation, update checks, and delete workflows remain inside the Windows host app.
-
-## Download And Install
-
-1. Open the [latest release page](https://github.com/jeremymhayes/FileLocker/releases/latest).
-2. Download `FileLocker-Setup-1.2.2.1.exe` or the newest `FileLocker-Setup-{version}.exe` asset.
-3. Run the setup executable and follow the installer wizard.
-4. Launch FileLocker from the Start Menu or desktop shortcut.
-
-FileLocker is distributed as a 64-bit Windows desktop app. It works offline after installation.
-
-<details>
-<summary><strong>Install notes</strong></summary>
-
-- The app expects a normal Windows environment with the Microsoft Edge WebView2 Runtime available.
-- Most Windows 10 and Windows 11 systems already have WebView2 installed.
-- If the app launches but the interface does not appear correctly, install or update WebView2 and reopen FileLocker.
-
-</details>
-
-## Safety Notes
+FileLocker also supports optional **keyfile** and **recovery key** material for people who want that workflow, but the main experience still works as a normal password-based desktop app.
 
 > [!WARNING]
-> FileLocker is not a backup service. If something matters, keep a backup before deleting originals.
-
-- Test decryption on a copy before removing important source files.
-- Secure delete is best-effort and is generally more reliable on spinning hard drives than on SSDs.
-- Startup Manager saves restore information before disabling supported entries.
-- App Manager launches vendor uninstallers only after confirmation and does not run silent uninstall commands.
-- App leftover cleanup is limited to approved AppData and ProgramData cleanup areas. Program Files and Windows folders are excluded from recursive cleanup.
-- Some System Care actions need administrator mode because Windows protects the target locations.
-- Use full-disk encryption such as BitLocker alongside FileLocker if you want stronger device-level protection.
-- Metadata preview is helpful, but no general-purpose tool can guarantee that every possible metadata field is removed from every file type.
-
-## Advanced Features
+> FileLocker does **not** upload your files and has **no cloud password reset**. If you lose both the password and any recovery material, treat the protected file as inaccessible.
 
 <details>
-<summary><strong>See the deeper toolset</strong></summary>
+<summary><strong>🔬 The v4 payload format, in detail</strong></summary>
 
-- Optional custom encrypt and decrypt output folders
-- Suggested sibling output folders for folder-based encryption
-- Compression before encryption
-- Output-name scrambling
-- Optional PNG carrier output
-- Folder packaging mode
-- Recovery key support
-- Keyfile support
-- Hash manifest generation
-- Explorer right-click integration
-- Local history with privacy modes and redacted exports
-- Startup entry review with reversible disable support
-- Installed app inventory and visible uninstaller launch
-- Approved app leftover cleanup for AppData and ProgramData
-- GitHub Releases update checks with setup-installer checksum verification
+<br/>
+
+The v4 header stores the format version, a stable payload algorithm id, the KDF id, **Argon2id** settings, chunk size, nonce prefix, and encrypted key slots.
+
+- Each **key slot** has its own salt, nonce, and authentication tag.
+- Each **payload chunk** carries its own AEAD tag, so tampering fails *before* plaintext is restored.
+- v4 adds stronger metadata checks while keeping older AES-256-GCM (v3) payloads fully readable.
+
+**PNG carrier output** uses the older AES-GCM carrier path, is only available with AES-256-GCM, and is capped at **64 MB per source file** to avoid the memory pressure of wrapping a payload inside an image. Use standard `.locked` files for larger files, or when choosing ChaCha20-Poly1305 / AES-256-GCM-SIV.
 
 </details>
 
-## What FileLocker Is Not
+## ⚠️ Safety Notes
 
-FileLocker is not:
+> [!CAUTION]
+> FileLocker is **not a backup service**. If something matters, keep a backup *before* deleting originals.
 
-- a cloud storage service,
-- a password manager,
-- a VPN,
-- a backup platform,
-- or a replacement for full-disk encryption.
+- Test decryption on a **copy** before removing important source files.
+- Secure delete is **best-effort** it is generally more reliable on spinning hard drives than on SSDs.
+- Startup Manager **saves restore information** before disabling supported entries.
+- App Manager launches vendor uninstallers **only after confirmation** and never runs silent uninstalls.
+- Leftover cleanup is limited to approved **AppData / ProgramData** areas, Program Files and Windows folders are excluded from recursive cleanup.
+- Some System Care actions need **administrator mode** because Windows protects those locations.
+- Pair FileLocker with **full-disk encryption such as BitLocker** for stronger device-level protection.
+- Metadata preview helps, but no general-purpose tool can guarantee *every* metadata field is removed from *every* file type.
 
-It is a focused desktop utility for local file protection and cleanup workflows.
+## 🧭 What FileLocker Is and Isn't
 
-## For Developers
+| ✅ FileLocker is | ❌ FileLocker is not |
+| --- | --- |
+| A local file-encryption utility | A cloud storage service |
+| An integrity & hashing tool | A password manager |
+| A metadata preview tool | A VPN |
+| A secure-delete & cleanup helper | A backup platform |
+| A startup & installed-app reviewer | A replacement for full-disk encryption |
+
+It's a focused desktop utility for **local file protection and cleanup workflows**.
+
+## ❓ FAQ
+
+<details>
+<summary><strong>Does FileLocker send my files anywhere?</strong></summary>
+
+No. Encryption, decryption, hashing, and cleanup all run locally. The only network calls are optional GitHub Releases checks for new signed or checksum-verified installers.
+</details>
+
+<details>
+<summary><strong>What happens if I forget my password?</strong></summary>
+
+There is no cloud reset. If you didn't set up recovery material (a recovery key or keyfile) and you lose the password, the file should be treated as permanently inaccessible.
+</details>
+
+<details>
+<summary><strong>Can I open a <code>.locked</code> file on another PC?</strong></summary>
+
+Yes, install FileLocker on the other machine and provide the correct password (and recovery material, if you used it). Files never depend on a server.
+</details>
+
+<details>
+<summary><strong>Is this a replacement for BitLocker?</strong></summary>
+
+No. BitLocker protects the whole drive; FileLocker protects individual files and folders. They work well together.
+</details>
+
+<details>
+<summary><strong>Why do some cleanup actions ask for administrator mode?</strong></summary>
+
+Windows protects certain system locations. Those specific System Care actions need elevation to read or clean them.
+</details>
+
+## 🆕 What's New in 1.3.0.0
+
+<details>
+<summary><strong>Expand the 1.3.0.0 highlights</strong></summary>
+
+<br/>
+
+- Reserved native Windows caption-button space so top-row app controls stay clear when the custom titlebar spacing is set to zero.
+- Kept the public Windows package on the **Inno Setup installer** (`FileLocker-Setup-1.3.0.0.exe`) with normal Program Files install, upgrades, shortcuts, launch-after-install, and Apps & Features uninstall.
+- Kept the in-app updater on GitHub Releases setup installers with **SHA-256** sidecar verification when a checksum is published.
+- Kept Windows assembly, file, manifest, installer, README, release-notes, and release-gate metadata aligned at `1.3.0.0`.
+- Standardized new `.locked` choices around **runtime-supported AEAD algorithms** with shared metadata, labels, validation, and payload headers.
+- Added stronger **v4 `.locked` payload metadata checks** while keeping AES-256-GCM payloads decryptable.
+- Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so unsafe inputs fail earlier with clearer messages.
+- Carried forward System Care improvements from 1.2.1.0 (Custom Clean, Startup Manager, Registry Fixer, App Manager).
+
+📄 Full details: [1.3.0.0 release notes][notes-130] · [1.2.1.0 release notes][notes-121]
+
+</details>
+
+## 👩‍💻 For Developers
+
+![C# 14](https://img.shields.io/badge/C%23-14-239120?style=flat-square&logo=csharp&logoColor=white)
+![.NET 10](https://img.shields.io/badge/.NET-10%20LTS-512BD4?style=flat-square&logo=dotnet&logoColor=white)
+![Windows App SDK](https://img.shields.io/badge/WinUI-Windows%20App%20SDK-0078D4?style=flat-square&logo=windows&logoColor=white)
+![WebView2](https://img.shields.io/badge/UI-WebView2-4285F4?style=flat-square&logo=microsoftedge&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Inno Setup](https://img.shields.io/badge/Installer-Inno%20Setup%206-264653?style=flat-square)
+
+<details>
+<summary><strong>Architecture at a glance</strong></summary>
+
+<br/>
+
+FileLocker keeps a strong boundary between the interface and the file-handling logic: the visible app stays easy to use, while file access, encryption, validation, update checks, and delete workflows stay inside the Windows host.
+
+```mermaid
+flowchart TD
+    subgraph UI["🖥️ Desktop UI (WebView2)"]
+        FE["Frontend<br/>drag-drop · pages · quick actions"]
+    end
+    subgraph HOST["🛡️ Windows host app (.NET 10)"]
+        BR["Native bridge"]
+        ENC["Encryption and v4 payload format"]
+        IO["File / folder / keyfile handling"]
+        VAL["Validation and integrity checks"]
+        DEL["Secure delete and System Care"]
+        UPD["GitHub Releases updater"]
+    end
+    DISK[("💾 Local disk only")]
+
+    FE <-->|"requests / results"| BR
+    BR --> ENC
+    BR --> IO
+    BR --> VAL
+    BR --> DEL
+    BR --> UPD
+    ENC <--> DISK
+    IO <--> DISK
+    DEL --> DISK
+```
+
+</details>
 
 <details>
 <summary><strong>Build from source</strong></summary>
 
-Requirements:
+<br/>
+
+**Requirements**
 
 - Windows 10 or Windows 11
 - .NET 10 SDK
 - Node.js 22 or newer
-- Inno Setup 6 if you need to build the public installer
-- Visual Studio 2022 with WinUI / Windows App SDK support if you want the full desktop development setup
+- Inno Setup 6 (only to build the public installer)
+- Visual Studio 2022 with WinUI / Windows App SDK support (for the full desktop setup)
 
-Build the frontend and app:
+**Build the frontend and app**
 
 ```powershell
 cd FileLocker\frontend
@@ -223,36 +306,87 @@ cd ..
 dotnet build .\FileLocker.csproj -c Release
 ```
 
-Run tests:
+**Run tests**
 
 ```powershell
-dotnet test --project ..\FileLocker.Tests\FileLocker.Tests.csproj -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:SelfContained=true -p:SkipFrontendBuild=true
+dotnet test --project ..\FileLocker.Tests\FileLocker.Tests.csproj `
+  -p:Platform=x64 -p:RuntimeIdentifier=win-x64 `
+  -p:SelfContained=true -p:SkipFrontendBuild=true
 ```
 
-Build the Inno Setup installer:
+**Build the Inno Setup installer**
 
 ```powershell
 cd ..
 .\scripts\Build-InnoInstaller.ps1 -Configuration Release -RuntimeIdentifier win-x64
 ```
 
-The installer flow publishes the app into a clean staging folder, compiles `installer\inno\FileLocker.iss`, and writes `FileLocker-Setup-1.2.2.1.exe` plus `FileLocker-Setup-1.2.2.1.exe.sha256` to `artifacts\inno`.
+The installer flow publishes the app into a clean staging folder, compiles `installer\inno\FileLocker.iss`, and writes `FileLocker-Setup-1.3.0.0.exe` plus `FileLocker-Setup-1.3.0.0.exe.sha256` to `artifacts\inno`.
 
 </details>
 
-## Links
+<details>
+<summary><strong>See the deeper toolset</strong></summary>
 
-- [Latest release](https://github.com/jeremymhayes/FileLocker/releases/latest)
-- [All releases](https://github.com/jeremymhayes/FileLocker/releases)
-- [Issue tracker](https://github.com/jeremymhayes/FileLocker/issues)
-- [Repository](https://github.com/jeremymhayes/FileLocker)
-- [FileLocker 1.2.2.1 release notes](RELEASE_NOTES_1.2.2.1.md)
-- [FileLocker 1.2.1.0 release notes](RELEASE_NOTES_1.2.1.0.md)
+<br/>
 
-## Project Documents
+- Optional custom encrypt/decrypt output folders
+- Suggested sibling output folders for folder-based encryption
+- Compression before encryption
+- Output-name scrambling
+- Optional PNG carrier output
+- Folder packaging mode
+- Recovery key and keyfile support
+- Hash manifest generation
+- Explorer right-click integration
+- Local history with privacy modes and redacted exports
+- Startup entry review with reversible disable
+- Installed app inventory and visible uninstaller launch
+- Approved app leftover cleanup for AppData and ProgramData
+- GitHub Releases update checks with setup-installer checksum verification
 
-- [License](LICENSE)
-- [Security policy](SECURITY.md)
-- [Contributing guide](CONTRIBUTING.md)
-- [Support guide](SUPPORT.md)
-- [Code of conduct](CODE_OF_CONDUCT.md)
+</details>
+
+## 📈 Project Status
+
+[![Star History Chart](https://api.star-history.com/svg?repos=jeremymhayes/FileLocker&type=Date)](https://star-history.com/#jeremymhayes/FileLocker&Date)
+
+If FileLocker is useful to you, a ⭐ on the [repository][repo] helps other people find it.
+
+## 🔗 Links
+
+| | |
+| --- | --- |
+| ⬇️ [Latest release][releases] | 📦 [All releases][all-releases] |
+| 🐛 [Issue tracker][issues] | 💻 [Repository][repo] |
+| 📝 [1.3.0.0 release notes][notes-130] | 📝 [1.2.1.0 release notes][notes-121] |
+
+**Project documents:** [License][license] · [Security policy][security] · [Contributing][contributing] · [Support][support] · [Code of conduct][coc]
+
+---
+
+<div align="center">
+
+**FileLocker**, local-first file protection for Windows. No cloud. No account. Just your files, on your machine.
+
+</div>
+
+<!-- Reference-style links (edit URLs in one place) -->
+[releases]: https://github.com/jeremymhayes/FileLocker/releases/latest
+[all-releases]: https://github.com/jeremymhayes/FileLocker/releases
+[issues]: https://github.com/jeremymhayes/FileLocker/issues
+[repo]: https://github.com/jeremymhayes/FileLocker
+[notes-130]: RELEASE_NOTES_1.3.0.0.md
+[notes-121]: RELEASE_NOTES_1.2.1.0.md
+[license]: LICENSE
+[security]: SECURITY.md
+[contributing]: CONTRIBUTING.md
+[support]: SUPPORT.md
+[coc]: CODE_OF_CONDUCT.md
+
+<!-- Status badges (auto-updating from the repo) -->
+[badge-license]: https://img.shields.io/github/license/jeremymhayes/FileLocker?style=flat-square&color=64748B
+[badge-downloads]: https://img.shields.io/github/downloads/jeremymhayes/FileLocker/total?style=flat-square&logo=github&label=downloads
+[badge-commit]: https://img.shields.io/github/last-commit/jeremymhayes/FileLocker?style=flat-square&color=64748B
+[badge-issues]: https://img.shields.io/github/issues/jeremymhayes/FileLocker?style=flat-square&color=64748B
+[badge-stars]: https://img.shields.io/github/stars/jeremymhayes/FileLocker?style=flat-square&color=F59E0B

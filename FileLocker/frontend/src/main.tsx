@@ -2,9 +2,13 @@ import React from "react"
 import ReactDOM from "react-dom/client"
 import "file-icon-vectors/dist/file-icon-classic.min.css"
 import { App } from "./App"
+import { applyAccentTheme, readCachedAccentTheme } from "./lib/accentThemes"
 import "./styles/globals.css"
 
 async function bootstrap() {
+  // Paint with the last-used accent theme before the settings bridge responds.
+  applyAccentTheme(readCachedAccentTheme())
+
   // Dev-only: stand up a fake WebView2 bridge so the UI renders (and can be
   // reviewed in a browser) without the WinUI host. Never runs in production.
   if (import.meta.env.DEV) {

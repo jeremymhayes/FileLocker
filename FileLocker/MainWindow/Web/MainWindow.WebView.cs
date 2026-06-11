@@ -40,6 +40,7 @@ namespace FileLocker
         {
             WriteIndented = false
         };
+        private static readonly TimeSpan ShutdownWipeCancelWaitTimeout = TimeSpan.FromSeconds(12);
 
         private static readonly HashSet<string> RestartPageKeys = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -53,6 +54,10 @@ namespace FileLocker
 
         private IReadOnlyList<string> _launchPaths = [];
         private string? _launchAction;
+        private readonly object _freeSpaceWipeLock = new();
+        private FreeSpaceWipeProgress? _freeSpaceWipeStatus;
+        private CancellationTokenSource? _freeSpaceWipeCancellation;
+        private Task? _freeSpaceWipeTask;
 
 #if DEBUG
         private const bool IsDebugBuild = true;
@@ -97,7 +102,9 @@ namespace FileLocker
 #else
             AppWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
 #endif
+            AppWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             AppWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            AppWebView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
 
             Uri source = await ResolveAppInterfaceSourceAsync();
             AppWebView.Source = source;
@@ -315,6 +322,9 @@ namespace FileLocker
                 "maintenance.runCleanup" => RunBridgeWorkerAsync(() => RunCleanupFromBridge(ReadPayload<MaintenanceCleanupRequest>(request.Payload))),
                 "maintenance.optimizeDrive" => OptimizeDriveFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
                 "maintenance.wipeFreeSpace" => WipeFreeSpaceFromBridgeAsync(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.startWipeFreeSpace" => StartWipeFreeSpaceFromBridge(ReadPayload<MaintenanceDriveActionRequest>(request.Payload)),
+                "maintenance.getWipeFreeSpaceStatus" => Task.FromResult<object?>(GetWipeFreeSpaceStatusFromBridge()),
+                "maintenance.cancelWipeFreeSpace" => Task.FromResult<object?>(CancelWipeFreeSpaceFromBridge()),
                 "maintenance.scanRegistry" => RunBridgeWorkerAsync(() => SystemMaintenanceService.ScanRegistry()),
                 "maintenance.cleanRegistry" => RunBridgeWorkerAsync(() => CleanRegistryFromBridge(ReadPayload<RegistryCleanRequest>(request.Payload))),
                 "maintenance.scanStartup" => RunBridgeWorkerAsync(() => StartupAppMaintenanceService.ScanStartup()),
@@ -330,7 +340,7 @@ namespace FileLocker
                 "settings.get" => Task.FromResult<object?>(BuildSettingsPayload()),
                 "settings.save" => SaveSettingsFromBridgeAsync(ReadPayload<SettingsSaveRequest>(request.Payload)),
                 "settings.reset" => ResetSettingsFromBridgeAsync(),
-                "shell.setExplorerIntegration" => Task.FromResult<object?>(SetExplorerIntegrationFromBridge(ReadPayload<ExplorerIntegrationRequest>(request.Payload))),
+                "shell.setExplorerIntegration" => SetExplorerIntegrationFromBridgeAsync(ReadPayload<ExplorerIntegrationRequest>(request.Payload)),
                 "updates.check" => CheckForUpdatesFromBridgeAsync(),
                 "updates.download" => DownloadUpdateFromBridgeAsync(),
                 "updates.install" => InstallUpdateFromBridgeAsync(),
@@ -533,7 +543,12 @@ namespace FileLocker
             string pageName = NormalizeTitlePageName(request.PageName);
 
             string title = $"FileLocker — {pageName}";
-            NativeTitleText.Text = title;
+            Title = title;
+            if (_appWindow != null)
+            {
+                _appWindow.Title = title;
+            }
+
             return new { title };
         }
 
@@ -1994,6 +2009,120 @@ namespace FileLocker
             return await SystemMaintenanceService.WipeFreeSpaceAsync(request.DriveRoot, request.Confirmation);
         }
 
+        private Task<object?> StartWipeFreeSpaceFromBridge(MaintenanceDriveActionRequest request)
+        {
+            string root = SystemMaintenanceService.NormalizeDriveRoot(request.DriveRoot);
+            SystemMaintenanceService.RequireAdministratorForBridge("Free-space wiping");
+            if (!string.Equals(request.Confirmation, "WIPE FREE SPACE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Confirm the free-space wipe before starting.");
+            }
+
+            FreeSpaceWipeProgress initialStatus;
+            CancellationTokenSource cancellation;
+            string operationId = Guid.NewGuid().ToString("N");
+            lock (_freeSpaceWipeLock)
+            {
+                if (_freeSpaceWipeTask is { IsCompleted: false })
+                {
+                    throw new InvalidOperationException("A free-space wipe is already running.");
+                }
+
+                _freeSpaceWipeCancellation?.Dispose();
+                cancellation = new CancellationTokenSource();
+                _freeSpaceWipeCancellation = cancellation;
+                initialStatus = FreeSpaceWipeOperationService.CreateInitialStatus(operationId, root);
+                _freeSpaceWipeStatus = initialStatus;
+                _freeSpaceWipeTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        FreeSpaceWipeProgress final = await FreeSpaceWipeOperationService.RunCipherAsync(
+                            operationId,
+                            root,
+                            status => UpdateFreeSpaceWipeStatus(status),
+                            SystemMaintenanceService.DriveToolTimeout,
+                            cancellation.Token);
+                        UpdateFreeSpaceWipeStatus(final);
+                    }
+                    catch (Exception ex)
+                    {
+                        FreeSpaceWipeProgress current;
+                        lock (_freeSpaceWipeLock)
+                        {
+                            current = _freeSpaceWipeStatus ?? FreeSpaceWipeOperationService.CreateInitialStatus(operationId, root);
+                        }
+
+                        FreeSpaceWipeProgress failed = FreeSpaceWipeOperationService.CreateFailedStatus(
+                            current,
+                            $"Free-space wipe failed for {root}. {ex.Message}");
+                        UpdateFreeSpaceWipeStatus(failed);
+                    }
+                });
+            }
+
+            PostFreeSpaceWipeStatus(initialStatus);
+            return Task.FromResult<object?>(initialStatus);
+        }
+
+        private object? GetWipeFreeSpaceStatusFromBridge()
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                return _freeSpaceWipeStatus;
+            }
+        }
+
+        private object? CancelWipeFreeSpaceFromBridge()
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeCancellation?.Cancel();
+                return _freeSpaceWipeStatus;
+            }
+        }
+
+        private void CancelFreeSpaceWipeForShutdown()
+        {
+            Task? wipeTask;
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeCancellation?.Cancel();
+                wipeTask = _freeSpaceWipeTask;
+            }
+
+            if (wipeTask is null || wipeTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                wipeTask.Wait(ShutdownWipeCancelWaitTimeout);
+            }
+            catch (AggregateException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private void UpdateFreeSpaceWipeStatus(FreeSpaceWipeProgress status)
+        {
+            lock (_freeSpaceWipeLock)
+            {
+                _freeSpaceWipeStatus = status;
+            }
+
+            PostFreeSpaceWipeStatus(status);
+        }
+
+        private void PostFreeSpaceWipeStatus(FreeSpaceWipeProgress status)
+        {
+            PostBridgeEvent(new { type = "maintenanceWipeStatus", status });
+        }
+
         private static object RunCleanupFromBridge(MaintenanceCleanupRequest request)
         {
             return SystemMaintenanceService.RunCleanup(request.CategoryIds, request.Confirmation);
@@ -2023,7 +2152,8 @@ namespace FileLocker
                     _preferences.CustomEncryptOutputDirectory,
                     _preferences.UseCustomDecryptOutputDirectory,
                     CustomDecryptOutputDirectory = customDecryptOutputDirectory,
-                    ThemePreference = _preferences.ThemePreference.ToString()
+                    ThemePreference = _preferences.ThemePreference.ToString(),
+                    _preferences.AccentTheme
                 },
                 updates = new
                 {
@@ -2055,17 +2185,31 @@ namespace FileLocker
             return BuildSettingsPayload();
         }
 
-        private object SetExplorerIntegrationFromBridge(ExplorerIntegrationRequest request)
+        private async Task<object?> SetExplorerIntegrationFromBridgeAsync(ExplorerIntegrationRequest request)
         {
+            bool previousEnabled = _preferences.ExplorerIntegrationEnabled;
+            _preferences.ExplorerIntegrationEnabled = request.Enabled;
             ExplorerIntegrationService.SetEnabled(GetCurrentExecutablePath(), request.Enabled);
+            try
+            {
+                await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+            }
+            catch
+            {
+                _preferences.ExplorerIntegrationEnabled = previousEnabled;
+                throw;
+            }
+
             return BuildSettingsPayload();
         }
 
         private async Task<object?> ResetSettingsFromBridgeAsync()
         {
             ApplyPreferencesDto(new PreferencesDto());
+            _preferences.ExplorerIntegrationEnabled = true;
             _updateSettings.AutoCheckEnabled = true;
             _updateSettings.SkippedVersion = null;
+            ExplorerIntegrationService.SetEnabled(GetCurrentExecutablePath(), enabled: true);
             UpdateService.SaveSettings(_updateSettings);
             await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
             if (_preferences.IncognitoMode)
@@ -2543,6 +2687,7 @@ namespace FileLocker
             }
 
             _preferences.ThemePreference = ParseEnum(dto.ThemePreference, ThemePreference.Dark);
+            _preferences.AccentTheme = AppPreferencesStore.NormalizeAccentTheme(dto.AccentTheme);
             AppPreferencesStore.NormalizePreferences(_preferences);
             _currentExperienceLevel = UserExperienceLevel.Advanced;
             _themePreference = _preferences.ThemePreference;
@@ -3053,6 +3198,7 @@ namespace FileLocker
             public bool UseCustomDecryptOutputDirectory { get; set; } = true;
             public string CustomDecryptOutputDirectory { get; set; } = string.Empty;
             public string ThemePreference { get; set; } = nameof(FileLocker.ThemePreference.Dark);
+            public string AccentTheme { get; set; } = AppPreferencesStore.DefaultAccentTheme;
         }
 
         private sealed class UpdateSettingsDto

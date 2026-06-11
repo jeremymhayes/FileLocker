@@ -1,0 +1,109 @@
+<h2>Partition Cleaner Hybrid, Revised</h2>
+<p class="subtitle">Guided free-space wipe flow with corrected risk language and inspector details that add value.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Product Screen: Partition Cleaner</div>
+  <div class="mockup-body">
+    <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid #2f3a4d;padding-bottom:12px">
+      <div>
+        <div style="font-weight:700;color:#eef4ff;font-size:16px">Partition Cleaner</div>
+        <div style="margin-top:4px;color:#a9b5c8;font-size:13px">Overwrite free space so already-deleted files are harder to recover.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="border:1px solid #31533f;background:#102219;color:#38c98f;border-radius:6px;padding:6px 8px;font-size:12px">Running as admin</span>
+        <button class="mock-button">Refresh Drives</button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:14px;color:#98a5b8;font-size:12px">
+      <span style="border:1px solid #5d8dff;background:#162642;color:#5d8dff;border-radius:6px;padding:5px 8px">1 Select drive</span>
+      <span>›</span>
+      <span style="border:1px solid #2f3a4d;border-radius:6px;padding:5px 8px">2 Review impact</span>
+      <span>›</span>
+      <span style="border:1px solid #2f3a4d;border-radius:6px;padding:5px 8px">3 Wipe free space</span>
+      <span>›</span>
+      <span style="border:1px solid #2f3a4d;border-radius:6px;padding:5px 8px">4 Report</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1.08fr) 360px;gap:14px;margin-top:14px">
+      <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;background:#172033;color:#98a5b8;font-size:11px;padding:8px 10px">
+          <span>Drive</span><span>Free</span><span>Format</span><span>Media</span><span>Status</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;color:#98a5b8">
+          <span>C: Windows</span><span>118 GB</span><span>NTFS</span><span>SSD</span><span style="color:#e6a14a">Limited</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;background:#19243a;color:#eef4ff">
+          <span>D: Storage</span><span>412 GB</span><span>NTFS</span><span>HDD</span><span style="color:#38c98f">Ready</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr .75fr .7fr .85fr .75fr;gap:10px;padding:10px;border-top:1px solid #2f3a4d;color:#6f7b8d">
+          <span>E: Recovery</span><span>Unknown</span><span>RAW</span><span>Unknown</span><span>Unsupported</span>
+        </div>
+        <div style="padding:9px 10px;border-top:1px solid #2f3a4d;color:#98a5b8;font-size:12px;background:#121b2c">
+          E: is disabled because RAW or unformatted volumes are not supported by Windows cipher.
+        </div>
+      </div>
+
+      <div style="border:1px solid #2f3a4d;border-radius:6px;overflow:hidden">
+        <div style="padding:11px 12px;border-bottom:1px solid #2f3a4d;background:#141d2e">
+          <div style="font-weight:700;color:#eef4ff">Review selected drive</div>
+          <div style="margin-top:3px;color:#a9b5c8;font-size:12px">D:\ Storage, NTFS, fixed disk</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:#2f3a4d">
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Existing files</span><br><b style="color:#38c98f">Untouched</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Cost</span><br><b style="color:#e6a14a">Long, heavy writes</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Free space</span><br><b>412 GB</b></div>
+          <div style="background:#111827;padding:10px"><span style="font-size:11px;color:#98a5b8">Estimate</span><br><b>May take hours</b></div>
+        </div>
+        <div style="padding:12px">
+          <div style="border:1px solid #5f4521;background:#251d12;color:#e6a14a;border-radius:6px;padding:10px;font-size:12px;line-height:1.4">
+            This does not erase current files. Windows cipher writes temporary data across free space, then removes it. Avoid running it when the drive is nearly full or actively used.
+          </div>
+          <div style="border:1px solid #264b5a;background:#0d2027;color:#33c0c7;border-radius:6px;padding:10px;font-size:12px;line-height:1.4;margin-top:8px">
+            Best for HDDs. SSDs may already use TRIM and cannot guarantee the same free-space overwrite behavior.
+          </div>
+          <div style="display:grid;gap:8px;margin-top:12px">
+            <button class="mock-button">Wipe Free Space</button>
+            <button class="mock-button">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 360px;gap:14px;margin-top:14px">
+      <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px;color:#a9b5c8;font-size:13px">
+        <div style="font-weight:700;color:#eef4ff;margin-bottom:8px">Run state</div>
+        <div style="height:8px;background:#202a3a;border-radius:999px;overflow:hidden;margin-bottom:8px">
+          <div style="height:100%;width:34%;background:#5d8dff"></div>
+        </div>
+        <div>Pass 1 of 3: writing zeros. Drive selection and wipe button stay disabled while cipher runs.</div>
+      </div>
+      <div style="border:1px solid #2f3a4d;border-radius:6px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;color:#eef4ff">Command output</div>
+          <button class="mock-button">Hide</button>
+        </div>
+        <div style="background:#0b101a;border:1px solid #202a3a;border-radius:5px;padding:9px;color:#98a5b8;font-family:monospace;font-size:11px;min-height:54px">
+          cipher /w:D:\<br>Writing 0x00 ...
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="approve-risk-copy" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content">
+      <h3>Use this risk model</h3>
+      <p>Replace “Destructive” with “Existing files untouched” and “long-running, heavy writes.” Keep SSD/HDD guidance where the app can support it.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="rename-visible-tool" onclick="toggleSelect(this)">
+    <div class="letter">N</div>
+    <div class="content">
+      <h3>Also adjust naming</h3>
+      <p>Keep the route as Partition Cleaner, but make the visible tool title or subtitle say “Free-Space Sanitizer” or “Wipe Deleted-File Traces.”</p>
+    </div>
+  </div>
+</div>

@@ -42,6 +42,14 @@ public sealed class ExplorerIntegrationServiceTests : IDisposable
         Assert.Throws<ArgumentException>(() => ExplorerIntegrationService.NormalizeExecutablePath(path));
     }
 
+    [Fact]
+    public void GetManagedVerbKeys_IncludesRecycleBinShredVerb()
+    {
+        IReadOnlyList<string> managedKeys = ExplorerIntegrationService.GetManagedVerbKeys();
+
+        Assert.Contains("FileLockerRecycleBinShred", managedKeys);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootPath))

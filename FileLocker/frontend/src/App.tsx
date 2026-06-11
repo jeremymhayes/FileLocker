@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import { AppShell } from "@/components/layout/AppShell"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Button } from "@/components/ui/button"
+import { AppContextMenu } from "@/components/common/AppContextMenu"
 import { UpdateDialog } from "@/components/common/UpdateDialog"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -17,11 +18,12 @@ import { MetadataScramblerPage } from "@/pages/MetadataScramblerPage"
 import { SecurityGuidePage } from "@/pages/SecurityGuidePage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { AppManagerPage, CustomCleanPage, DriveOptimizerPage, PartitionCleanerPage, RegistryFixerPage, StartupManagerPage } from "@/pages/SystemMaintenancePages"
+import { applyAccentTheme, cacheAccentTheme } from "@/lib/accentThemes"
 import { isSafeLocalPathForReveal, mergeUniquePaths } from "@/lib/format"
-import type { DashboardState, EncryptionAlgorithmOption, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
+import type { DashboardState, EncryptionAlgorithmOption, FreeSpaceWipeStatus, InitialState, PageKey, ProgressEvent, SettingsState, UpdateCheckResult } from "@/types/bridge"
 
 const pageTitles: Record<PageKey, { title: string; description?: string }> = {
-  dashboard: { title: "Dashboard" },
+  dashboard: { title: "Home" },
   encrypt: { title: "Encrypt Files" },
   decrypt: { title: "Decrypt Files" },
   hash: { title: "Hash Files" },
@@ -40,6 +42,7 @@ const pageTitles: Record<PageKey, { title: string; description?: string }> = {
 }
 
 const startupUpdateCheckIntervalMs = 24 * 60 * 60 * 1000
+const recycleBinShredLaunchAction = "--recycle-bin-shred"
 
 export function App() {
   const [activePage, setActivePage] = useState<PageKey>(() => parseHashPage())
@@ -49,6 +52,7 @@ export function App() {
   const [progressEvents, setProgressEvents] = useState<ProgressEvent[]>([])
   const [droppedPathsByPage, setDroppedPathsByPage] = useState<Partial<Record<PageKey, string[]>>>({})
   const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
+  const [freeSpaceWipeStatus, setFreeSpaceWipeStatus] = useState<FreeSpaceWipeStatus | null>(null)
   const [isInstallingStartupUpdate, setIsInstallingStartupUpdate] = useState(false)
   const [isSkippingStartupUpdate, setIsSkippingStartupUpdate] = useState(false)
   const [isCheckingNotifications, setIsCheckingNotifications] = useState(false)
@@ -116,11 +120,22 @@ export function App() {
           setStartupUpdate(event.result)
         }
       }
+      if (event.type === "maintenanceWipeStatus") {
+        setFreeSpaceWipeStatus(event.status)
+      }
     })
     return () => {
       unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!settings) {
+      return
+    }
+
+    cacheAccentTheme(applyAccentTheme(settings.preferences.accentTheme))
+  }, [settings])
 
   useEffect(() => {
     if (!shouldRunStartupUpdateCheck(settings) || startupUpdateCheckStartedRef.current) {
@@ -274,6 +289,7 @@ export function App() {
             </div>
           </div>
         </AppShell>
+        <AppContextMenu activePage={activePage} onNavigate={navigate} />
         <Toaster />
       </TooltipProvider>
     )
@@ -312,9 +328,9 @@ export function App() {
         {activePage === "encode" ? <EncodeTextPage invoke={invokeBridge} /> : null}
         {activePage === "metadata" ? <MetadataScramblerPage invoke={invokeBridge} droppedPaths={droppedPathsByPage.metadata ?? []} onDroppedPathsHandled={() => clearDroppedPaths("metadata")} /> : null}
         {activePage === "secure-delete" ? <SecureDeletePage invoke={invokeBridge} onDashboardUpdate={(value) => setDashboard(value as DashboardState)} onReveal={reveal} dashboard={dashboard} droppedPaths={droppedPathsByPage["secure-delete"] ?? []} onDroppedPathsHandled={() => clearDroppedPaths("secure-delete")} /> : null}
-        {activePage === "partition-cleaner" ? <PartitionCleanerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("partition-cleaner")} /> : null}
+        {activePage === "partition-cleaner" ? <PartitionCleanerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("partition-cleaner")} wipeStatus={freeSpaceWipeStatus} onWipeStatusChange={setFreeSpaceWipeStatus} /> : null}
         {activePage === "drive-optimizer" ? <DriveOptimizerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("drive-optimizer")} /> : null}
-        {activePage === "custom-clean" ? <CustomCleanPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("custom-clean")} /> : null}
+        {activePage === "custom-clean" ? <CustomCleanPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("custom-clean")} launchAction={initialState.app.launchAction} onOpenPartitionCleaner={() => navigate("partition-cleaner")} /> : null}
         {activePage === "registry-fixer" ? <RegistryFixerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("registry-fixer")} /> : null}
         {activePage === "startup-manager" ? <StartupManagerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("startup-manager")} /> : null}
         {activePage === "app-manager" ? <AppManagerPage invoke={invokeBridge} isAdministrator={initialState.app.isAdministrator} onRestartAsAdministrator={() => void restartAsAdministrator("app-manager")} /> : null}
@@ -322,6 +338,7 @@ export function App() {
         {activePage === "about" ? <AboutPage app={initialState.app} onOpenRepository={() => invokeBridge("links.openExternal", { url: initialState.app.repositoryUrl })} /> : null}
         {activePage === "security-guide" ? <SecurityGuidePage encryptionAlgorithms={initialState.app.encryptionAlgorithms as EncryptionAlgorithmOption[]} /> : null}
       </AppShell>
+      <AppContextMenu activePage={activePage} onNavigate={navigate} />
       <UpdateDialog
         update={startupUpdate}
         isInstalling={isInstallingStartupUpdate}
@@ -365,6 +382,10 @@ function parseHashPage(): PageKey {
 }
 
 function parseLaunchPage(action?: string): PageKey | null {
+  if (action === recycleBinShredLaunchAction) {
+    return "custom-clean"
+  }
+
   const prefix = "--page="
   if (!action?.startsWith(prefix)) {
     return null

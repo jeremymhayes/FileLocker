@@ -11,14 +11,23 @@ internal static class ExplorerIntegrationService
 {
     private const string EncryptVerbKey = "FileLockerEncrypt";
     private const string EncryptVerbLabel = "Encrypt with FileLocker";
+    private const string RecycleBinVerbKey = "FileLockerRecycleBinShred";
+    private const string RecycleBinVerbLabel = "Shred with FileLocker";
     private const string LegacyDecryptVerbKey = "FileLockerDecrypt";
     private const string LegacyVerifyVerbKey = "FileLockerVerify";
     private const string LegacyRotateVerbKey = "FileLockerRotate";
 
-    private static readonly ExplorerVerbTarget[] EncryptTargets =
+    private static readonly string[] EncryptShellRoots =
     [
-        new(@"Software\Classes\*\shell", @"--encrypt ""%1"""),
-        new(@"Software\Classes\Directory\shell", @"--encrypt ""%1""")
+        @"Software\Classes\*\shell",
+        @"Software\Classes\Directory\shell"
+    ];
+
+    private static readonly ExplorerVerbTarget[] ManagedTargets =
+    [
+        new(@"Software\Classes\*\shell", EncryptVerbKey, EncryptVerbLabel, @"--encrypt ""%1"""),
+        new(@"Software\Classes\Directory\shell", EncryptVerbKey, EncryptVerbLabel, @"--encrypt ""%1"""),
+        new(@"Software\Classes\CLSID\{645FF040-5081-101B-9F08-00AA002F954E}\shell", RecycleBinVerbKey, RecycleBinVerbLabel, "--recycle-bin-shred")
     ];
 
     private static readonly string[] LegacyVerbKeys =
@@ -38,13 +47,16 @@ internal static class ExplorerIntegrationService
         try
         {
             string normalizedExecutablePath = NormalizeExecutablePath(executablePath);
-            bool isRegistered = EncryptTargets.All(target => IsTargetRegistered(target, normalizedExecutablePath));
-            bool legacyEntriesPresent = EncryptTargets.Any(target => LegacyVerbKeys.Any(legacyKey => SubKeyExists(target.RootPath, legacyKey)));
+            bool isRegistered = ManagedTargets.All(target => IsTargetRegistered(target, normalizedExecutablePath));
+            bool anyRegistered = ManagedTargets.Any(target => IsTargetRegistered(target, normalizedExecutablePath));
+            bool legacyEntriesPresent = EncryptShellRoots.Any(rootPath => LegacyVerbKeys.Any(legacyKey => SubKeyExists(rootPath, legacyKey)));
             string status = isRegistered
                 ? legacyEntriesPresent
                     ? "Explorer integration is enabled, but legacy FileLocker verbs need cleanup."
                     : "Explorer integration is enabled."
-                : "Explorer integration is not installed.";
+                : anyRegistered
+                    ? "Explorer integration is installed, but needs to be updated."
+                    : "Explorer integration is not installed.";
 
             return new ExplorerIntegrationState(isRegistered, true, status);
         }
@@ -77,16 +89,16 @@ internal static class ExplorerIntegrationService
 
         if (enabled)
         {
-            foreach (ExplorerVerbTarget target in EncryptTargets)
+            foreach (ExplorerVerbTarget target in ManagedTargets)
             {
                 RegisterTarget(target, normalizedExecutablePath);
             }
         }
         else
         {
-            foreach (ExplorerVerbTarget target in EncryptTargets)
+            foreach (ExplorerVerbTarget target in ManagedTargets)
             {
-                DeleteSubKeyTreeIfExists(target.RootPath, EncryptVerbKey);
+                DeleteSubKeyTreeIfExists(target.RootPath, target.VerbKey);
             }
         }
 
@@ -96,12 +108,13 @@ internal static class ExplorerIntegrationService
     internal static IReadOnlyList<string> GetManagedVerbKeys() =>
     [
         EncryptVerbKey,
+        RecycleBinVerbKey,
         ..LegacyVerbKeys
     ];
 
     private static bool IsTargetRegistered(ExplorerVerbTarget target, string executablePath)
     {
-        using RegistryKey? commandKey = Registry.CurrentUser.OpenSubKey($@"{target.RootPath}\{EncryptVerbKey}\command");
+        using RegistryKey? commandKey = Registry.CurrentUser.OpenSubKey($@"{target.RootPath}\{target.VerbKey}\command");
         string? command = commandKey?.GetValue(null) as string;
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -168,9 +181,9 @@ internal static class ExplorerIntegrationService
 
     private static void RegisterTarget(ExplorerVerbTarget target, string executablePath)
     {
-        using RegistryKey verbKey = Registry.CurrentUser.CreateSubKey($@"{target.RootPath}\{EncryptVerbKey}", writable: true)
+        using RegistryKey verbKey = Registry.CurrentUser.CreateSubKey($@"{target.RootPath}\{target.VerbKey}", writable: true)
             ?? throw new InvalidOperationException("Could not create Explorer integration registry key.");
-        verbKey.SetValue(null, EncryptVerbLabel, RegistryValueKind.String);
+        verbKey.SetValue(null, target.Label, RegistryValueKind.String);
         verbKey.SetValue("Icon", executablePath, RegistryValueKind.String);
 
         using RegistryKey commandKey = verbKey.CreateSubKey("command", writable: true)
@@ -180,11 +193,11 @@ internal static class ExplorerIntegrationService
 
     private static void CleanupLegacyEntries()
     {
-        foreach (ExplorerVerbTarget target in EncryptTargets)
+        foreach (string rootPath in EncryptShellRoots)
         {
             foreach (string legacyKey in LegacyVerbKeys)
             {
-                DeleteSubKeyTreeIfExists(target.RootPath, legacyKey);
+                DeleteSubKeyTreeIfExists(rootPath, legacyKey);
             }
         }
     }
@@ -198,7 +211,7 @@ internal static class ExplorerIntegrationService
     private static string BuildCommand(string executablePath, string arguments) =>
         $@"""{executablePath}"" {arguments}";
 
-    private sealed record ExplorerVerbTarget(string RootPath, string Arguments);
+    private sealed record ExplorerVerbTarget(string RootPath, string VerbKey, string Label, string Arguments);
 }
 
 internal sealed record ExplorerIntegrationState(

@@ -468,7 +468,7 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="lg">
@@ -601,7 +601,10 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
 
             <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
               <SectionHeader className="border-b border-border/80 px-4 py-3">
-                <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Hash Output</SectionTitle>
+                <div className="flex items-center justify-between gap-3">
+                  <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Generate Hash</SectionTitle>
+                  <Badge variant="outline">Step 1</Badge>
+                </div>
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">
                 <div className="text-sm text-secondary">{hashOutputTitle}</div>
@@ -681,11 +684,14 @@ export function HashFilesPage({ invoke, onDashboardUpdate, dashboard, droppedPat
 
             <Section className="overflow-hidden rounded-md border border-border bg-transparent py-0 shadow-none ring-0">
               <SectionHeader className="border-b border-border/80 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex size-8 items-center justify-center rounded-md border border-accent-teal/30 bg-accent-teal/10 text-accent-teal">
-                    <ShieldCheck className="size-4" aria-hidden />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex size-8 items-center justify-center rounded-md border border-accent-teal/30 bg-accent-teal/10 text-accent-teal">
+                      <ShieldCheck className="size-4" aria-hidden />
+                    </div>
+                    <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Compare Trusted Hash</SectionTitle>
                   </div>
-                  <SectionTitle className="font-display text-base font-semibold tracking-tight text-primary">Verify Hash</SectionTitle>
+                  <Badge variant="outline">Step 2</Badge>
                 </div>
               </SectionHeader>
               <SectionBody className="flex flex-col gap-3 px-4 py-3">

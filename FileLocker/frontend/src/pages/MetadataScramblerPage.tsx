@@ -25,6 +25,7 @@ import { Section, SectionBody, SectionHeader, SectionTitle } from "@/components/
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { FileTypeIcon } from "@/components/common/FileTypeIcon"
 import { cn } from "@/lib/utils"
 import { getComparableLocalPath, mergeUniquePaths } from "@/lib/format"
@@ -311,6 +312,9 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
   }
 
   const activeFile = preview?.files.find((file) => getComparableLocalPath(file.fullPath.trim()) === getComparableLocalPath(activeFilePath.trim())) ?? preview?.files[0] ?? null
+  const scrambleDisabledReason = preview?.writeSupportEnabled
+    ? "Apply changes is not available yet in this build."
+    : "Writing changes is disabled in this build. FileLocker previews metadata changes without touching the original files."
 
   return (
     <div className="security-page">
@@ -330,7 +334,7 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="lg">
@@ -663,10 +667,17 @@ export function MetadataScramblerPage({ invoke, droppedPaths = [], onDroppedPath
                 <Eye data-icon="inline-start" />
                 {isRunning ? "Previewing" : isPreviewStale && preview ? "Refresh Preview" : "Preview Changes"}
               </Button>
-              <Button variant="secondary" disabled>
-                <Sparkles data-icon="inline-start" />
-                Scramble Metadata
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <Button variant="secondary" disabled className="w-full">
+                      <Sparkles data-icon="inline-start" />
+                      Scramble Metadata
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{scrambleDisabledReason}</TooltipContent>
+              </Tooltip>
               <Button variant="outline" onClick={clearSelection} disabled={paths.length === 0 || isRunning}>
                 <X data-icon="inline-start" />
                 Clear Selection

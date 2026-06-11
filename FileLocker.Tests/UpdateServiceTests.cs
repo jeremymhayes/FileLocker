@@ -6,7 +6,7 @@ public sealed class UpdateServiceTests
 {
     [Theory]
     [InlineData("1.2.3", "1.2.3.0")]
-    [InlineData("1.2.2.1", "1.2.2.1")]
+    [InlineData("1.3.0.0", "1.3.0.0")]
     [InlineData("v1.2.3", "1.2.3.0")]
     [InlineData("  1.2.3.4  ", "1.2.3.4")]
     public void NormalizeSkippedVersion_AcceptsInstallerVersionValues(string value, string expected)
@@ -33,13 +33,13 @@ public sealed class UpdateServiceTests
         {
             AutoCheckEnabled = false,
             LastCheckedUtc = localTime,
-            SkippedVersion = "v1.2.2.1"
+            SkippedVersion = "v1.3.0.0"
         };
 
         UpdateSettings normalized = UpdateService.NormalizeSettings(settings);
 
         Assert.False(normalized.AutoCheckEnabled);
-        Assert.Equal("1.2.2.1", normalized.SkippedVersion);
+        Assert.Equal("1.3.0.0", normalized.SkippedVersion);
         Assert.Equal(TimeSpan.Zero, normalized.LastCheckedUtc?.Offset);
         Assert.Equal(localTime.UtcDateTime, normalized.LastCheckedUtc?.UtcDateTime);
     }
@@ -108,7 +108,7 @@ public sealed class UpdateServiceTests
     [Fact]
     public void CreateInstallerCleanupStartInfo_UsesInnoSilentArgumentsAndRelaunch()
     {
-        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker-Setup-1.2.2.1.exe");
+        string installerPath = Path.Combine(Path.GetTempPath(), "FileLocker-Setup-1.3.0.0.exe");
         string relaunchPath = Environment.ProcessPath
             ?? throw new InvalidOperationException("Test process path was not available.");
 
@@ -132,14 +132,48 @@ public sealed class UpdateServiceTests
     }
 
     [Fact]
+    public async Task DownloadInstallerPayloadAsync_ClosesTemporaryFileBeforeDigestVerification()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string installerPath = Path.Combine(root, "FileLocker-Setup-1.3.0.0.exe");
+        string tempPath = Path.Combine(root, $"FileLocker-Setup-1.3.0.0.exe.{Guid.NewGuid():N}.download");
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes("fake installer payload");
+        string digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+
+        try
+        {
+            await using var source = new MemoryStream(payload);
+
+            await UpdateService.DownloadInstallerPayloadAsync(
+                source,
+                tempPath,
+                installerPath,
+                digest,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(File.Exists(installerPath));
+            Assert.False(File.Exists(tempPath));
+            Assert.Equal(payload, await File.ReadAllBytesAsync(installerPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void TryExtractSha256DigestFromText_ExtractsMatchingInstallerDigest()
     {
         const string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        string text = $"{digest}  FileLocker-Setup-1.2.2.1.exe";
+        string text = $"{digest}  FileLocker-Setup-1.3.0.0.exe";
 
         bool parsed = UpdateService.TryExtractSha256DigestFromText(
             text,
-            "FileLocker-Setup-1.2.2.1.exe",
+            "FileLocker-Setup-1.3.0.0.exe",
             out string actual);
 
         Assert.True(parsed);
@@ -150,11 +184,11 @@ public sealed class UpdateServiceTests
     public void TryExtractSha256DigestFromText_IgnoresMismatchedInstallerLine()
     {
         const string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        string text = $"{digest}  FileLocker-Setup-1.2.1.0.exe\nFileLocker-Setup-1.2.2.1.exe";
+        string text = $"{digest}  FileLocker-Setup-1.2.1.0.exe\nFileLocker-Setup-1.3.0.0.exe";
 
         Assert.False(UpdateService.TryExtractSha256DigestFromText(
             text,
-            "FileLocker-Setup-1.2.2.1.exe",
+            "FileLocker-Setup-1.3.0.0.exe",
             out _));
     }
 
@@ -163,13 +197,13 @@ public sealed class UpdateServiceTests
     {
         var release = new GitHubRelease
         {
-            TagName = "v1.2.2.1",
+            TagName = "v1.3.0.0",
             Assets =
             [
                 new GitHubReleaseAsset
                 {
                     Name = "FileLocker-Setup-1.2.1.0.exe",
-                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.1.0.exe",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.3.0.0/FileLocker-Setup-1.2.1.0.exe",
                     Size = 1024
                 }
             ]
@@ -179,7 +213,7 @@ public sealed class UpdateServiceTests
 
         Assert.False(created);
         Assert.Null(releaseInfo);
-        Assert.Contains("FileLocker-Setup-1.2.2.1.exe", failureReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FileLocker-Setup-1.3.0.0.exe", failureReason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -187,21 +221,21 @@ public sealed class UpdateServiceTests
     {
         var release = new GitHubRelease
         {
-            TagName = "v1.2.2.1",
-            HtmlUrl = "https://github.com/jeremymhayes/FileLocker/releases/tag/v1.2.2.1",
+            TagName = "v1.3.0.0",
+            HtmlUrl = "https://github.com/jeremymhayes/FileLocker/releases/tag/v1.3.0.0",
             Body = "Release notes",
             Assets =
             [
                 new GitHubReleaseAsset
                 {
-                    Name = "FileLocker-Setup-1.2.2.1.exe",
-                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.2.1.exe",
+                    Name = "FileLocker-Setup-1.3.0.0.exe",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.3.0.0/FileLocker-Setup-1.3.0.0.exe",
                     Size = 1024
                 },
                 new GitHubReleaseAsset
                 {
-                    Name = "FileLocker-Setup-1.2.2.1.exe.sha256",
-                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.2.2.1/FileLocker-Setup-1.2.2.1.exe.sha256",
+                    Name = "FileLocker-Setup-1.3.0.0.exe.sha256",
+                    BrowserDownloadUrl = "https://github.com/jeremymhayes/FileLocker/releases/download/v1.3.0.0/FileLocker-Setup-1.3.0.0.exe.sha256",
                     Size = 96
                 }
             ]
@@ -211,9 +245,9 @@ public sealed class UpdateServiceTests
 
         Assert.True(created, failureReason);
         Assert.NotNull(releaseInfo);
-        Assert.Equal("1.2.2.1", releaseInfo.DisplayVersion);
-        Assert.Equal("FileLocker-Setup-1.2.2.1.exe", releaseInfo.InstallerFileName);
-        Assert.EndsWith("FileLocker-Setup-1.2.2.1.exe.sha256", releaseInfo.Sha256DigestDownloadUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("1.3.0.0", releaseInfo.DisplayVersion);
+        Assert.Equal("FileLocker-Setup-1.3.0.0.exe", releaseInfo.InstallerFileName);
+        Assert.EndsWith("FileLocker-Setup-1.3.0.0.exe.sha256", releaseInfo.Sha256DigestDownloadUrl, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import {
+  ArrowRightLeft,
   Binary,
   BookOpen,
   CheckCircle2,
@@ -38,6 +39,14 @@ const exampleInputs: Record<string, string> = {
   Hex: "FileLocker 1.1.1.0",
   "HTML Entities": "<strong>Encode Text</strong> keeps everything local.",
   "UTF-8": "Privacy-first text workflows for Windows.",
+}
+
+const formatHints: Record<string, string> = {
+  Base64: "A-Z, a-z, 0-9, +, and /. Useful when text must survive systems that expect plain ASCII.",
+  URL: "Percent-encodes spaces and unsafe URL characters so the text can be used in paths or query strings.",
+  Hex: "Represents each byte as two hexadecimal digits for byte-oriented inspection or transfer.",
+  "HTML Entities": "Escapes markup characters such as <, >, &, and quotes for safer HTML display.",
+  "UTF-8": "Shows the UTF-8 byte representation of the text.",
 }
 
 const MAX_ENCODE_TEXT_INPUT_CHARS = 1024 * 1024
@@ -143,6 +152,19 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
     setPreserveLineBreaks(value)
   }
 
+  function swapModes() {
+    if (isRunning) {
+      return
+    }
+
+    setMode((current) => (current === "encode" ? "decode" : "encode"))
+    setConversionError("")
+    if (output) {
+      setInput(output)
+      setOutput("")
+    }
+  }
+
   async function copyOutput() {
     if (!output) {
       return
@@ -194,7 +216,7 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
             </div>
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="app-caption-action-safe flex shrink-0 flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="lg">
@@ -338,7 +360,13 @@ export function EncodeTextPage({ invoke }: EncodeTextPageProps) {
                       </SelectGroup>
                     </SelectContent>
                   </Select>
+                  <p className="mt-2 text-xs leading-snug text-secondary">{formatHints[format]}</p>
                 </Field>
+
+                <Button variant="outline" onClick={swapModes} disabled={isRunning} className="justify-start">
+                  <ArrowRightLeft data-icon="inline-start" />
+                  {output ? "Swap and Reuse Output" : "Swap Encode/Decode"}
+                </Button>
 
                 <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 bg-bg-subtle/35 px-3 py-2 transition-colors hover:border-accent/30 hover:bg-bg-surface-hover/70">
                   <span className="min-w-0 flex-1">
