@@ -88,18 +88,22 @@ $updateServicePath = Join-Path $projectDir "Services\UpdateService.cs"
 Assert-Gate ((Get-RegexValue $packageContent 'Identity[^>]+Version="([^"]+)"' 'Package.appxmanifest Version') -eq $packageVersion) "Package.appxmanifest version is not synchronized."
 Assert-Gate ((Get-RegexValue $appManifestContent 'assemblyIdentity[^>]+version="([^"]+)"' 'app.manifest version') -eq $packageVersion) "app.manifest version is not synchronized."
 Assert-FileExists $readmePath "README"
-Assert-FileExists $releaseNotesPath "Release notes"
 Assert-FileExists $innoScriptPath "Inno Setup script"
 
 $readmeContent = Get-Content -Raw -LiteralPath $readmePath
-$releaseNotesContent = Get-Content -Raw -LiteralPath $releaseNotesPath
 $innoScriptContent = Get-Content -Raw -LiteralPath $innoScriptPath
 $updateServiceContent = Get-Content -Raw -LiteralPath $updateServicePath
 
 Assert-Gate ($readmeContent.Contains($packageVersion)) "README does not mention current version $packageVersion."
-Assert-Gate ($releaseNotesContent.Contains($packageVersion)) "Release notes do not mention current version $packageVersion."
 Assert-Gate ($readmeContent.Contains("Inno Setup")) "README does not describe the Inno Setup installer flow."
-Assert-Gate ($releaseNotesContent.Contains("Inno Setup")) "Release notes do not describe the Inno Setup installer flow."
+if (Test-Path -LiteralPath $releaseNotesPath -PathType Leaf) {
+    $releaseNotesContent = Get-Content -Raw -LiteralPath $releaseNotesPath
+    Assert-Gate ($releaseNotesContent.Contains($packageVersion)) "Release notes do not mention current version $packageVersion."
+    Assert-Gate ($releaseNotesContent.Contains("Inno Setup")) "Release notes do not describe the Inno Setup installer flow."
+}
+else {
+    Write-Host "Release notes are not present in this checkout; skipping local release-notes validation."
+}
 Assert-Gate ($innoScriptContent.Contains("DefaultDirName={autopf}\FileLocker")) "Inno script must default to Program Files."
 Assert-Gate ($innoScriptContent.Contains("OutputBaseFilename=FileLocker-Setup-{#AppVersion}")) "Inno script output filename is not versioned."
 Assert-Gate ($innoScriptContent.Contains("ArchitecturesInstallIn64BitMode=x64compatible")) "Inno script is not configured for 64-bit install mode."

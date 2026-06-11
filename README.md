@@ -16,7 +16,7 @@ FileLocker is a **local-first Windows app** for **AES-256-GCM file encryption**,
 
 <br/>
 
-[**⬇️ Download the latest release**][releases] &nbsp;·&nbsp; [🐛 Report an issue][issues] &nbsp;·&nbsp; [📦 Project page][repo] &nbsp;·&nbsp; [📝 Release notes][notes-130]
+[**⬇️ Download the latest release**][releases] &nbsp;·&nbsp; [🐛 Report an issue][issues] &nbsp;·&nbsp; [📦 Project page][repo] &nbsp;·&nbsp; [📝 Release notes][notes-131]
 
 <br/>
 
@@ -42,7 +42,7 @@ FileLocker is a **local-first Windows app** for **AES-256-GCM file encryption**,
 - [Safety notes](#-safety-notes)
 - [What FileLocker is and isn't](#-what-filelocker-is-and-isnt)
 - [FAQ](#-faq)
-- [What's new in 1.3.0.0](#-whats-new-in-1300)
+- [What's new in 1.3.1.0](#-whats-new-in-1310)
 - [For developers](#-for-developers)
 - [Project status](#-project-status)
 - [Links](#-links)
@@ -71,12 +71,12 @@ You can encrypt documents and folders, decrypt them later, generate hashes to ch
 
 ```text
 1. Open the latest release page
-2. Download FileLocker-Setup-1.3.0.0.exe
+2. Download FileLocker-Setup-1.3.1.0.exe
 3. Run the installer wizard → launch from Start Menu
 ```
 
 1. Open the [latest release page][releases].
-2. Download `FileLocker-Setup-1.3.0.0.exe` (or the newest `FileLocker-Setup-{version}.exe` asset).
+2. Download `FileLocker-Setup-1.3.1.0.exe` (or the newest `FileLocker-Setup-{version}.exe` asset).
 3. Run the setup executable and follow the wizard.
 4. Launch FileLocker from the **Start Menu** or desktop shortcut.
 
@@ -218,23 +218,20 @@ No. BitLocker protects the whole drive; FileLocker protects individual files and
 Windows protects certain system locations. Those specific System Care actions need elevation to read or clean them.
 </details>
 
-## 🆕 What's New in 1.3.0.0
+## 🆕 What's New in 1.3.1.0
 
 <details>
-<summary><strong>Expand the 1.3.0.0 highlights</strong></summary>
+<summary><strong>Expand the 1.3.1.0 highlights</strong></summary>
 
 <br/>
 
-- Reserved native Windows caption-button space so top-row app controls stay clear when the custom titlebar spacing is set to zero.
-- Kept the public Windows package on the **Inno Setup installer** (`FileLocker-Setup-1.3.0.0.exe`) with normal Program Files install, upgrades, shortcuts, launch-after-install, and Apps & Features uninstall.
-- Kept the in-app updater on GitHub Releases setup installers with **SHA-256** sidecar verification when a checksum is published.
-- Kept Windows assembly, file, manifest, installer, README, release-notes, and release-gate metadata aligned at `1.3.0.0`.
-- Standardized new `.locked` choices around **runtime-supported AEAD algorithms** with shared metadata, labels, validation, and payload headers.
-- Added stronger **v4 `.locked` payload metadata checks** while keeping AES-256-GCM payloads decryptable.
-- Hardened file, folder, keyfile, metadata, hash, CSV export, and bridge path handling so unsafe inputs fail earlier with clearer messages.
-- Carried forward System Care improvements from 1.2.1.0 (Custom Clean, Startup Manager, Registry Fixer, App Manager).
+- Fixed the updater download path so temporary `.download` files are closed before **SHA-256** verification and installer promotion.
+- Rebuilt the public Windows package as `FileLocker-Setup-1.3.1.0.exe` with a matching `.sha256` sidecar for GitHub Releases.
+- Kept Windows assembly, file, manifest, installer, README, updater fixture, and release-gate metadata aligned at `1.3.1.0`.
+- Preserved the 1.3.0 System Care, Explorer integration, Free-Space Sanitizer, app polish, and updater surfaces while correcting the downloader failure.
+- Users who saw a `.download` file access error from an older installed build should install this setup executable directly; future updater downloads use the fixed path.
 
-📄 Full details: [1.3.0.0 release notes][notes-130] · [1.2.1.0 release notes][notes-121]
+📄 Full details: [1.3.1.0 release notes][notes-131] · [1.2.1.0 release notes][notes-121]
 
 </details>
 
@@ -321,7 +318,7 @@ cd ..
 .\scripts\Build-InnoInstaller.ps1 -Configuration Release -RuntimeIdentifier win-x64
 ```
 
-The installer flow publishes the app into a clean staging folder, compiles `installer\inno\FileLocker.iss`, and writes `FileLocker-Setup-1.3.0.0.exe` plus `FileLocker-Setup-1.3.0.0.exe.sha256` to `artifacts\inno`.
+The installer flow publishes the app into a clean staging folder, compiles `installer\inno\FileLocker.iss`, and writes `FileLocker-Setup-1.3.1.0.exe` plus `FileLocker-Setup-1.3.1.0.exe.sha256` to `artifacts\inno`.
 
 </details>
 
@@ -359,7 +356,7 @@ If FileLocker is useful to you, a ⭐ on the [repository][repo] helps other peop
 | --- | --- |
 | ⬇️ [Latest release][releases] | 📦 [All releases][all-releases] |
 | 🐛 [Issue tracker][issues] | 💻 [Repository][repo] |
-| 📝 [1.3.0.0 release notes][notes-130] | 📝 [1.2.1.0 release notes][notes-121] |
+| 📝 [1.3.1.0 release notes][notes-131] | 📝 [1.2.1.0 release notes][notes-121] |
 
 **Project documents:** [License][license] · [Security policy][security] · [Contributing][contributing] · [Support][support] · [Code of conduct][coc]
 
@@ -376,8 +373,8 @@ If FileLocker is useful to you, a ⭐ on the [repository][repo] helps other peop
 [all-releases]: https://github.com/jeremymhayes/FileLocker/releases
 [issues]: https://github.com/jeremymhayes/FileLocker/issues
 [repo]: https://github.com/jeremymhayes/FileLocker
-[notes-130]: RELEASE_NOTES_1.3.0.0.md
-[notes-121]: RELEASE_NOTES_1.2.1.0.md
+[notes-131]: https://github.com/jeremymhayes/FileLocker/releases/tag/v1.3.1.0
+[notes-121]: https://github.com/jeremymhayes/FileLocker/releases/tag/v1.2.1.0
 [license]: LICENSE
 [security]: SECURITY.md
 [contributing]: CONTRIBUTING.md
