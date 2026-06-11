@@ -445,6 +445,7 @@ namespace FileLocker
 
             _preferences.ThemePreference = ThemePreference.Dark;
             _themePreference = ThemePreference.Dark;
+            _preferences.AccentTheme = AppPreferencesStore.DefaultAccentTheme;
             _preferences.HistoryPrivacyMode = HistoryPrivacyMode.Redacted;
             _preferences.IncludeFullPathsInExports = false;
             _preferences.OutputTimestampPolicy = AppPreferencesStore.CurrentTimeTimestampPolicy;
@@ -452,10 +453,12 @@ namespace FileLocker
             _preferences.CustomEncryptOutputDirectory = string.Empty;
             _preferences.UseCustomDecryptOutputDirectory = true;
             _preferences.CustomDecryptOutputDirectory = GetDefaultDecryptOutputFolder();
+            _preferences.ExplorerIntegrationEnabled = true;
 
             _updateSettings.AutoCheckEnabled = true;
             try
             {
+                ExplorerIntegrationService.SetEnabled(Environment.ProcessPath ?? string.Empty, enabled: true);
                 UpdateService.SaveSettings(_updateSettings);
                 await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
             }
@@ -490,7 +493,9 @@ namespace FileLocker
                 _preferences.CustomEncryptOutputDirectory,
                 _preferences.UseCustomDecryptOutputDirectory,
                 _preferences.CustomDecryptOutputDirectory,
-                _preferences.ThemePreference);
+                _preferences.ThemePreference,
+                _preferences.ExplorerIntegrationEnabled,
+                _preferences.AccentTheme);
         }
 
         private void RestorePreferencesSnapshot(PreferencesSnapshot snapshot)
@@ -506,6 +511,8 @@ namespace FileLocker
             _preferences.CustomDecryptOutputDirectory = snapshot.CustomDecryptOutputDirectory;
             _preferences.ThemePreference = snapshot.ThemePreference;
             _themePreference = snapshot.ThemePreference;
+            _preferences.ExplorerIntegrationEnabled = snapshot.ExplorerIntegrationEnabled;
+            _preferences.AccentTheme = snapshot.AccentTheme;
         }
 
         private sealed record PreferencesSnapshot(
@@ -518,6 +525,8 @@ namespace FileLocker
             string CustomEncryptOutputDirectory,
             bool UseCustomDecryptOutputDirectory,
             string CustomDecryptOutputDirectory,
-            ThemePreference ThemePreference);
+            ThemePreference ThemePreference,
+            bool ExplorerIntegrationEnabled,
+            string AccentTheme);
     }
 }

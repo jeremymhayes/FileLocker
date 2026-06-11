@@ -125,12 +125,12 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 const TONE_COLORS: Record<string, string> = {
-  blue:   "#5d8dff",
-  teal:   "#33c0c7",
-  purple: "#a974ff",
-  orange: "#e6a14a",
-  red:    "#ef617d",
-  green:  "#5fd19a",
+  blue:   "var(--accent-blue)",
+  teal:   "var(--accent-teal)",
+  purple: "var(--accent-purple)",
+  orange: "var(--accent-orange)",
+  red:    "var(--accent-red)",
+  green:  "var(--accent-green)",
 }
 
 const ACTIVITY_ICONS = {
@@ -357,7 +357,7 @@ function ActivityIconTile({ tone, action, failed }: { tone: string; action: stri
       style={{
         width: 28, height: 28, borderRadius: 8, flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
-        background: `${c}1f`, color: c, border: `1px solid ${c}33`,
+        background: `color-mix(in srgb, ${c} 12%, transparent)`, color: c, border: `1px solid color-mix(in srgb, ${c} 20%, transparent)`,
       }}
     >
       <Icon style={{ width: 14, height: 14 }} aria-hidden />
@@ -526,7 +526,7 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
           "inline-flex items-center gap-2 h-8 px-3 rounded-lg border text-[12.5px] cursor-pointer transition-colors",
           "border-border bg-[rgba(26,37,56,0.55)] text-secondary font-[inherit]",
           "hover:bg-bg-surface-hover hover:border-border-strong hover:text-primary",
-          open && "bg-bg-surface-hover border-accent-blue text-primary"
+          open && "bg-bg-surface-hover border-accent text-primary"
         )}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={handleTriggerKeyDown}
@@ -565,7 +565,7 @@ function SortMenu({ value, onChange }: { value: SortKey; onChange: (v: SortKey) 
               >
                 <ItemIcon className="size-[13px]" aria-hidden />
                 <span>{o.label}</span>
-                {selected ? <Check className="size-[13px] text-accent-blue" aria-hidden /> : <span />}
+                {selected ? <Check className="size-[13px] text-accent" aria-hidden /> : <span />}
               </button>
             )
           })}
@@ -609,7 +609,7 @@ function ActivitySection({
         groups.map((g) => (
           <div key={g.label} className="[&+&]:mt-4">
             <div className="pb-2.5 text-[11.5px] font-medium text-muted px-0.5">{g.label}</div>
-            <div className="flex flex-col [&>*+*]:border-t [&>*+*]:border-[rgba(150,173,205,0.08)]">
+            <div className="flex flex-col [&>*+*]:border-t [&>*+*]:border-border-faint">
               {g.items.map((item) => (
                 <ActivityRow key={item.key} item={item} onReveal={onReveal} />
               ))}
@@ -641,7 +641,7 @@ function QuickActionsPanel({ onNavigate }: { onNavigate: (page: PageKey) => void
             >
               <span
                 className="flex size-8 shrink-0 items-center justify-center rounded-md border"
-                style={{ color: tone, background: `${tone}1f`, borderColor: `${tone}33` }}
+                style={{ color: tone, background: `color-mix(in srgb, ${tone} 12%, transparent)`, borderColor: `color-mix(in srgb, ${tone} 20%, transparent)` }}
               >
                 <Icon className="size-4" aria-hidden />
               </span>
@@ -686,7 +686,7 @@ function StorageSavedCard({ dashboard }: { dashboard: DashboardState }) {
         <>
           <div
             className="flex mt-3.5 h-1.5 rounded-full overflow-hidden gap-0.5"
-            style={{ background: "rgba(150,173,205,0.08)" }}
+            style={{ background: "var(--border-faint)" }}
             aria-hidden
           >
             {breakdown.map((item) => (
@@ -720,7 +720,7 @@ function StorageSavedCard({ dashboard }: { dashboard: DashboardState }) {
           Storage savings appear after an encryption run with compression enabled.
         </div>
       )}
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[rgba(150,173,205,0.10)] pt-3">
+      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/70 pt-3">
         <div>
           <div className="text-[11px] uppercase text-muted">Compressed</div>
           <div className="font-mono text-xs text-primary">{compressionApplied}/{compressionRequested}</div>
@@ -795,9 +795,9 @@ function CustomCleanCard({
         <div
           className="flex size-7 items-center justify-center rounded-lg shrink-0"
           style={{
-            background: "rgba(169,116,255,0.14)",
-            color: "#a974ff",
-            border: "1px solid rgba(169,116,255,0.3)",
+            background: "color-mix(in srgb, var(--accent-purple) 14%, transparent)",
+            color: "var(--accent-purple)",
+            border: "1px solid color-mix(in srgb, var(--accent-purple) 30%, transparent)",
           }}
         >
           <Sparkles className="size-3.5" aria-hidden />
@@ -809,11 +809,11 @@ function CustomCleanCard({
           {scan ? `${scan.totalFiles} item${scan.totalFiles === 1 ? "" : "s"} found` : "recoverable space"}
         </span>
       </div>
-      <div className="flex flex-col border-t border-[rgba(150,173,205,0.10)] mb-3.5">
+      <div className="flex flex-col border-t border-border/70 mb-3.5">
         {cleanupSummaryRows.map((item) => (
           <div
             key={item.id}
-            className="flex justify-between items-center py-1.5 border-b border-[rgba(150,173,205,0.08)] last:border-0 text-[12.5px]"
+            className="flex justify-between items-center py-1.5 border-b border-border-faint last:border-0 text-[12.5px]"
           >
             <span className="text-secondary">{item.label}</span>
             <span className="font-mono text-xs text-muted">{item.sizeDisplay}</span>
@@ -918,7 +918,7 @@ function WeekPanel({ dashboard }: { dashboard: DashboardState }) {
             key={bucket.date}
             className={cn(
               "block text-center font-mono text-[9.5px] uppercase tracking-wider text-muted",
-              i === buckets.length - 1 && "text-accent-blue"
+              i === buckets.length - 1 && "text-accent"
             )}
           >
             {bucket.label}
@@ -1075,7 +1075,7 @@ function QueueCard({
         </div>
         <button
           type="button"
-          className="inline-flex items-center gap-1 bg-transparent border-0 text-[12.5px] text-secondary hover:text-accent-blue transition-colors cursor-pointer px-1 py-0.5 rounded"
+          className="inline-flex items-center gap-1 bg-transparent border-0 text-[12.5px] text-secondary hover:text-accent transition-colors cursor-pointer px-1 py-0.5 rounded"
           onClick={onClear}
           disabled={!queuedPaths.length || isEncrypting}
         >
@@ -1088,7 +1088,7 @@ function QueueCard({
         {queuedPaths.map((path) => (
           <div
             key={path}
-            className="grid items-center gap-3 py-2.5 border-b border-[rgba(150,173,205,0.08)] last:border-0"
+            className="grid items-center gap-3 py-2.5 border-b border-border-faint last:border-0"
             style={{ gridTemplateColumns: "16px minmax(0,1fr) auto 24px" }}
           >
             <HardDrive className="size-3.5 text-muted shrink-0" aria-hidden />
@@ -1125,7 +1125,7 @@ function QueueCard({
 
       {/* Password row + encrypt */}
       <div
-        className="grid gap-2.5 mt-3.5 pt-3.5 border-t border-dashed border-[rgba(150,173,205,0.18)] items-end"
+        className="grid gap-2.5 mt-3.5 pt-3.5 border-t border-dashed border-border items-end"
         style={{ gridTemplateColumns: "1fr 1fr auto" }}
       >
         <PasswordField label="Password" value={password} onChange={setPassword} placeholder="Password" disabled={isEncrypting || !encryptionAvailable} />

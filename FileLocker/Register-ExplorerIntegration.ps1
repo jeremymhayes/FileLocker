@@ -6,7 +6,8 @@ param(
 )
 
 $verbs = @(
-    @{ Key = 'FileLockerEncrypt'; Label = 'Encrypt with FileLocker'; Args = '--encrypt "%1"'; Targets = @('HKCU:\Software\Classes\*\shell', 'HKCU:\Software\Classes\Directory\shell') }
+    @{ Key = 'FileLockerEncrypt'; Label = 'Encrypt with FileLocker'; Args = '--encrypt "%1"'; Targets = @('HKCU:\Software\Classes\*\shell', 'HKCU:\Software\Classes\Directory\shell') },
+    @{ Key = 'FileLockerRecycleBinShred'; Label = 'Shred with FileLocker'; Args = '--recycle-bin-shred'; Targets = @('HKCU:\Software\Classes\CLSID\{645FF040-5081-101B-9F08-00AA002F954E}\shell') }
 )
 
 $legacyVerbKeys = @(

@@ -51,6 +51,7 @@ import {
   type StartupTrustFilter,
 } from "@/lib/startupListUtils"
 import { cn } from "@/lib/utils"
+import { formatWipeElapsedDisplay } from "@/lib/wipeStatusUtils"
 import type {
   AppLeftoverCleanResult,
   AppLeftoverScanResult,
@@ -77,6 +78,8 @@ type MaintenancePageProps = {
 }
 
 const MAX_STORED_STRING_ARRAY_JSON_CHARS = 32 * 1024
+const WIPE_STATUS_POLL_INTERVAL_MS = 2_000
+const WIPE_ELAPSED_TICK_MS = 1_000
 
 type MaintenanceDrive = BridgeMaintenanceDrive
 
@@ -137,6 +140,8 @@ type CleanupSortKey = "size" | "name" | "category" | "safety"
 
 const cleanupPageSize = 25
 const cleanupCategoryTabs = ["All", "Windows", "Browsers", "Applications", "Gaming", "Developer Tools", "Privacy", "Advanced"]
+const recycleBinCleanupId = "recycleBin"
+const recycleBinShredLaunchAction = "--recycle-bin-shred"
 
 type RegistryIssue = {
   id: string
@@ -199,6 +204,7 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
   const [wipeError, setWipeError] = useState("")
   const selectedDrive = useSelectedDrive(drives, selectedDriveRoot)
   const activeWipe = wipeStatus?.state === "Running" ? wipeStatus : null
+  const activeWipeOperationId = activeWipe?.operationId ?? ""
   const isRunning = Boolean(activeWipe)
   const isBusyStartingOrRunning = isStartingWipe || isRunning
   const canStart = isAdministrator && Boolean(selectedDrive?.isReady) && !isStartingWipe && !isRunning
@@ -226,6 +232,28 @@ export function PartitionCleanerPage({ invoke, isAdministrator, onRestartAsAdmin
     if (!wipeStatus?.driveRoot) return
     setSelectedDriveRoot((current) => rootsEqual(current, wipeStatus.driveRoot) ? current : wipeStatus.driveRoot)
   }, [wipeStatus?.driveRoot])
+
+  useEffect(() => {
+    if (!activeWipeOperationId) return
+
+    let cancelled = false
+    const intervalId = window.setInterval(() => {
+      void invoke<FreeSpaceWipeStatus | null>("maintenance.getWipeFreeSpaceStatus", {})
+        .then((response) => {
+          if (cancelled) return
+          if (response !== null && !isFreeSpaceWipeStatus(response)) return
+          onWipeStatusChange(response)
+        })
+        .catch(() => {
+          // Keep the running panel responsive even if one refresh is lost while the host is busy.
+        })
+    }, WIPE_STATUS_POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [activeWipeOperationId, invoke, onWipeStatusChange])
 
   function selectDrive(root: string) {
     if (isBusyStartingOrRunning) { toast.error("Wait for the current free-space wipe to finish before changing drives."); return }
@@ -415,8 +443,8 @@ function PartitionStepIndicator({ current, className }: { current: PartitionFlow
             >
               <span className={cn(
                 "flex size-4 items-center justify-center rounded-full text-[10px] font-semibold",
-                state === "current" && "bg-accent text-[#08111f]",
-                state === "done" && "bg-accent-green/80 text-[#08111f]",
+                state === "current" && "bg-accent text-accent-foreground",
+                state === "done" && "bg-accent-green/80 text-accent-foreground",
                 state === "upcoming" && "bg-border/70 text-secondary"
               )}>{index + 1}</span>
               {step.label}
@@ -558,24 +586,6 @@ function getMediaGuidanceClass(tone: "good" | "warning" | "neutral") {
   if (tone === "good") return "border-accent-green/30 bg-accent-green/10 text-accent-green"
   if (tone === "warning") return "border-amber-400/30 bg-amber-400/10 text-amber-200"
   return "border-border-strong bg-bg-subtle text-secondary"
-}
-
-function getWipeElapsedDisplay(status: FreeSpaceWipeStatus) {
-  const startedAt = Date.parse(status.startedAtUtc)
-  if (Number.isNaN(startedAt)) return "Unknown"
-
-  const completedAt = status.completedAtUtc ? Date.parse(status.completedAtUtc) : Date.now()
-  const end = Number.isNaN(completedAt) ? Date.now() : completedAt
-  const seconds = Math.max(0, Math.round((end - startedAt) / 1000))
-  if (seconds < 60) return `${seconds}s`
-
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes < 60) return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
-
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
 }
 
 function getWipePassSummary(status: FreeSpaceWipeStatus) {
@@ -808,6 +818,16 @@ function PartitionReviewPanel({
 }
 
 function PartitionRunStatus({ status }: { status: FreeSpaceWipeStatus | null }) {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (status?.state !== "Running") return
+
+    setNowMs(Date.now())
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), WIPE_ELAPSED_TICK_MS)
+    return () => window.clearInterval(intervalId)
+  }, [status?.operationId, status?.state])
+
   if (!status) return null
 
   const percent = Math.max(0, Math.min(100, Number.isFinite(status.percent) ? status.percent : 0))
@@ -835,7 +855,7 @@ function PartitionRunStatus({ status }: { status: FreeSpaceWipeStatus | null }) 
       </div>
       <div className="mt-3 grid grid-cols-2 divide-x divide-y divide-border border-y border-border md:grid-cols-4">
         <MetricTile label={getWipePassMetricLabel(status)} value={getWipePassSummary(status)} />
-        <MetricTile label="Elapsed" value={getWipeElapsedDisplay(status)} />
+        <MetricTile label="Elapsed" value={formatWipeElapsedDisplay(status, nowMs)} />
         <MetricTile label="Cleanup" value={cleanupLabel} good={status.cleanupStatus === "cleanupSucceeded" || status.cleanupStatus === "notNeeded"} />
         <MetricTile label="Drive" value={status.driveRoot || "Unknown"} />
       </div>
@@ -1000,7 +1020,12 @@ export function DriveOptimizerPage({ invoke, isAdministrator, onRestartAsAdminis
   )
 }
 
-export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministrator }: MaintenancePageProps) {
+type CustomCleanPageProps = MaintenancePageProps & {
+  launchAction?: string
+  onOpenPartitionCleaner?: () => void
+}
+
+export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministrator, launchAction, onOpenPartitionCleaner }: CustomCleanPageProps) {
   const [scan, setScan] = useState<CleanupScanResult | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [activeGroup, setActiveGroup] = useState("All")
@@ -1019,9 +1044,12 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
   const [isCleaning, setIsCleaning] = useState(false)
   const [lastRun, setLastRun] = useState<CleanupRunResult | null>(null)
   const [savedSelectionLoaded, setSavedSelectionLoaded] = useState(false)
+  const recycleBinLaunchHandledRef = useRef(false)
+  const recycleBinShredMode = launchAction === recycleBinShredLaunchAction
   const categories = scan?.categories ?? []
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const ignoredIdSet = useMemo(() => new Set(ignoredIds), [ignoredIds])
+  const recycleBinCategory = categories.find((category) => category.id === recycleBinCleanupId) ?? null
   const selectedCategories = useMemo(() => categories.filter((c) => selectedIdSet.has(c.id) && c.isEnabled), [categories, selectedIdSet])
   const cleanupNeedsAdministrator = selectedCategories.some((c) => c.requiresAdministrator)
   const canRunCleanup = selectedCategories.length > 0 && !isScanning && !isCleaning && (!cleanupNeedsAdministrator || isAdministrator)
@@ -1056,6 +1084,7 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
   )
   const hasResults = scan !== null || cleanupScanError
   const pendingCleanupCount = pendingCleanupIds.length > 0 ? pendingCleanupIds.length : selectedCategories.length
+  const pendingRecycleBinShred = recycleBinShredMode && (pendingCleanupIds.length > 0 ? pendingCleanupIds : selectedIds).includes(recycleBinCleanupId)
 
   useEffect(() => {
     setPageIndex(0)
@@ -1075,7 +1104,17 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
     setSelectedItemId(visibleCategories[0]?.id ?? "")
   }, [categories, ignoredIdSet, selectedItemId, visibleCategories])
 
-  async function scanCleanup(options: { preserveLastRun?: boolean; clearSelection?: boolean } = {}) {
+  useEffect(() => {
+    if (!recycleBinShredMode || recycleBinLaunchHandledRef.current) return
+
+    recycleBinLaunchHandledRef.current = true
+    setActiveGroup("Windows")
+    setSafetyFilter("all")
+    setQuery("")
+    void scanCleanup({ clearSelection: true, selectOnlyIds: [recycleBinCleanupId], focusCategoryId: recycleBinCleanupId })
+  }, [recycleBinShredMode])
+
+  async function scanCleanup(options: { preserveLastRun?: boolean; clearSelection?: boolean; selectOnlyIds?: string[]; focusCategoryId?: string } = {}) {
     if ((isScanning && scan !== null) || (isCleaning && !options.preserveLastRun)) return
     setIsScanning(true)
     setCleanupScanError("")
@@ -1088,9 +1127,14 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
       setScan(response)
       const saved = savedSelectionLoaded ? [] : readStoredStringArray("filelocker.customCleanSelection")
       if (!savedSelectionLoaded) setSavedSelectionLoaded(true)
-      setSelectedItemId((current) => response.categories.some((c) => c.id === current) ? current : response.categories.find((c) => c.group !== "Advanced")?.id ?? response.categories[0]?.id ?? "")
+      setSelectedItemId((current) => {
+        const focusId = options.focusCategoryId
+        if (focusId && response.categories.some((category) => category.id === focusId)) return focusId
+        return response.categories.some((c) => c.id === current) ? current : response.categories.find((c) => c.group !== "Advanced")?.id ?? response.categories[0]?.id ?? ""
+      })
       setSelectedIds((current) => {
         const enabled = new Set(response.categories.filter((c) => c.isEnabled).map((c) => c.id))
+        if (options.selectOnlyIds) return options.selectOnlyIds.filter((id) => enabled.has(id))
         if (options.clearSelection) return []
         if (current.length > 0) return current.filter((id) => enabled.has(id))
         if (saved.length > 0) return saved.filter((id) => enabled.has(id))
@@ -1160,7 +1204,11 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
       updateSelectedIds(() => [])
       setPendingCleanupIds([])
       await scanCleanup({ preserveLastRun: true, clearSelection: true })
-      if (response.warnings.length > 0 || response.skippedItems > 0) {
+      if (recycleBinShredMode && targetIds.includes(recycleBinCleanupId) && onOpenPartitionCleaner) {
+        const notify = response.warnings.length > 0 || response.skippedItems > 0 ? toast.warning : toast.success
+        notify("Recycle Bin step finished. Select a drive to run the 3-pass free-space wipe.")
+        onOpenPartitionCleaner()
+      } else if (response.warnings.length > 0 || response.skippedItems > 0) {
         toast.warning(`Cleaned ${response.freedDisplay}; ${response.skippedItems} item(s) skipped.`)
       } else {
         toast.success(`Cleaned ${response.freedDisplay}.`)
@@ -1203,6 +1251,36 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
           onRestartAsAdministrator={onRestartAsAdministrator}
           description="Some cleanup locations need administrator access. Restart as administrator to include protected Windows areas."
         />
+      ) : null}
+
+      {recycleBinShredMode ? (
+        <section className="rounded-md border border-accent/40 bg-accent/8 px-4 py-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <Trash2 className="size-4 shrink-0 text-accent" aria-hidden />
+                <span className="font-display text-base font-semibold tracking-tight text-primary">Shred Recycle Bin</span>
+              </div>
+              <p className="mt-1 max-w-3xl text-sm text-secondary">
+                Clean current Recycle Bin entries first, then run Free-Space Sanitizer for the 3-pass Windows cipher wipe over already-deleted traces.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => recycleBinCategory ? requestCleanup([recycleBinCleanupId]) : void scanCleanup({ clearSelection: true, selectOnlyIds: [recycleBinCleanupId], focusCategoryId: recycleBinCleanupId })}
+                disabled={isScanning || isCleaning}
+              >
+                <Trash2 data-icon="inline-start" />
+                {isScanning ? "Scanning..." : recycleBinCategory ? isCleaning ? "Cleaning..." : "Clean Recycle Bin" : "Scan Recycle Bin"}
+              </Button>
+              <Button variant="secondary" onClick={onOpenPartitionCleaner} disabled={!onOpenPartitionCleaner || isCleaning}>
+                <HardDrive data-icon="inline-start" />
+                3-Pass Free-Space Wipe
+              </Button>
+            </div>
+          </div>
+        </section>
       ) : null}
 
       {hasResults ? (
@@ -1262,7 +1340,7 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
                       type="button"
                       className={cn(
                         "h-8 rounded-md border px-3 text-sm font-medium transition-colors",
-                        activeGroup === group ? "border-accent bg-accent text-[#08111f]" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
+                        activeGroup === group ? "border-accent bg-accent text-accent-foreground" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => setActiveGroup(group)}
                     >
@@ -1375,7 +1453,7 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
                       disabled={label === "..."}
                       className={cn(
                         "flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm font-medium transition-colors disabled:cursor-default",
-                        label === String(safePageIndex + 1) ? "bg-accent text-[#08111f]" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
+                        label === String(safePageIndex + 1) ? "bg-accent text-accent-foreground" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => label !== "..." && setPageIndex(Number(label) - 1)}
                     >
@@ -1411,9 +1489,11 @@ export function CustomCleanPage({ invoke, isAdministrator, onRestartAsAdministra
       <MaintenanceConfirmDialog
         open={showCleanupConfirmation}
         onOpenChange={setShowCleanupConfirmation}
-        title="Clean selected areas?"
-        description={`FileLocker will delete files from ${pendingCleanupCount} selected cleanup item${pendingCleanupCount === 1 ? "" : "s"}. Locked, missing, or unavailable files are skipped and reported.`}
-        confirmLabel="Clean Selected"
+        title={pendingRecycleBinShred ? "Shred Recycle Bin with FileLocker?" : "Clean selected areas?"}
+        description={pendingRecycleBinShred
+          ? "FileLocker will empty current Recycle Bin contents, then open Free-Space Sanitizer so you can run the 3-pass overwrite across already-deleted traces."
+          : `FileLocker will delete files from ${pendingCleanupCount} selected cleanup item${pendingCleanupCount === 1 ? "" : "s"}. Locked, missing, or unavailable files are skipped and reported.`}
+        confirmLabel={pendingRecycleBinShred ? "Clean Recycle Bin" : "Clean Selected"}
         onConfirm={() => void runCleanup()}
         onDontShowAgain={() => { setSkipCleanupConfirmation(true); void runCleanup() }}
         isBusy={isCleaning}
@@ -1933,7 +2013,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
                       type="button"
                       className={cn(
                         "h-8 rounded-md border px-3 text-sm font-medium transition-colors",
-                        issueTab === tab.key ? "border-accent bg-accent text-[#08111f]" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
+                        issueTab === tab.key ? "border-accent bg-accent text-accent-foreground" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => setIssueTab(tab.key)}
                     >
@@ -2044,7 +2124,7 @@ export function RegistryFixerPage({ invoke, isAdministrator, onRestartAsAdminist
                       disabled={label === "..."}
                       className={cn(
                         "flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm font-medium transition-colors disabled:cursor-default",
-                        label === String(safeIssuePageIndex + 1) ? "bg-accent text-[#08111f]" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
+                        label === String(safeIssuePageIndex + 1) ? "bg-accent text-accent-foreground" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => label !== "..." && setIssuePageIndex(Number(label) - 1)}
                     >
@@ -2508,7 +2588,7 @@ export function StartupManagerPage({ invoke, isAdministrator }: MaintenancePageP
                       type="button"
                       className={cn(
                         "h-8 rounded-md px-3 text-sm font-medium transition-colors",
-                        activeStartupTab === tab.key ? "bg-accent text-[#08111f]" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
+                        activeStartupTab === tab.key ? "bg-accent text-accent-foreground" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => {
                         if (tab.key === "ignored") {
@@ -3326,7 +3406,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
                       type="button"
                       className={cn(
                         "h-8 rounded-md border px-3 text-sm font-medium transition-colors",
-                        appTab === tab.key ? "border-accent bg-accent text-[#08111f]" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
+                        appTab === tab.key ? "border-accent bg-accent text-accent-foreground" : "border-border/80 bg-bg-subtle/60 text-secondary hover:border-border-strong hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => setAppTab(tab.key)}
                     >
@@ -3410,7 +3490,7 @@ export function AppManagerPage({ invoke, isAdministrator, onRestartAsAdministrat
                       disabled={label === "..."}
                       className={cn(
                         "flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm font-medium transition-colors disabled:cursor-default",
-                        label === String(safeAppPageIndex + 1) ? "bg-accent text-[#08111f]" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
+                        label === String(safeAppPageIndex + 1) ? "bg-accent text-accent-foreground" : label === "..." ? "text-muted" : "text-secondary hover:bg-bg-surface-hover hover:text-primary"
                       )}
                       onClick={() => label !== "..." && setAppPageIndex(Number(label) - 1)}
                     >
@@ -3949,8 +4029,8 @@ function ScanStepIndicator({ current, applyLabel = "Apply", className }: { curre
             >
               <span className={cn(
                 "flex size-4 items-center justify-center rounded-full text-[10px] font-semibold",
-                state === "current" && "bg-accent text-[#08111f]",
-                state === "done" && "bg-accent-green/80 text-[#08111f]",
+                state === "current" && "bg-accent text-accent-foreground",
+                state === "done" && "bg-accent-green/80 text-accent-foreground",
                 state === "upcoming" && "bg-border/70 text-secondary"
               )}>{index + 1}</span>
               {step.label}

@@ -112,6 +112,7 @@ export type Preferences = {
   useCustomDecryptOutputDirectory: boolean
   customDecryptOutputDirectory: string
   themePreference: string
+  accentTheme: string
 }
 
 export type UpdateSettings = {

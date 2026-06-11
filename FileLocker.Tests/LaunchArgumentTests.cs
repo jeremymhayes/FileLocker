@@ -49,6 +49,42 @@ public sealed class LaunchArgumentTests
     }
 
     [Fact]
+    public void ParseLaunchArguments_AllowsRecycleBinShredAction()
+    {
+        LaunchArguments parsed = App.ParseLaunchArguments([
+            "FileLocker.exe",
+            "--recycle-bin-shred"
+        ]);
+
+        Assert.Equal("--recycle-bin-shred", parsed.Action);
+    }
+
+    [Fact]
+    public void ShouldPromptForAdministratorOnLaunch_ReturnsTrueForStandardUser()
+    {
+        Assert.True(App.ShouldPromptForAdministratorOnLaunch(isAdministrator: false));
+    }
+
+    [Fact]
+    public void ShouldPromptForAdministratorOnLaunch_ReturnsFalseForAdministrator()
+    {
+        Assert.False(App.ShouldPromptForAdministratorOnLaunch(isAdministrator: true));
+    }
+
+    [Fact]
+    public void BuildElevatedRelaunchArguments_QuotesOriginalArguments()
+    {
+        string arguments = App.BuildElevatedRelaunchArguments([
+            "FileLocker.exe",
+            "C:\\Temp\\plain.txt",
+            "C:\\Temp\\space name.txt",
+            "--page=partition-cleaner"
+        ]);
+
+        Assert.Equal("\"C:\\Temp\\plain.txt\" \"C:\\Temp\\space name.txt\" \"--page=partition-cleaner\"", arguments);
+    }
+
+    [Fact]
     public void ParseLaunchArguments_CapsPathCountAfterDeduplication()
     {
         string[] args = Enumerable.Range(0, MainWindow.MaxBridgeStringListItems + 25)

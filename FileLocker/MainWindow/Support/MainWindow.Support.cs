@@ -622,6 +622,8 @@ namespace FileLocker
             {
                 SetExplorerIntegrationControlsEnabled(false);
                 await RunExplorerIntegrationScriptAsync(unregister: false);
+                _preferences.ExplorerIntegrationEnabled = true;
+                await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
                 await ShowInfoDialogAsync("Explorer actions were enabled for the current user.", "Explorer Integration");
             }
             catch (Exception ex)
@@ -640,6 +642,8 @@ namespace FileLocker
             {
                 SetExplorerIntegrationControlsEnabled(false);
                 await RunExplorerIntegrationScriptAsync(unregister: true);
+                _preferences.ExplorerIntegrationEnabled = false;
+                await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
                 await ShowInfoDialogAsync("Explorer actions were removed for the current user.", "Explorer Integration");
             }
             catch (Exception ex)

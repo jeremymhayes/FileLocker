@@ -102,6 +102,7 @@ namespace FileLocker
 #else
             AppWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
 #endif
+            AppWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             AppWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             AppWebView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
 
@@ -339,7 +340,7 @@ namespace FileLocker
                 "settings.get" => Task.FromResult<object?>(BuildSettingsPayload()),
                 "settings.save" => SaveSettingsFromBridgeAsync(ReadPayload<SettingsSaveRequest>(request.Payload)),
                 "settings.reset" => ResetSettingsFromBridgeAsync(),
-                "shell.setExplorerIntegration" => Task.FromResult<object?>(SetExplorerIntegrationFromBridge(ReadPayload<ExplorerIntegrationRequest>(request.Payload))),
+                "shell.setExplorerIntegration" => SetExplorerIntegrationFromBridgeAsync(ReadPayload<ExplorerIntegrationRequest>(request.Payload)),
                 "updates.check" => CheckForUpdatesFromBridgeAsync(),
                 "updates.download" => DownloadUpdateFromBridgeAsync(),
                 "updates.install" => InstallUpdateFromBridgeAsync(),
@@ -2151,7 +2152,8 @@ namespace FileLocker
                     _preferences.CustomEncryptOutputDirectory,
                     _preferences.UseCustomDecryptOutputDirectory,
                     CustomDecryptOutputDirectory = customDecryptOutputDirectory,
-                    ThemePreference = _preferences.ThemePreference.ToString()
+                    ThemePreference = _preferences.ThemePreference.ToString(),
+                    _preferences.AccentTheme
                 },
                 updates = new
                 {
@@ -2183,17 +2185,31 @@ namespace FileLocker
             return BuildSettingsPayload();
         }
 
-        private object SetExplorerIntegrationFromBridge(ExplorerIntegrationRequest request)
+        private async Task<object?> SetExplorerIntegrationFromBridgeAsync(ExplorerIntegrationRequest request)
         {
+            bool previousEnabled = _preferences.ExplorerIntegrationEnabled;
+            _preferences.ExplorerIntegrationEnabled = request.Enabled;
             ExplorerIntegrationService.SetEnabled(GetCurrentExecutablePath(), request.Enabled);
+            try
+            {
+                await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
+            }
+            catch
+            {
+                _preferences.ExplorerIntegrationEnabled = previousEnabled;
+                throw;
+            }
+
             return BuildSettingsPayload();
         }
 
         private async Task<object?> ResetSettingsFromBridgeAsync()
         {
             ApplyPreferencesDto(new PreferencesDto());
+            _preferences.ExplorerIntegrationEnabled = true;
             _updateSettings.AutoCheckEnabled = true;
             _updateSettings.SkippedVersion = null;
+            ExplorerIntegrationService.SetEnabled(GetCurrentExecutablePath(), enabled: true);
             UpdateService.SaveSettings(_updateSettings);
             await AppPreferencesStore.SaveAsync(GetAppDataDirectory(), _preferences);
             if (_preferences.IncognitoMode)
@@ -2671,6 +2687,7 @@ namespace FileLocker
             }
 
             _preferences.ThemePreference = ParseEnum(dto.ThemePreference, ThemePreference.Dark);
+            _preferences.AccentTheme = AppPreferencesStore.NormalizeAccentTheme(dto.AccentTheme);
             AppPreferencesStore.NormalizePreferences(_preferences);
             _currentExperienceLevel = UserExperienceLevel.Advanced;
             _themePreference = _preferences.ThemePreference;
@@ -3181,6 +3198,7 @@ namespace FileLocker
             public bool UseCustomDecryptOutputDirectory { get; set; } = true;
             public string CustomDecryptOutputDirectory { get; set; } = string.Empty;
             public string ThemePreference { get; set; } = nameof(FileLocker.ThemePreference.Dark);
+            public string AccentTheme { get; set; } = AppPreferencesStore.DefaultAccentTheme;
         }
 
         private sealed class UpdateSettingsDto

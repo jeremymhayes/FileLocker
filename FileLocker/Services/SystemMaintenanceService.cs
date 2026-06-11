@@ -371,7 +371,7 @@ internal static class SystemMaintenanceService
         [
             CleanupItem("userTemp", "Windows", "User Temporary Files", "Temporary files created by apps under the current Windows user.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Temporary files and folders in your user temp folder."], ["Personal files outside the temp folder."], "Safe to clean regularly.", [DirectoryTarget(Path.GetFullPath(Path.GetTempPath()))]),
             CleanupItem("systemTemp", "Windows", "System Temporary Files", "System temporary files created by Windows and installers.", "Review", supportsDeletion: true, requiresAdministrator: true, defaultSelected: false, ["Temporary files under the Windows temp folder."], ["Live system files and protected Windows folders."], "Review before cleaning because protected files may be skipped.", [DirectoryTarget(CombinePath(windows, "Temp"))]),
-            CleanupItem("recycleBin", "Windows", "Recycle Bin", "Files already deleted through Windows and waiting in the Recycle Bin.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Recycle Bin contents."], ["Files that are not already in the Recycle Bin."], "Safe if you do not need to restore deleted files.", []),
+            CleanupItem("recycleBin", "Windows", "Recycle Bin", "Files already deleted through Windows and waiting in the Recycle Bin.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Current Recycle Bin contents."], ["Already-deleted traces in drive free space until Free-Space Sanitizer is run."], "Clean this first, then use Free-Space Sanitizer for a 3-pass overwrite of deleted-file traces.", []),
             CleanupItem("thumbnailCache", "Windows", "Thumbnail Cache", "Cached image and video thumbnails used by File Explorer previews.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Explorer thumbnail cache database files."], ["Your photos, videos, and documents."], "Safe to clean. Windows rebuilds thumbnails as needed.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "Explorer"), "thumbcache_*.db", recursive: false)]),
             CleanupItem("iconCache", "Windows", "Icon Cache", "Cached icon databases used by File Explorer and the Start menu.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Explorer icon cache database files."], ["Apps, shortcuts, and pinned items."], "Safe to clean. Windows rebuilds icons as needed.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "Explorer"), "iconcache_*.db", recursive: false)]),
             CleanupItem("windowsErrorReports", "Windows", "Windows Error Reports", "Archived Windows Error Reporting files for apps and system components.", "Safe", supportsDeletion: true, requiresAdministrator: false, defaultSelected: true, ["Archived error report files."], ["Installed applications and personal files."], "Safe to clean after you no longer need crash diagnostics.", [DirectoryTarget(CombinePath(local, "Microsoft", "Windows", "WER")), DirectoryTarget(CombinePath(programData, "Microsoft", "Windows", "WER"))]),
@@ -1083,13 +1083,175 @@ internal static class SystemMaintenanceService
 
     private static CleanupDeleteSummary EmptyRecycleBin(CleanupCategory before)
     {
+        CleanupDeleteSummary secureDeleted = SecureDeleteRecycleBinContents();
         uint result = SHEmptyRecycleBin(IntPtr.Zero, null, SherbNoConfirmation | SherbNoProgressUi | SherbNoSound);
+        var warnings = new List<string>(secureDeleted.Warnings);
+        int skippedItems = secureDeleted.SkippedItems;
         if (result != 0)
         {
-            return new CleanupDeleteSummary(0, 0, 1, [$"Recycle Bin cleanup failed with HRESULT 0x{result:X8}."]);
+            skippedItems++;
+            AddCleanupWarning(warnings, $"Recycle Bin cleanup failed with HRESULT 0x{result:X8}.");
+            return new CleanupDeleteSummary(secureDeleted.FreedBytes, secureDeleted.DeletedFiles, skippedItems, warnings.ToArray());
         }
 
-        return new CleanupDeleteSummary(before.sizeBytes, before.fileCount, 0, []);
+        return new CleanupDeleteSummary(
+            Math.Max(before.sizeBytes, secureDeleted.FreedBytes),
+            Math.Max(before.fileCount, secureDeleted.DeletedFiles),
+            skippedItems,
+            warnings.ToArray());
+    }
+
+    private static CleanupDeleteSummary SecureDeleteRecycleBinContents()
+    {
+        long freedBytes = 0;
+        int deletedFiles = 0;
+        int skippedItems = 0;
+        List<string> warnings = [];
+
+        foreach (DriveInfo drive in DriveInfo.GetDrives().Where(drive => drive.DriveType is DriveType.Fixed or DriveType.Removable))
+        {
+            try
+            {
+                if (!drive.IsReady)
+                {
+                    continue;
+                }
+
+                string recycleBinRoot = Path.Combine(drive.RootDirectory.FullName, "$Recycle.Bin");
+                if (!Directory.Exists(recycleBinRoot) || IsReparsePoint(recycleBinRoot))
+                {
+                    continue;
+                }
+
+                var options = new EnumerationOptions
+                {
+                    IgnoreInaccessible = true,
+                    RecurseSubdirectories = true,
+                    ReturnSpecialDirectories = false,
+                    AttributesToSkip = FileAttributes.ReparsePoint
+                };
+
+                foreach (string file in Directory.EnumerateFiles(recycleBinRoot, "*", options))
+                {
+                    if (string.Equals(Path.GetFileName(file), "desktop.ini", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (deletedFiles + skippedItems >= MaxCleanupScanFiles)
+                    {
+                        skippedItems++;
+                        AddCleanupWarning(warnings, $"Recycle Bin secure delete stopped after {MaxCleanupScanFiles.ToString(CultureInfo.InvariantCulture)} files.");
+                        break;
+                    }
+
+                    try
+                    {
+                        freedBytes += SecureDeleteCleanupFile(file, passes: 3);
+                        deletedFiles++;
+                    }
+                    catch (Exception ex)
+                    {
+                        skippedItems++;
+                        AddCleanupWarning(warnings, $"{file}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                skippedItems++;
+                AddCleanupWarning(warnings, $"{drive.Name}$Recycle.Bin: {ex.Message}");
+            }
+        }
+
+        return new CleanupDeleteSummary(freedBytes, deletedFiles, skippedItems, warnings.ToArray());
+    }
+
+    private static long SecureDeleteCleanupFile(string filePath, int passes)
+    {
+        FileInfo info = new(filePath);
+        if (!info.Exists)
+        {
+            return 0;
+        }
+
+        FileAttributes originalAttributes = info.Attributes;
+        if ((originalAttributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+        {
+            throw new IOException("Secure delete does not overwrite file reparse points.");
+        }
+
+        long fileSize = info.Length;
+        try
+        {
+            FileCleanupService.ClearReadOnlyAttribute(filePath);
+            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                byte[] buffer = new byte[81920];
+                try
+                {
+                    int normalizedPasses = Math.Clamp(passes, 1, 35);
+                    for (int pass = 0; pass < normalizedPasses; pass++)
+                    {
+                        stream.Seek(0, SeekOrigin.Begin);
+                        long written = 0;
+                        while (written < fileSize)
+                        {
+                            int toWrite = (int)Math.Min(buffer.Length, fileSize - written);
+                            FillSecureDeleteBuffer(buffer.AsSpan(0, toWrite), pass);
+                            stream.Write(buffer, 0, toWrite);
+                            written += toWrite;
+                        }
+
+                        stream.Flush(flushToDisk: true);
+                    }
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(buffer);
+                }
+            }
+
+            File.Delete(filePath);
+            return fileSize;
+        }
+        catch
+        {
+            RestoreFileAttributesBestEffort(filePath, originalAttributes);
+            throw;
+        }
+    }
+
+    private static void FillSecureDeleteBuffer(Span<byte> buffer, int pass)
+    {
+        if (pass == 0)
+        {
+            buffer.Clear();
+            return;
+        }
+
+        if (pass == 1)
+        {
+            buffer.Fill(0xFF);
+            return;
+        }
+
+        RandomNumberGenerator.Fill(buffer);
+    }
+
+    private static void RestoreFileAttributesBestEffort(string filePath, FileAttributes attributes)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                File.SetAttributes(filePath, attributes);
+            }
+        }
+        catch
+        {
+            // Best effort after a cleanup failure; the original exception is more useful to callers.
+        }
     }
 
     private static bool IsApprovedCleanupPath(string categoryId, string path)

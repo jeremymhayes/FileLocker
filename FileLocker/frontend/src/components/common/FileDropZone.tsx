@@ -152,7 +152,7 @@ export function FileDropZone({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <UploadCloud className="size-6 text-accent-blue" aria-hidden />
+        <UploadCloud className="size-6 text-accent" aria-hidden />
         <div className="mt-3 security-section-title">{title}</div>
         <div id={descriptionId} className="security-description max-w-xl">{description}</div>
         <div className="mt-4 flex flex-wrap justify-center gap-2" onClick={stop}>

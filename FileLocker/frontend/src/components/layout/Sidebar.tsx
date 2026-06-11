@@ -66,7 +66,7 @@ export function Sidebar({ activePage, onNavigate, version, settings, onThemeTogg
       <div className={cn("border-b border-sidebar-border py-3", collapsed ? "px-2" : "px-3")}>
         <div className={cn("sidebar-logo-area flex items-center gap-3", collapsed && "justify-center")}>
           {logoFailed ? (
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue font-mono text-xs font-semibold text-white">FL</div>
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent font-mono text-xs font-semibold text-accent-foreground">FL</div>
           ) : (
             <img
               src="/assets/logo.png"
@@ -167,14 +167,14 @@ function NavGroup({
               <button
                 type="button"
                 className={cn(
-                  "flex min-h-9 w-full items-center rounded-md border border-transparent py-1.5 text-left font-display text-sm font-medium text-secondary transition-colors hover:border-border-accent hover:bg-bg-surface/70 hover:text-primary",
+                  "flex min-h-9 w-full items-center rounded-md border border-transparent py-1.5 text-left font-display text-sm font-medium text-secondary transition-colors hover:bg-bg-surface/70 hover:text-primary",
                   collapsed ? "justify-center px-0" : "gap-2.5 px-2.5",
-                  isActive && "border-nav-active-border bg-nav-active-bg text-primary"
+                  isActive && "nav-item-active text-primary"
                 )}
                 onClick={() => onNavigate(item.key)}
                 aria-current={isActive ? "page" : undefined}
               >
-                <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md text-muted", isActive && "bg-accent/15 text-accent-blue")}>
+                <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md text-muted", isActive && "text-accent")}>
                   <Icon className="size-4" aria-hidden />
                 </span>
                 {!collapsed ? <span className="truncate">{item.label}</span> : null}

@@ -238,7 +238,7 @@ function GuideCardView({
   return (
     <article className="flex min-w-0 flex-col rounded-md border border-border bg-bg-surface-raised/40 p-4">
       <div className="flex items-start gap-3">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/12 text-accent-blue">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/12 text-accent">
           <Icon className="size-4" aria-hidden />
         </div>
         <div className="min-w-0">

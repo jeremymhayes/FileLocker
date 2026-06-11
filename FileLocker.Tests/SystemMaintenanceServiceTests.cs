@@ -378,6 +378,35 @@ public sealed class SystemMaintenanceServiceTests
     }
 
     [Fact]
+    public void ClassifyMediaTypes_InfersSsdForNvmeWhenMediaTypeIsUnspecified()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes(
+            [0],
+            ["NVMe"],
+            physicalDiskCount: 1,
+            timedOut: false,
+            unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+        Assert.Contains("solid-state", media.mediaDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClassifyMediaTypes_InfersSsdWhenNvmeBusTypeIsConcatenatedByPowerShellScalarOutput()
+    {
+        DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes(
+            [0],
+            ["NVMeNVMe"],
+            physicalDiskCount: 1,
+            timedOut: false,
+            unsupported: false);
+
+        Assert.Equal("SSD", media.mediaType);
+        Assert.Equal("Detected", media.mediaDetectionStatus);
+    }
+
+    [Fact]
     public void ClassifyMediaTypes_ReturnsMixedForConflictingPhysicalDisks()
     {
         DriveMediaInfo media = DriveMediaTypeDetector.ClassifyPhysicalMediaTypes([3, 4], physicalDiskCount: 2, timedOut: false, unsupported: false);

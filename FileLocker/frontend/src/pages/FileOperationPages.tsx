@@ -836,9 +836,9 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                           details: "Preparing details",
                         }))).map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                             : item.isDirectory
-                              ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                              ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                               : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -1296,11 +1296,11 @@ export function FileOperationPage({ kind, invoke, progressEvents, onDashboardUpd
                           details: "Preparing details",
                         }))).map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                             : !hasUnlockSecret
                               ? { label: "Unlock material required", dotClass: "bg-accent-orange", textClass: "text-accent-orange" }
                               : item.isDirectory
-                                ? { label: "Waiting", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                                ? { label: "Waiting", dotClass: "bg-accent", textClass: "text-accent" }
                                 : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -2063,7 +2063,7 @@ export function SecureDeletePage({
                       <div className="divide-y divide-border/80">
                         {resolvedItems.map((item) => {
                           const itemStatus = isDescribingPaths
-                            ? { label: "Reading", dotClass: "bg-accent-blue", textClass: "text-accent-blue" }
+                            ? { label: "Reading", dotClass: "bg-accent", textClass: "text-accent" }
                             : { label: "Ready", dotClass: "bg-accent-green", textClass: "text-accent-green" }
 
                           return (
@@ -2120,7 +2120,7 @@ export function SecureDeletePage({
                     <div
                       className={cn(
                         "h-full transition-[width] duration-300",
-                        hasActionError ? "bg-destructive" : hasResults ? "bg-accent-green" : isRunning ? "bg-accent-blue" : "bg-border"
+                        hasActionError ? "bg-destructive" : hasResults ? "bg-accent-green" : isRunning ? "bg-accent" : "bg-border"
                       )}
                       style={{ width: `${stateProgress}%` }}
                     />
@@ -2178,7 +2178,7 @@ export function SecureDeletePage({
                       disabled={isRunning}
                       onClick={() => setDeleteMethodId(method.id)}
                     >
-                      <span className={cn("mt-0.5 flex size-5 items-center justify-center rounded-md border border-border text-transparent", isSelected && "border-accent bg-accent text-white")}>
+                      <span className={cn("mt-0.5 flex size-5 items-center justify-center rounded-md border border-border text-transparent", isSelected && "border-accent bg-accent text-accent-foreground")}>
                         <CheckCircle2 className="size-3.5" aria-hidden />
                       </span>
                       <span className="min-w-0 flex-1">

@@ -47,6 +47,7 @@ const defaultSettings: SettingsState = {
     useCustomDecryptOutputDirectory: true,
     customDecryptOutputDirectory: String.raw`C:\Users\demo\Documents\FileLocker\Decrypted`,
     themePreference: "Dark",
+    accentTheme: "blue",
   },
   updates: {
     autoCheckEnabled: true,

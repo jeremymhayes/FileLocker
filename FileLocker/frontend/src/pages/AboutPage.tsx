@@ -67,7 +67,7 @@ export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
         <section className="section-surface">
           <div className="flex items-start gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/12 text-accent-blue">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/12 text-accent">
               <Shield className="size-4" aria-hidden />
             </div>
             <div className="min-w-0">
@@ -94,7 +94,7 @@ export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
 
         <section className="section-surface">
           <div className="mb-3 flex items-start gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
               <RefreshCw className="size-4" aria-hidden />
             </div>
             <div className="min-w-0">
@@ -118,7 +118,7 @@ export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
 
         <section className="section-surface">
           <div className="mb-3 flex items-start gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
               <Stethoscope className="size-4" aria-hidden />
             </div>
             <div className="min-w-0">
@@ -135,7 +135,7 @@ export function AboutPage({ app, onOpenRepository }: AboutPageProps) {
 
         <section className="section-surface">
           <div className="mb-3 flex items-start gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
               <Info className="size-4" aria-hidden />
             </div>
             <div>
@@ -181,7 +181,7 @@ function SideFact({ icon: Icon, label, value, detail }: { icon: LucideIcon; labe
   return (
     <section className="section-surface">
       <div className="flex items-start gap-3">
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-blue/10 text-accent-blue">
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
           <Icon className="size-4" aria-hidden />
         </div>
         <div className="min-w-0">

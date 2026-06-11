@@ -35,6 +35,14 @@ internal static class DriveMediaTypeDetector
         IEnumerable<int> mediaTypes,
         int physicalDiskCount,
         bool timedOut,
+        bool unsupported) =>
+        ClassifyPhysicalMediaTypes(mediaTypes, [], physicalDiskCount, timedOut, unsupported);
+
+    internal static DriveMediaInfo ClassifyPhysicalMediaTypes(
+        IEnumerable<int> mediaTypes,
+        IEnumerable<string> busTypes,
+        int physicalDiskCount,
+        bool timedOut,
         bool unsupported)
     {
         if (timedOut)
@@ -47,11 +55,18 @@ internal static class DriveMediaTypeDetector
             return Unknown("Unsupported", "Drive media detection is not available for this drive.");
         }
 
-        int[] knownMediaTypes = mediaTypes
+        int[] explicitMediaTypes = mediaTypes
             .Where(mediaType => mediaType is 3 or 4)
             .Distinct()
             .Order()
             .ToArray();
+        int[] inferredMediaTypes = busTypes
+            .Where(IsNvmeBusType)
+            .Select(_ => 4)
+            .Distinct()
+            .Order()
+            .ToArray();
+        int[] knownMediaTypes = explicitMediaTypes.Length > 0 ? explicitMediaTypes : inferredMediaTypes;
 
         if (knownMediaTypes.Length == 0)
         {
@@ -93,7 +108,8 @@ internal static class DriveMediaTypeDetector
             "$physical=@(); " +
             "foreach($disk in $disks){ try { $physical += @(Get-PhysicalDisk -DeviceNumber $disk.Number -ErrorAction Stop) } catch {} }; " +
             "$mediaTypes=[int[]]@($physical | ForEach-Object { switch -Regex ([string]$_.MediaType) { '^3$|^HDD$' { 3; break } '^4$|^SSD$' { 4; break } default { 0 } } }); " +
-            "[pscustomobject]@{ PhysicalDiskCount=$disks.Count; MediaTypes=$mediaTypes } | ConvertTo-Json -Compress";
+            "$busTypes=[string[]]@(@($disks | ForEach-Object { [string]$_.BusType }) + @($physical | ForEach-Object { [string]$_.BusType })); " +
+            "[pscustomobject]@{ PhysicalDiskCount=$disks.Count; MediaTypes=$mediaTypes; BusTypes=$busTypes } | ConvertTo-Json -Compress";
 
         try
         {
@@ -139,6 +155,7 @@ internal static class DriveMediaTypeDetector
 
             return ClassifyPhysicalMediaTypes(
                 payload.MediaTypes,
+                payload.BusTypes,
                 payload.PhysicalDiskCount,
                 timedOut: false,
                 unsupported: false);
@@ -181,13 +198,45 @@ internal static class DriveMediaTypeDetector
                 }
             }
 
-            return new DriveMediaPowerShellPayload(physicalDiskCount, mediaTypes.ToArray());
+            string[] busTypes = ParseStringArray(root, "BusTypes");
+
+            return new DriveMediaPowerShellPayload(physicalDiskCount, mediaTypes.ToArray(), busTypes);
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
+    private static string[] ParseStringArray(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement element))
+        {
+            return [];
+        }
+
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            return element.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .ToArray();
+        }
+
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            string? value = element.GetString();
+            return string.IsNullOrWhiteSpace(value) ? [] : [value];
+        }
+
+        return [];
+    }
+
+    private static bool IsNvmeBusType(string? busType) =>
+        !string.IsNullOrWhiteSpace(busType) &&
+        busType.Contains("NVMe", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryGetDriveLetter(string driveRoot, out char driveLetter)
     {
@@ -224,5 +273,5 @@ internal static class DriveMediaTypeDetector
         return new DriveMediaInfo("Unknown", status, description);
     }
 
-    private sealed record DriveMediaPowerShellPayload(int PhysicalDiskCount, int[] MediaTypes);
+    private sealed record DriveMediaPowerShellPayload(int PhysicalDiskCount, int[] MediaTypes, string[] BusTypes);
 }

@@ -19,6 +19,7 @@ AppPackages/
 BundleArtifacts/
 artifacts/
 Releases/
+RELEASE_NOTES_*.md
 installer/FileLocker-Setup-*.exe
 installer/inno/Output/
 installer/inno/*.exe

@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
+import { ACCENT_THEMES, applyAccentTheme, normalizeAccentTheme } from "@/lib/accentThemes"
 import { OUTPUT_TIMESTAMP_POLICIES, normalizeOutputTimestampPolicy } from "@/lib/outputTimestampPolicies"
 import type { DashboardState, InitialState, SettingsState, UpdateCheckResult, UpdateRelease } from "@/types/bridge"
 
@@ -93,6 +94,19 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
   useEffect(() => {
     draftRef.current = draft
   }, [draft])
+
+  // Accent changes preview immediately; leaving the page without saving
+  // restores the saved theme (App re-applies it whenever settings update).
+  const savedAccentThemeRef = useRef(settings.preferences.accentTheme)
+  useEffect(() => {
+    savedAccentThemeRef.current = settings.preferences.accentTheme
+  }, [settings])
+  useEffect(
+    () => () => {
+      applyAccentTheme(savedAccentThemeRef.current)
+    },
+    []
+  )
 
   useEffect(() => {
     if (!dirtyRef.current) {
@@ -597,6 +611,29 @@ export function SettingsPage({ app, settings, invoke, onSettingsUpdate, onDashbo
                       <SelectItem value="Dark">Dark</SelectItem>
                       <SelectItem value="Light">Light</SelectItem>
                       <SelectItem value="System">System</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+              <SettingRow label="Accent color" detail="Color theme used for highlights, buttons, and navigation across the app.">
+                <Select
+                  value={normalizeAccentTheme(draft.preferences.accentTheme)}
+                  onValueChange={(value) => {
+                    applyAccentTheme(value)
+                    updateDraft((current) => ({ ...current, preferences: { ...current.preferences, accentTheme: value } }))
+                  }}
+                >
+                  <SelectTrigger size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {ACCENT_THEMES.map((theme) => (
+                        <SelectItem key={theme.id} value={theme.id}>
+                          <span className="size-2.5 rounded-full" style={{ background: theme.swatch }} aria-hidden />
+                          {theme.label}
+                        </SelectItem>
+                      ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
