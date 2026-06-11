@@ -26,7 +26,7 @@ For bug reports, include:
 
 For release or setup/update issues, include:
 
-- Setup installer filename, such as `FileLocker-Setup-1.3.0.0.exe`.
+- Setup installer filename, such as `FileLocker-Setup-1.3.1.0.exe`.
 - SHA-256 value if you checked it.
 - Whether Windows SmartScreen, antivirus, or administrator elevation blocked setup.
 - Whether FileLocker opens after install.

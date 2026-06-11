@@ -156,7 +156,7 @@ const dashboard: DashboardState = {
 const initialState: InitialState = {
   app: {
     name: "FileLocker",
-    version: "1.3.0.0",
+    version: "1.3.1.0",
     repositoryUrl: "https://github.com/jeremymhayes/FileLocker",
     launchPaths: [],
     launchAction: undefined,
@@ -265,7 +265,7 @@ function handle(action: string, payload: unknown): unknown {
       return { exportPath: "C:\\Users\\you\\Documents\\filelocker-history.csv", fileName: "filelocker-history.csv", recordCount: dashboard.history.length }
     case "updates.check":
     case "updates.testStartupCheck":
-      return { currentVersion: "1.3.0.0", isUpdateAvailable: false, statusMessage: "FileLocker is up to date." }
+      return { currentVersion: "1.3.1.0", isUpdateAvailable: false, statusMessage: "FileLocker is up to date." }
     case "updates.skip":
       settings = { ...settings, updates: { ...settings.updates, skippedVersion: (payload as { version?: string } | null)?.version } }
       return cloneSettings(settings)
@@ -275,9 +275,9 @@ function handle(action: string, payload: unknown): unknown {
     case "updates.testDialog":
       return { tested: true }
     case "updates.download":
-      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.0.0.exe", fileName: "FileLocker-Setup-1.3.0.0.exe" }
+      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.1.0.exe", fileName: "FileLocker-Setup-1.3.1.0.exe" }
     case "updates.install":
-      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.0.0.exe", fileName: "FileLocker-Setup-1.3.0.0.exe" }
+      return { installerPath: "C:\\Users\\you\\AppData\\Local\\FileLocker\\Updater\\Downloads\\FileLocker-Setup-1.3.1.0.exe", fileName: "FileLocker-Setup-1.3.1.0.exe" }
     case "shell.setExplorerIntegration": {
       const enabled = (payload as { enabled?: boolean } | null)?.enabled === true
       settings = {
