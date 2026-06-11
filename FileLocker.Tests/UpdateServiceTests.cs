@@ -132,6 +132,40 @@ public sealed class UpdateServiceTests
     }
 
     [Fact]
+    public async Task DownloadInstallerPayloadAsync_ClosesTemporaryFileBeforeDigestVerification()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FileLocker.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string installerPath = Path.Combine(root, "FileLocker-Setup-1.3.0.0.exe");
+        string tempPath = Path.Combine(root, $"FileLocker-Setup-1.3.0.0.exe.{Guid.NewGuid():N}.download");
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes("fake installer payload");
+        string digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+
+        try
+        {
+            await using var source = new MemoryStream(payload);
+
+            await UpdateService.DownloadInstallerPayloadAsync(
+                source,
+                tempPath,
+                installerPath,
+                digest,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(File.Exists(installerPath));
+            Assert.False(File.Exists(tempPath));
+            Assert.Equal(payload, await File.ReadAllBytesAsync(installerPath, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void TryExtractSha256DigestFromText_ExtractsMatchingInstallerDigest()
     {
         const string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

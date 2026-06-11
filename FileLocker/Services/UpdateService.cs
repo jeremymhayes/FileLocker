@@ -279,16 +279,12 @@ internal static class UpdateService
             ValidateInstallerResponse(response);
 
             await using Stream httpStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var outputStream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            await CopyToAsyncWithLimit(httpStream, outputStream, MaxInstallerBytes, "installer download", cancellationToken);
-            await outputStream.FlushAsync(cancellationToken);
-
-            if (!await FileDigestMatchesAsync(tempPath, normalizedDigest, cancellationToken))
-            {
-                throw new InvalidOperationException("The downloaded installer did not match the published SHA-256 digest.");
-            }
-
-            ReplaceDownloadedInstaller(tempPath, installerPath);
+            await DownloadInstallerPayloadAsync(
+                httpStream,
+                tempPath,
+                installerPath,
+                normalizedDigest,
+                cancellationToken);
             CleanupOlderInstallers(downloadDirectory, installerPath);
             return installerPath;
         }
@@ -296,6 +292,29 @@ internal static class UpdateService
         {
             TryDeleteFile(tempPath);
         }
+    }
+
+    internal static async Task DownloadInstallerPayloadAsync(
+        Stream source,
+        string tempPath,
+        string installerPath,
+        string normalizedDigest,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        await using (var outputStream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            await CopyToAsyncWithLimit(source, outputStream, MaxInstallerBytes, "installer download", cancellationToken);
+            await outputStream.FlushAsync(cancellationToken);
+        }
+
+        if (!await FileDigestMatchesAsync(tempPath, normalizedDigest, cancellationToken))
+        {
+            throw new InvalidOperationException("The downloaded installer did not match the published SHA-256 digest.");
+        }
+
+        ReplaceDownloadedInstaller(tempPath, installerPath);
     }
 
     internal static ProcessStartInfo CreateInstallerCleanupStartInfo(
